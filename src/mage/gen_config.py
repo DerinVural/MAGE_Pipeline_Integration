@@ -4,6 +4,7 @@ import config
 from google.oauth2 import service_account
 from llama_index.core.llms.llm import LLM
 from llama_index.llms.anthropic import Anthropic
+from llama_index.llms.ollama import Ollama
 from llama_index.llms.openai import OpenAI
 from llama_index.llms.vertex import Vertex
 from pydantic import BaseModel
@@ -80,6 +81,22 @@ def get_llm(**kwargs) -> LLM:
                 max_tokens=kwargs["max_token"],
             )
 
+        except Exception as e:
+            raise Exception(f"gen_config: Failed to get {provider} LLM") from e
+    elif provider == "ollama":
+        try:
+            base_url = (
+                kwargs.get("base_url")
+                or os.environ.get("OLLAMA_BASE_URL")
+                or "http://localhost:11434"
+            )
+            llm: LLM = Ollama(
+                model=kwargs["model"],
+                base_url=base_url,
+                request_timeout=kwargs.get("request_timeout", 600.0),
+                context_window=kwargs.get("context_window", 32768),
+                additional_kwargs={"num_predict": kwargs["max_token"]},
+            )
         except Exception as e:
             raise Exception(f"gen_config: Failed to get {provider} LLM") from e
     elif kwargs["provider"] == "vertexanthropic":
