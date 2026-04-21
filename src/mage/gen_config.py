@@ -95,6 +95,7 @@ def get_llm(**kwargs) -> LLM:
                 base_url=base_url,
                 request_timeout=kwargs.get("request_timeout", 600.0),
                 context_window=kwargs.get("context_window", 32768),
+                json_mode=True,
                 additional_kwargs={"num_predict": kwargs["max_token"]},
             )
         except Exception as e:
