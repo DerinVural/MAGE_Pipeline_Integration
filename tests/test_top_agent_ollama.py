@@ -11,10 +11,10 @@ from mage.gen_config import get_llm, set_exp_setting  # noqa: E402
 args_dict = {
     "provider": "ollama",
     "model": "qwen2.5-coder:7b",
-    "filter_instance": "^(Prob011_norgate)$",
+    "filter_instance": "^(Prob001_zero|Prob002_m2014_q4i|Prob003_step_one|Prob004_vector2|Prob005_notgate)$",
     "type_benchmark": "verilog_eval_v2",
     "path_benchmark": "./verilog-eval",
-    "run_identifier": "ollama_smoke",
+    "run_identifier": "ollama_5probs",
     "n": 1,
     "temperature": 0.85,
     "top_p": 0.95,
