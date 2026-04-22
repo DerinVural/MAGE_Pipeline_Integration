@@ -10,7 +10,8 @@ from .log_utils import get_logger, set_log_dir
 logger = get_logger(__name__)
 
 BENIGN_STDERRS = [
-    r"^\S+:\d+: sorry: constant selects in always_\* processes are not currently supported \(all bits will be included\)\.$"
+    r"^\S+:\d+: sorry: constant selects in always_\* processes are not currently supported \(all bits will be included\)\.$",
+    r"^\S+:\d+: warning: Instantiating module \S+ with dangling input port \d+ \(\S+\) floating\.$",
 ]
 
 
