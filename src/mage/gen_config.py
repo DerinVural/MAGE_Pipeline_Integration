@@ -1,4 +1,5 @@
 import os
+from typing import Dict, Tuple
 
 import config
 from google.oauth2 import service_account
@@ -156,3 +157,33 @@ def set_exp_setting(temperature: float | None = None, top_p: float | None = None
     if top_p is not None:
         global_exp_setting.top_p = top_p
     return global_exp_setting
+
+
+AGENT_SAMPLING_OVERRIDES: Dict[str, Dict[str, float | None]] = {
+    "SimJudge": {"temperature": 0.0, "top_p": 1.0},
+}
+
+
+def get_agent_sampling(agent_tag: str) -> Tuple[float, float]:
+    settings = get_exp_setting()
+    override = AGENT_SAMPLING_OVERRIDES.get(agent_tag, {})
+    temperature = override.get("temperature")
+    top_p = override.get("top_p")
+    if temperature is None:
+        temperature = settings.temperature
+    if top_p is None:
+        top_p = settings.top_p
+    return temperature, top_p
+
+
+def set_agent_sampling(
+    agent_tag: str,
+    temperature: float | None = None,
+    top_p: float | None = None,
+) -> None:
+    if agent_tag not in AGENT_SAMPLING_OVERRIDES:
+        AGENT_SAMPLING_OVERRIDES[agent_tag] = {}
+    if temperature is not None:
+        AGENT_SAMPLING_OVERRIDES[agent_tag]["temperature"] = temperature
+    if top_p is not None:
+        AGENT_SAMPLING_OVERRIDES[agent_tag]["top_p"] = top_p

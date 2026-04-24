@@ -13,7 +13,7 @@ from llama_index.llms.vertex import Vertex
 from pydantic import BaseModel
 from vertexai.preview.generative_models import GenerativeModel
 
-from .gen_config import get_exp_setting
+from .gen_config import get_agent_sampling, get_exp_setting
 from .log_utils import get_logger
 from .utils import reformat_json_string
 
@@ -179,12 +179,13 @@ class TokenCounter:
     ) -> Tuple[ChatResponse, TokenCount]:
         llm = llm or self.llm
         in_token_cnt = self.count(llm.messages_to_prompt(messages))
+        temperature, top_p = get_agent_sampling(self.cur_tag)
         logger.info(
-            "TokenCounter count_chat Triggered at temp: %s, top_p: %s"
-            % (settings.temperature, settings.top_p)
+            "TokenCounter count_chat [agent=%s] at temp: %s, top_p: %s"
+            % (self.cur_tag, temperature, top_p)
         )
         response = llm.chat(
-            messages, top_p=settings.top_p, temperature=settings.temperature
+            messages, top_p=top_p, temperature=temperature
         )
         out_token_cnt = self.count(response.message.content)
         token_cnt = TokenCount(in_token_cnt=in_token_cnt, out_token_cnt=out_token_cnt)
@@ -198,12 +199,13 @@ class TokenCounter:
     ) -> Tuple[ChatResponse, TokenCount]:
         llm = llm or self.llm
         in_token_cnt = self.count(llm.messages_to_prompt(messages))
+        temperature, top_p = get_agent_sampling(self.cur_tag)
         logger.info(
-            "TokenCounter count_achat Triggered at temp: %s, top_p: %s"
-            % (settings.temperature, settings.top_p)
+            "TokenCounter count_achat [agent=%s] at temp: %s, top_p: %s"
+            % (self.cur_tag, temperature, top_p)
         )
         response = await llm.achat(
-            messages, top_p=settings.top_p, temperature=settings.temperature
+            messages, top_p=top_p, temperature=temperature
         )
         out_token_cnt = self.count(response.message.content)
         token_cnt = TokenCount(in_token_cnt=in_token_cnt, out_token_cnt=out_token_cnt)
@@ -324,14 +326,15 @@ class TokenCounterCached(TokenCounter):
         self, messages: List[ChatMessage], llm: LLM | None = None
     ) -> Tuple[ChatResponse, TokenCountCached]:
         llm = llm or self.llm
+        temperature, top_p = get_agent_sampling(self.cur_tag)
         logger.info(
-            "TokenCounterCached count_chat Triggered at temp: %s, top_p: %s"
-            % (settings.temperature, settings.top_p)
+            "TokenCounterCached count_chat [agent=%s] at temp: %s, top_p: %s"
+            % (self.cur_tag, temperature, top_p)
         )
         response = llm.chat(
             messages,
-            top_p=settings.top_p,
-            temperature=settings.temperature,
+            top_p=top_p,
+            temperature=temperature,
         )
         usage = response.raw["usage"]
         assert isinstance(usage, Usage), f"Unknown usage type: {type(usage)}"
@@ -358,14 +361,15 @@ class TokenCounterCached(TokenCounter):
         self, messages: List[ChatMessage], llm: LLM | None = None
     ) -> Tuple[ChatResponse, TokenCountCached]:
         llm = llm or self.llm
+        temperature, top_p = get_agent_sampling(self.cur_tag)
         logger.info(
-            "TokenCounterCached count_achat Triggered at temp: %s, top_p: %s"
-            % (settings.temperature, settings.top_p)
+            "TokenCounterCached count_achat [agent=%s] at temp: %s, top_p: %s"
+            % (self.cur_tag, temperature, top_p)
         )
         response = await llm.achat(
             messages,
-            top_p=settings.top_p,
-            temperature=settings.temperature,
+            top_p=top_p,
+            temperature=temperature,
         )
         usage = response.raw["usage"]
         assert isinstance(usage, Usage), f"Unknown usage type: {type(usage)}"
