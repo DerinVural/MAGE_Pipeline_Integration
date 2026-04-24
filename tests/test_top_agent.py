@@ -117,8 +117,18 @@ def run_round(args: argparse.Namespace, llm: LLM):
         token_sum += run_token_cnt
         pass_cnt += is_pass
         review_result[task_id] = (is_pass, golden_sim_log)
+        failure_info_path = (
+            f"{agent.output_path}/{type_benchmark.name}_{task_id}/failure_info.json"
+        )
+        try:
+            with open(failure_info_path, "r") as f:
+                failure_info = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            failure_info = {"failure_type": "unknown", "error_msg": "", "trace": ""}
         record_json["record_per_run"][task_id] = {
             "is_pass": is_pass,
+            "failure_type": failure_info["failure_type"],
+            "error_msg": failure_info["error_msg"],
             "run_token_limit_cnt": f"{run_token_limit_cnt:.2f}",
             "run_token_cost": f"{run_cost:.2f}",
             "run_time": str(run_time),

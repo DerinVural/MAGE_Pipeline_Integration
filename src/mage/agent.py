@@ -1,3 +1,4 @@
+import json
 import os
 import re
 import sys
@@ -228,6 +229,9 @@ class TopAgent:
         return is_syntax_pass, rtl_code
 
     def _run(self, spec: str) -> Tuple[bool, str]:
+        failure_type = "none"
+        error_msg = ""
+        trace = ""
         try:
             if os.path.exists(f"{self.output_dir_per_run}/properly_finished.tag"):
                 os.remove(f"{self.output_dir_per_run}/properly_finished.tag")
@@ -250,10 +254,36 @@ class TopAgent:
             self.token_counter.log_token_stats()
             with open(f"{self.output_dir_per_run}/properly_finished.tag", "w") as f:
                 f.write("1")
+            if not ret[0]:
+                failure_type = "functional_mismatch"
+                error_msg = ret[1]
+        except AssertionError:
+            exc_info = sys.exc_info()
+            traceback.print_exception(*exc_info)
+            failure_type = "pipeline_assert"
+            error_msg = str(exc_info[1])
+            trace = "".join(traceback.format_exception(*exc_info))
+            ret = False, f"Exception: {exc_info[1]}"
         except Exception:
             exc_info = sys.exc_info()
             traceback.print_exception(*exc_info)
+            failure_type = "unexpected"
+            error_msg = str(exc_info[1])
+            trace = "".join(traceback.format_exception(*exc_info))
             ret = False, f"Exception: {exc_info[1]}"
+        try:
+            os.makedirs(self.output_dir_per_run, exist_ok=True)
+            with open(f"{self.output_dir_per_run}/failure_info.json", "w") as f:
+                json.dump(
+                    {
+                        "failure_type": failure_type,
+                        "error_msg": error_msg,
+                        "trace": trace,
+                    },
+                    f,
+                )
+        except OSError:
+            pass
         return ret
 
     def run(
