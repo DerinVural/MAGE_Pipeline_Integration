@@ -37,6 +37,7 @@ def _make_agent(tmpdir):
     agent.log_path = tmpdir
     agent.golden_tb_path = None
     agent.golden_rtl_blackbox_path = None
+    agent.golden_tb_format = False
     agent.output_dir_per_run = tmpdir
     agent.tb_gen = None
     agent.rtl_gen = None

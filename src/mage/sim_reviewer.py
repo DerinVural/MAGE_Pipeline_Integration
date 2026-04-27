@@ -45,12 +45,17 @@ def sim_review_mismatch_cnt(stdout: str) -> int:
         m = re.search(re_str, stdout)
         assert m is not None, f"Failed to parse mismatch count from: {stdout}"
         mismatch_cnt = int(m.group(1))
+        return mismatch_cnt
+    m = re.search(r"Mismatches:\s*(\d+)\s+in\s+\d+\s+samples", stdout)
+    if m is not None:
+        mismatch_cnt = int(m.group(1))
     return mismatch_cnt
 
 
 def sim_review(
     output_path_per_run: str,
     golden_rtl_path: str | None = None,
+    golden_tb_format: bool = False,
 ) -> Tuple[bool, int, str]:
     rtl_path = f"{output_path_per_run}/rtl.sv"
     vvp_name = f"{output_path_per_run}/sim_output.vvp"
@@ -64,17 +69,22 @@ def sim_review(
     )
     is_pass, sim_output = run_bash_command(cmd, timeout=60)
     sim_output_obj = CommandResult.model_validate_json(sim_output)
-    is_pass = (
-        is_pass
-        and "SIMULATION PASSED" in sim_output_obj.stdout
-        and (
-            sim_output_obj.stderr == ""
-            or stderr_all_lines_benign(sim_output_obj.stderr)
-        )
-    )
     mismatch_cnt = sim_review_mismatch_cnt(sim_output_obj.stdout)
+    stderr_clean = (
+        sim_output_obj.stderr == ""
+        or stderr_all_lines_benign(sim_output_obj.stderr)
+    )
+    if golden_tb_format:
+        is_pass = is_pass and (mismatch_cnt == 0) and stderr_clean
+    else:
+        is_pass = (
+            is_pass
+            and "SIMULATION PASSED" in sim_output_obj.stdout
+            and stderr_clean
+        )
     logger.info(
-        f"Simulation is_pass: {is_pass}, mismatch_cnt: {mismatch_cnt}\noutput: {sim_output}"
+        f"Simulation is_pass: {is_pass}, mismatch_cnt: {mismatch_cnt}, "
+        f"golden_tb_format: {golden_tb_format}\noutput: {sim_output}"
     )
     assert isinstance(sim_output, str) and isinstance(is_pass, bool)
     return is_pass, mismatch_cnt, sim_output
@@ -85,14 +95,17 @@ class SimReviewer:
         self,
         output_path_per_run: str,
         golden_rtl_path: str | None = None,
+        golden_tb_format: bool = False,
     ):
         self.output_path_per_run = output_path_per_run
         self.golden_rtl_path = golden_rtl_path
+        self.golden_tb_format = golden_tb_format
 
     def review(self) -> Tuple[bool, int, str]:
         return sim_review(
             self.output_path_per_run,
             self.golden_rtl_path,
+            golden_tb_format=self.golden_tb_format,
         )
 
 

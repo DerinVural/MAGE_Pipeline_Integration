@@ -36,6 +36,7 @@ class TopAgent:
         self.golden_tb_path: str | None = None
         self.golden_rtl_blackbox_path: str | None = None
         self.bypass_tb_gen: bool = False
+        self.golden_tb_format: bool = False
         self.tb_gen: TBGenerator | None = None
         self.rtl_gen: RTLGenerator | None = None
         self.sim_reviewer: SimReviewer | None = None
@@ -60,6 +61,9 @@ class TopAgent:
 
     def set_bypass_tb_gen(self, bypass_tb_gen: bool) -> None:
         self.bypass_tb_gen = bypass_tb_gen
+
+    def set_golden_tb_format(self, golden_tb_format: bool) -> None:
+        self.golden_tb_format = golden_tb_format
 
     def _load_golden_tb_directly(self) -> Tuple[str, str]:
         assert self.golden_tb_path is not None
@@ -268,6 +272,7 @@ class TopAgent:
             self.sim_reviewer = SimReviewer(
                 self.output_dir_per_run,
                 self.golden_rtl_blackbox_path,
+                golden_tb_format=self.golden_tb_format,
             )
             self.rtl_gen = RTLGenerator(self.token_counter)
             self.tb_gen = TBGenerator(self.token_counter)
