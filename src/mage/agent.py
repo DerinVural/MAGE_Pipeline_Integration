@@ -127,29 +127,15 @@ class TopAgent:
         tb_need_fix = True
         rtl_need_fix = True
         sim_log = ""
-        sim_mismatch_cnt = 0
-        is_sim_pass = False
         for i in range(self.sim_max_retry):
-            logger.info(
-                "[T13-trace] tb_loop iter=%d entry: tb_need_fix=%s rtl_need_fix=%s",
-                i, tb_need_fix, rtl_need_fix,
-            )
             # run simulation judge, overwrite is_sim_pass
             is_sim_pass, sim_mismatch_cnt, sim_log = self.sim_reviewer.review()
-            logger.info(
-                "[T13-trace] tb_loop iter=%d after review: is_sim_pass=%s sim_mismatch_cnt=%s",
-                i, is_sim_pass, sim_mismatch_cnt,
-            )
             if is_sim_pass:
                 tb_need_fix = False
                 rtl_need_fix = False
                 break
             self.sim_judge.reset()
             tb_need_fix = self.sim_judge.chat(spec, sim_log, rtl_code, testbench)
-            logger.info(
-                "[T13-trace] tb_loop iter=%d after judge: tb_need_fix=%s",
-                i, tb_need_fix,
-            )
             if tb_need_fix:
                 if self.bypass_tb_gen:
                     logger.info(
@@ -171,16 +157,10 @@ class TopAgent:
             else:
                 break
 
-        logger.info(
-            "[T13-trace] tb_loop exit: tb_need_fix=%s rtl_need_fix=%s "
-            "is_sim_pass=%s sim_mismatch_cnt=%s",
-            tb_need_fix, rtl_need_fix, is_sim_pass, sim_mismatch_cnt,
-        )
         assert not tb_need_fix, f"tb_need_fix should be False. sim_log: {sim_log}"
 
         candidates_info: List[Tuple[str, int, str]] = []
         if rtl_need_fix:
-            logger.info("[T13-trace] entering candidate gen (Step 4)")
             # Candidates Generation
             assert (
                 sim_mismatch_cnt > 0
@@ -234,7 +214,6 @@ class TopAgent:
                 candidates_info_unique.append(candidate)
 
         if rtl_need_fix:
-            logger.info("[T13-trace] entering RTLEditor (Step 5)")
             # Editor iteration
             for i in range(self.rtl_selected_candidates):
                 logger.info(
@@ -258,10 +237,6 @@ class TopAgent:
         if not is_sim_pass:  # Run if keep failing before last try
             is_sim_pass, _, _ = self.sim_reviewer.review()
 
-        logger.info(
-            "[T13-trace] run_instance normal exit: is_sim_pass=%s rtl_need_fix=%s",
-            is_sim_pass, rtl_need_fix,
-        )
         return is_sim_pass, rtl_code
 
     def run_instance_ablation(self, spec: str) -> Tuple[bool, str]:
