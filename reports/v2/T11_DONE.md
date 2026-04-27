@@ -78,13 +78,26 @@ mage.token_counter.log:
 3 SimJudge verdicts observed, all `tb_needs_fix: true` — stable verdict, no
 oscillation.
 
-**Run 2 — Prob003_step_one** (5probs baseline set, 45min cap, completed in
-12m04s). Output at `log_t11_prob003_verify_0/`:
+**Run 2 — Prob003_step_one, qwen2.5-coder:32b** (5probs baseline set, 45min
+cap, completed in 12m04s). Output at `log_t11_prob003_verify_0/`:
 
 - `record.json`: `is_pass: true`, `failure_type: "pipeline_assert"`,
   `error_msg: "tb_need_fix should be False. sim_log: {tb.sv:7 syntax error}"`
 - 4 TBGenerator calls, 4 SimJudge calls (all `temp=0.0`), 0 RTLEditor rounds
 - All 4 SimJudge verdicts: `tb_needs_fix: true` (stable)
+
+**Run 3 — Prob003_step_one, qwen2.5-coder:7b** (same problem, smaller model,
+45min cap, completed in 2m27s). Output at `log_t11_7b_prob003_verify_0/`:
+
+- `record.json`: `is_pass: true`, `failure_type: "pipeline_assert"`,
+  `error_msg: "rtl_need_fix should be True only when sim_mismatch_cnt > 0"`
+- 4 TBGenerator + 1 RTLGenerator + 4 SimJudge calls (9 total)
+- **SimJudge verdicts: 3 true / 1 false** — first observed oscillation under
+  T11
+- 0 RTLEditor rounds (judge stayed in TB-loop, fallback produced pass)
+
+Per-agent temp routing identical across all 3 runs:
+`SimJudge=0.0, TBGenerator=0.85, RTLGenerator=0.85`.
 
 ### Per-agent temperature log route — PRIMARY T11.4 acceptance
 
@@ -105,42 +118,67 @@ This is the mechanical invariant T11 is defined by (spec §T11.4):
 
 ## Mechanism observation — honest framing
 
+### qwen2.5-coder:32b
+
 The 5-problem baseline (`log_ollama_32b_5probs_0/`) that T11 was designed
 against does **not** actually exhibit verdict-level oscillation on Prob003
 under `qwen2.5-coder:32b`: T9's baseline for Prob003 already shows 4
-`true` / 0 `false` (not the 4T/4F oscillation I initially misremembered
-when planning T11). On this test problem, T11's behavioral effect is
-therefore **observationally null**: baseline was already `true`-locked;
-T11 keeps it `true`-locked with lower variance. Agent-count sequence and
-final `pipeline_assert` classification match baseline bit-for-bit. The
+`true` / 0 `false`. On 32B, T11's behavioral effect is therefore
+**observationally null**: baseline was already `true`-locked; T11 keeps it
+`true`-locked with lower variance. Agent-count sequence and final
+`pipeline_assert` classification match baseline bit-for-bit. The
 runner-level `sim_review_golden_benchmark` fallback produces the
 `is_pass=true` in both cases.
 
 Prob127 (T9 hard set) also presents as `true`-locked under T11 (3/3 `true`
-in the partial log). Hard-set problems were exactly where I expected
-oscillation to show; under the 32B ollama model they don't exhibit it.
+in the partial log). Under 32B these problems don't exhibit oscillation.
 
-**What this means:** T11's code-level intervention is correct, wired, and
-logged (primary acceptance met). The *behavioral* hypothesis (temp=0
-breaks oscillation → Debug Agent triggers) is **not falsifiable on the
-current corpus** because the corpus under `qwen2.5-coder:32b` shows
-`true`-lock rather than oscillation as the dominant TB-loop failure mode.
-Testing the behavioral hypothesis would require a problem/model
-combination that actually oscillates at baseline — candidates to probe
-in a future task: `qwen2.5-coder:7b` (T10 smoke on Prob005 showed one
-`pipeline_assert` path) or a different benchmark split.
+### qwen2.5-coder:7b — actual mechanism evidence
+
+Re-running the same Prob003 under the smaller `qwen2.5-coder:7b` model
+**did** produce verdict-level variation under T11: 3 `true` + 1 `false`
+across 4 SimJudge calls. Comparison against T9's 7B baseline:
+
+| Metric                   | 7B baseline (T9, log_ollama_5probs_0) | 7B + T11 (log_t11_7b_prob003_verify_0) |
+|--------------------------|----------------------------------------|----------------------------------------|
+| is_pass                  | **false**                              | **true**                               |
+| SimJudge verdicts        | 1 true / 0 false (early crash)         | 3 true / 1 false                       |
+| Agent chat calls         | 6                                      | 9                                      |
+| RTLEditor rounds         | 0                                      | 0                                      |
+| Run time                 | 2m18s (early failure)                  | 2m27s (4 iterations completed)         |
+| failure_type             | (pre-T10, not recorded)                | pipeline_assert                        |
+
+**What this means:** under 7B, T11 changed the observable pipeline
+behavior. The baseline's 7B Prob003 run produced a single SimJudge call
+and crashed before completing the TB loop; under T11 the pipeline ran
+through 4 full iterations and the runner-level fallback succeeded.
+However, oscillation is **not eliminated** at temperature=0 — verdicts
+still flip (3T/1F), demonstrating that prompt context drift between
+iterations (different `failed_tb` / `failed_rtl` payloads each loop)
+contributes more variance than sampling temperature does. This is a
+mechanism finding, not just an acceptance-test result.
+
+The Debug Agent / RTLEditor branch was still not reached: the judge
+remained in the TB-loop. Triggering RTLEditor would require either (a) a
+problem where the judge eventually returns `false` and stays there, or
+(b) a different judge-prompt design that escalates after N consecutive
+`true` verdicts. Both are out of T11 scope and noted as follow-ups.
 
 ## Metrics
 
-| Metric                          | Baseline (T9, temp=0.85)  | T11 (temp=0.0)            |
-|---------------------------------|---------------------------|---------------------------|
-| Prob003 SimJudge verdicts       | 4 true / 0 false          | 4 true / 0 false          |
-| Prob003 RTLEditor rounds        | 0                         | 0                         |
-| Prob003 is_pass                 | true                      | true                      |
-| Prob003 failure_type            | (pre-T10, not recorded)   | pipeline_assert           |
-| Prob127 SimJudge verdicts (partial) | n/a (not in 5probs set) | 3 true / 0 false          |
-| Per-agent temp logging present  | no                        | yes (new)                 |
-| SimJudge routed at temp=0.0     | no                        | yes (verified in logs)    |
+| Metric                              | Baseline (T9, temp=0.85)         | T11 (temp=0.0)                   |
+|-------------------------------------|----------------------------------|----------------------------------|
+| Prob003 32B SimJudge verdicts       | 4 true / 0 false                 | 4 true / 0 false                 |
+| Prob003 32B RTLEditor rounds        | 0                                | 0                                |
+| Prob003 32B is_pass                 | true                             | true                             |
+| Prob003 32B failure_type            | (pre-T10, not recorded)          | pipeline_assert                  |
+| Prob003 7B SimJudge verdicts        | 1 true / 0 false (early crash)   | **3 true / 1 false**             |
+| Prob003 7B RTLEditor rounds         | 0                                | 0                                |
+| Prob003 7B is_pass                  | **false**                        | **true**                         |
+| Prob003 7B agent chat calls         | 6                                | 9                                |
+| Prob127 32B SimJudge verdicts       | n/a (not in 5probs set)          | 3 true / 0 false (partial)       |
+| Per-agent temp logging present      | no                               | yes (new)                        |
+| SimJudge routed at temp=0.0         | no                               | yes (verified in logs)           |
 
 ## Notes
 
