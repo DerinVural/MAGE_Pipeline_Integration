@@ -35,6 +35,7 @@ class TopAgent:
         self.log_path = "./log"
         self.golden_tb_path: str | None = None
         self.golden_rtl_blackbox_path: str | None = None
+        self.bypass_tb_gen: bool = False
         self.tb_gen: TBGenerator | None = None
         self.rtl_gen: RTLGenerator | None = None
         self.sim_reviewer: SimReviewer | None = None
@@ -57,6 +58,16 @@ class TopAgent:
         else:
             switch_log_to_stdout()
 
+    def set_bypass_tb_gen(self, bypass_tb_gen: bool) -> None:
+        self.bypass_tb_gen = bypass_tb_gen
+
+    def _load_golden_tb_directly(self) -> Tuple[str, str]:
+        assert self.golden_tb_path is not None
+        with open(self.golden_tb_path, "r") as f:
+            testbench = f.read()
+        interface = ""
+        return testbench, interface
+
     def write_output(self, content: str, file_name: str) -> None:
         assert self.output_dir_per_run
         with open(f"{self.output_dir_per_run}/{file_name}", "w") as f:
@@ -77,9 +88,21 @@ class TopAgent:
 
         self.tb_gen.reset()
         self.tb_gen.set_golden_tb_path(self.golden_tb_path)
-        if not self.golden_tb_path:
-            logger.info("No golden testbench provided")
-        testbench, interface = self.tb_gen.chat(spec)
+        if self.bypass_tb_gen:
+            if not self.golden_tb_path:
+                raise ValueError(
+                    "bypass_tb_gen=True requires a golden_tb_path; received None. "
+                    "Either provide a golden testbench or set bypass_tb_gen=False."
+                )
+            testbench, interface = self._load_golden_tb_directly()
+            logger.info(
+                "TB Gen BYPASSED — loaded golden testbench from %s",
+                self.golden_tb_path,
+            )
+        else:
+            if not self.golden_tb_path:
+                logger.info("No golden testbench provided")
+            testbench, interface = self.tb_gen.chat(spec)
         logger.info("Initial tb:")
         logger.info(testbench)
         logger.info("Initial if:")
@@ -114,6 +137,12 @@ class TopAgent:
             self.sim_judge.reset()
             tb_need_fix = self.sim_judge.chat(spec, sim_log, rtl_code, testbench)
             if tb_need_fix:
+                if self.bypass_tb_gen:
+                    logger.info(
+                        "TB Gen BYPASSED in revision loop — judge requested fix, "
+                        "but golden TB is never modified."
+                    )
+                    continue
                 self.tb_gen.reset()
                 if i == 0:
                     self.tb_gen.gen_display_queue = False

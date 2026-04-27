@@ -37,6 +37,7 @@ args_dict = {
     "top_p": 0.95,
     "max_token": 8192,
     "use_golden_tb_in_mage": True,
+    "bypass_tb_gen": False,
     "key_cfg_path": "./key.cfg",
 }
 
@@ -67,6 +68,7 @@ def run_round(args: argparse.Namespace, llm: LLM):
     agent.set_output_path(f"./output_{args.run_identifier}")
     agent.set_log_path(f"./log_{args.run_identifier}")
     agent.set_redirect_log(True)
+    agent.set_bypass_tb_gen(getattr(args, "bypass_tb_gen", False))
     # agent.set_ablation(True)
     record_file = f"./output_{args.run_identifier}/record.json"
     record_json: Dict[str, Dict[str, Any]] = {"record_per_run": {}, "total_record": {}}
