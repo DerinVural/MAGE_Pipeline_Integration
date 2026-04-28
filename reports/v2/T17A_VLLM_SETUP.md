@@ -217,3 +217,24 @@ to 256 to boot.
 - `/workspace/MAGE_Pipeline_Integration/log_t17a_{m1,m2new,m3,m4,m5,m6}_smoke_0/`
 - `/workspace/m2new_smoke.log`, `/workspace/m4_smoke.log`,
   `/workspace/m6_smoke.log`, `/workspace/m6_serve.log`
+
+## Push & branch
+
+The integration code, this report, and the matching spec were pushed
+together on a dedicated feature branch (kept off `feat/mage-open-v2`
+per PM directive — vLLM work lives on its own branch until reviewed).
+
+- **Branch:** `feat/t17a-vllm-provider` (forked from `feat/mage-open-v2`)
+- **Files in commit:**
+  - `src/mage/gen_config.py` — new `provider == "vllm"` branch in
+    `get_llm()` (21 lines added; OpenAILike adapter with
+    `response_format={"type": "json_object"}`)
+  - `reports/v2/T17A_VLLM_SETUP.md` — this report
+  - `tasks/T17A_VLLM_SETUP.md` — original spec (paired with report
+    per the standing report+spec push rule)
+- **PR-ready URL:**
+  `https://github.com/DerinVural/MAGE_Pipeline_Integration/pull/new/feat/t17a-vllm-provider`
+
+The branch is pushed and tracked against `origin/feat/t17a-vllm-provider`.
+No merge to `feat/mage-open-v2` yet — that's a PM call after review of
+§F1 / §F2 follow-ups.
