@@ -101,6 +101,26 @@ def get_llm(**kwargs) -> LLM:
             )
         except Exception as e:
             raise Exception(f"gen_config: Failed to get {provider} LLM") from e
+    elif provider == "vllm":
+        try:
+            from llama_index.llms.openai_like import OpenAILike
+            api_base = (
+                kwargs.get("base_url")
+                or os.environ.get("VLLM_BASE_URL")
+                or "http://localhost:8000/v1"
+            )
+            llm: LLM = OpenAILike(
+                model=kwargs["model"],
+                api_base=api_base,
+                api_key="EMPTY",
+                max_tokens=kwargs["max_token"],
+                is_chat_model=True,
+                is_function_calling_model=False,
+                timeout=kwargs.get("request_timeout", 600.0),
+                additional_kwargs={"response_format": {"type": "json_object"}},
+            )
+        except Exception as e:
+            raise Exception(f"gen_config: Failed to get {provider} LLM") from e
     elif kwargs["provider"] == "vertexanthropic":
         service_account_path = os.path.expanduser(cfg["VERTEX_SERVICE_ACCOUNT_PATH"])
         if not os.path.exists(service_account_path):
