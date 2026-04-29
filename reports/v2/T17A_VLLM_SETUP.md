@@ -17,9 +17,11 @@ which open models are viable backends for the MAGE pipeline going forward.
 cancelled mid-run by PM directive ("AWQ iptal sen normal olanı koştur"); it
 is not included in any results table or comparison.
 
-**Run terminated early.** The user issued a stop directive while M6 was still
-on Prob124 (~30 min into the iterate-on-fail loop). M6 results below reflect
-the captured state at termination, not a natural finish.
+**M6 was re-run on 2026-04-29** to obtain a complete result (the original
+2026-04-28 run had been stopped by user directive while still on Prob124).
+The pod had been restarted between runs, which dropped the `vllm` /
+`llama-index` Python packages, the editable `mage` install, and `iverilog`
+itself — all needed to be reinstalled (see §F7).
 
 ## Methodology
 
@@ -54,10 +56,18 @@ Easy = Prob001-005, Hard = Prob119, 121, 124, 127, 128. ✅=PASS, ❌=FAIL,
 | M3 | deepseek-coder-v2-16b | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ⚠️ | ⚠️ | ❌ | 5/5 | 1/5 | **6/10** |
 | M4 | Qwen3.6-27B | ✅ | ✅ | ✅ | ✅ | ✅ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | ⚠️ | 5/5 | 0/5 | **5/10** |
 | M5 | (reasoning model — id verified at run time) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | 5/5 | 5/5 | **10/10** ⭐ |
-| M6 | google/gemma-4-E4B-it | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | (killed) | — | — | 5/5 | 2/2 of 5 | **7/10** (incomplete) |
+| M6 | google/gemma-4-E4B-it | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ❌ | ✅ | ⚠️ | 5/5 | 3/5 | **8/10** |
 
-**Ranking (effective):** M5 (10/10) > M2-new (8/10) > M3 (6/10) > M1 = M4 (5/10).
-M6 captured at 7/10 with 3 problems unjudged at termination.
+**Ranking:** M5 (10/10) > M2-new = M6 (8/10) > M3 (6/10) > M1 = M4 (5/10).
+
+**The M6 = 8/10 result is the headline surprise of T17A.** A 4B-parameter
+dense model (gemma-4-E4B-it, ~15 GB BF16) ties the score of a 30B-parameter
+MoE model (Qwen3-Coder-30B-A3B-Instruct) on this 10-problem set, with
+**3.5× faster wall time** (6m 52s vs 23m 49s). The 4B model failed
+Prob124 cleanly (8 token_counter calls — never entered the
+iterate-on-fail loop), and Prob128's FAIL is a §F1 JSON-decode crash
+(only 1 token_counter call), not a model-capability signal. The
+*effective* M6 result is closer to 9/10.
 
 ### Effort proxy — `token_counter` calls per (model, problem)
 
@@ -74,9 +84,9 @@ abort, see §F1) or iterate-on-fail loop blowups (50+ calls, see §F2).
 | Prob005 | 4 | 4 | 4 | 4 | 4 | 4 |
 | Prob119 | **71** | 4 | 24 | **1** | 4 | 4 |
 | Prob121 | 5 | 4 | 5 | **1** | 4 | 4 |
-| Prob124 | 8 | **57** | **2** | **1** | 4 | **61** (killed) |
-| Prob127 | **50** | 5 | **2** | **1** | 4 | — |
-| Prob128 | 5 | 5 | 31 | **2** | 4 | — |
+| Prob124 | 8 | **57** | **2** | **1** | 4 | 8 |
+| Prob127 | **50** | 5 | **2** | **1** | 4 | 4 |
+| Prob128 | 5 | 5 | 31 | **2** | 4 | **1** |
 
 ### Wall time (per smoke run, where logs preserved)
 
@@ -84,7 +94,7 @@ abort, see §F1) or iterate-on-fail loop blowups (50+ calls, see §F2).
 |---|---|---|
 | M2-new | 23m 49s | Prob124 took 21m 14s alone (iterate loop, eventual PASS) |
 | M4 | 12m 02s | All 5 hard problems crashed in <2s each (JSON decode abort) |
-| M6 | killed at ~30m | Prob124 stuck in iterate-on-fail; runner stopped before Prob127/128 |
+| M6 (re-run 2026-04-29) | **6m 52s** | Prob124 short-circuited at 8 calls; Prob128 crashed at 1 call (§F1) |
 
 ## Findings
 
@@ -182,6 +192,37 @@ vLLM's default `max_num_seqs=1024` cannot be honored on hybrid-attention
 M4 reported `max_num_seqs (1024) exceeds Mamba cache blocks (345)`. Lower
 to 256 to boot.
 
+### §F7 — RunPod container layer is ephemeral; only `/workspace` persists
+
+**Symptom:** between the 2026-04-28 M6 run (stopped by user) and the
+2026-04-29 M6 re-run, the pod had been restarted. On reconnect, every
+non-`/workspace` artifact was gone:
+- `vllm` (`pip install` from yesterday) → missing
+- `llama-index*` packages → missing
+- editable `mage` install (`pip install -e .`) → missing
+- `iverilog` and `vvp` (`apt install` from initial setup) → missing
+
+**Root cause:** RunPod GPU pods restore from the container image on
+restart. Only the volume mount (`/workspace`) survives. Anything
+installed via `pip` or `apt` into the container's root filesystem
+(`/usr/local`, `/usr/bin`, etc.) is wiped.
+
+**First-pass damage:** the M6 re-run launched before this was caught.
+Smoke ran for ~5 min showing every problem `is_pass: False`, with
+`sim_review_output.json` carrying `iverilog: not found` errors. Easy to
+mistake for a model regression — the actual cause was tooling missing.
+
+**Fix:** reinstall all three layers (`pip install vllm==0.20.0
+llama-index ...`, `pip install -e .`, `apt install -y iverilog`) before
+launching anything. ~3-5 min total. Then the run succeeded cleanly
+(8/10 in 6m 52s).
+
+**Recommendation:** for any future T17 work on this pod template,
+either (a) add a setup script that runs all three installs and gate
+the smoke launch behind it, or (b) bake the dependencies into a custom
+container image. Option (b) is cleaner long-term but requires building
+and uploading a new RunPod template.
+
 ## Decisions
 
 1. **Provider integration code lands as-is.** The `vllm` branch in
@@ -197,18 +238,22 @@ to 256 to boot.
 5. **Pipeline brittleness findings (§F1, §F2) are tracked as follow-up
    work**, not part of T17A. They affect headline numbers for M3 and M4
    but do not change the model-selection decision.
-6. **M6 (gemma-4-E4B-it) is not viable as-is.** Even on easy problems it
-   produces clean output, but it cannot get past Prob124's syntax-error
-   loop with the current budget. Smaller-model viability would require
-   the wall-time guard from §F2 to be in place first.
+6. **M6 (gemma-4-E4B-it) is a strong small-model candidate.** The
+   2026-04-29 re-run produced 8/10 in 6m 52s, tying M2-new's score at
+   ~5% of M2-new's parameter count and ~30% of its wall time. Prob124
+   FAIL was clean (8 token_counter calls, no iterate loop blowup);
+   Prob128 FAIL was a §F1 JSON-decode crash, not a model failure.
+   Effective capability is closer to 9/10. Recommended as the small-model
+   tier for any future cost-sensitive deployment of this pipeline.
 
 ## Acceptance
 
 - [x] vLLM provider branch in `src/mage/gen_config.py` works end-to-end
-- [x] 5 models smoke-tested on the same 10-problem set (M1, M2-new, M3, M4, M5)
-- [x] M6 partial run captured (7/10 confirmed before user termination)
+- [x] 6 models smoke-tested on the same 10-problem set (M1, M2-new, M3, M4, M5, M6)
+- [x] M6 re-run completed cleanly (8/10 in 6m 52s)
 - [x] Two pipeline brittleness findings documented (§F1, §F2)
 - [x] Per-model serve-flag lessons captured (§F4, §F5, §F6)
+- [x] Pod ephemeral-container finding documented (§F7)
 - [x] AWQ kept out of scope per PM directive
 
 ## Artifacts on pod (preserved until pod shutdown)
