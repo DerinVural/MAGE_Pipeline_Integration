@@ -121,6 +121,12 @@ def parse_json_robust(content: str) -> dict:
     Raises MageJsonParseError when every strategy fails. The original
     content is preserved on the exception for upstream logging.
     """
+    if content is None:
+        raise MageJsonParseError(
+            "parse_json_robust received None (model returned no content)",
+            original_content="",
+        )
+
     try:
         result = json.loads(content, strict=False)
         if isinstance(result, dict):

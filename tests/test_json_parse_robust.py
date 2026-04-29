@@ -54,6 +54,13 @@ def test_nested_json_handled():
     assert parse_json_robust('{"a": {"b": "c"}}') == {"a": {"b": "c"}}
 
 
+def test_none_input_raises_mage_error():
+    with pytest.raises(MageJsonParseError) as exc_info:
+        parse_json_robust(None)
+    assert "None" in str(exc_info.value)
+    assert exc_info.value.original_content == ""
+
+
 def test_real_t17a_failure_case():
     raw = (
         "I'll analyze the testbench failure for the FSM3 problem.\n\n"

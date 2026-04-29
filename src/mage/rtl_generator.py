@@ -8,7 +8,7 @@ from .log_utils import get_logger
 from .prompts import FAILED_TRIAL_PROMPT, ORDER_PROMPT, RTL_4_SHOT_EXAMPLES
 from .sim_reviewer import check_syntax
 from .token_counter import TokenCounter, TokenCounterCached
-from .utils import add_lineno, parse_json_robust
+from .utils import MageJsonParseError, add_lineno, parse_json_robust
 
 logger = get_logger(__name__)
 
@@ -209,7 +209,7 @@ class RTLGenerator:
             ret = RTLOutputFormat(
                 reasoning=output_json_obj["reasoning"], module=output_json_obj["module"]
             )
-        except json.decoder.JSONDecodeError as e:
+        except (json.decoder.JSONDecodeError, MageJsonParseError) as e:
             ret = RTLOutputFormat(reasoning=f"Json Decode Error: {str(e)}", module="")
         return ret
 
