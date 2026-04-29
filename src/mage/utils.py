@@ -100,6 +100,86 @@ def _escape_unescaped_in_strings(s: str) -> str:
     return "".join(out)
 
 
+class MageJsonParseError(Exception):
+    """Raised when parse_json_robust exhausts all fallback strategies."""
+
+    def __init__(self, message: str, original_content: str):
+        super().__init__(message)
+        self.original_content = original_content
+
+
+def parse_json_robust(content: str) -> dict:
+    """Parse a JSON dict from a model response with fallbacks.
+
+    Tries (in order):
+      1. Strict json.loads on the raw content
+      2. Strict json.loads after stripping markdown fences
+      3. Strict json.loads on the FIRST {...} block extracted via regex
+      4. Strict json.loads on the LAST {...} block (chain-of-thought tail)
+      5. dirtyjson on the original content (forgiving parser)
+
+    Raises MageJsonParseError when every strategy fails. The original
+    content is preserved on the exception for upstream logging.
+    """
+    try:
+        result = json.loads(content, strict=False)
+        if isinstance(result, dict):
+            return result
+    except json.JSONDecodeError:
+        pass
+
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*\n", "", cleaned)
+        cleaned = re.sub(r"\n```\s*$", "", cleaned)
+        try:
+            result = json.loads(cleaned, strict=False)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    first_match = re.search(r"\{.*\}", content, re.DOTALL)
+    if first_match:
+        try:
+            result = json.loads(first_match.group(0), strict=False)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    last_open = content.rfind("{")
+    if last_open >= 0:
+        depth = 0
+        for i in range(last_open, len(content)):
+            if content[i] == "{":
+                depth += 1
+            elif content[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = content[last_open : i + 1]
+                    try:
+                        result = json.loads(candidate, strict=False)
+                        if isinstance(result, dict):
+                            return result
+                    except json.JSONDecodeError:
+                        pass
+                    break
+
+    if dirtyjson is not None:
+        try:
+            result = dirtyjson.loads(content)
+            if isinstance(result, dict):
+                return dict(result)
+        except Exception:
+            pass
+
+    raise MageJsonParseError(
+        f"All JSON parse strategies failed. Content starts: {content[:200]!r}",
+        original_content=content,
+    )
+
+
 def reformat_json_string(output: str) -> str:
     """Best-effort normalizer for LLM JSON output.
 

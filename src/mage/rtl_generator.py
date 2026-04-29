@@ -8,7 +8,7 @@ from .log_utils import get_logger
 from .prompts import FAILED_TRIAL_PROMPT, ORDER_PROMPT, RTL_4_SHOT_EXAMPLES
 from .sim_reviewer import check_syntax
 from .token_counter import TokenCounter, TokenCounterCached
-from .utils import add_lineno
+from .utils import add_lineno, parse_json_robust
 
 logger = get_logger(__name__)
 
@@ -205,7 +205,7 @@ class RTLGenerator:
 
     def parse_output(self, response: ChatResponse) -> RTLOutputFormat:
         try:
-            output_json_obj: Dict = json.loads(response.message.content, strict=False)
+            output_json_obj: Dict = parse_json_robust(response.message.content)
             ret = RTLOutputFormat(
                 reasoning=output_json_obj["reasoning"], module=output_json_obj["module"]
             )
