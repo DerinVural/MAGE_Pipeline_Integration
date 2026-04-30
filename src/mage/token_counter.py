@@ -4,7 +4,7 @@ from typing import Dict, List, Tuple
 
 import tiktoken
 from anthropic.types import Usage
-from llama_index.core.base.llms.types import ChatMessage, ChatResponse
+from llama_index.core.base.llms.types import ChatMessage, ChatResponse, TextBlock
 from llama_index.core.llms.llm import LLM
 from llama_index.llms.anthropic import Anthropic
 from llama_index.llms.ollama import Ollama
@@ -18,6 +18,28 @@ from .log_utils import get_logger
 from .utils import reformat_json_string
 
 logger = get_logger(__name__)
+
+
+def _flatten_response_content(response: ChatResponse) -> None:
+    """Collapse multi-block ChatMessage content into a single TextBlock.
+
+    Newer llama_index versions return ChatMessage with multiple blocks
+    (e.g. reasoning + answer for thinking-mode models like gemma-4-A4B).
+    Reading or setting `.content` on a multi-block message raises
+    ValueError. We collapse to a single TextBlock so downstream code
+    that uses `.content` continues to work.
+    """
+    msg = response.message
+    blocks = getattr(msg, "blocks", None)
+    if blocks is None or len(blocks) <= 1:
+        return
+    text_parts = []
+    for b in blocks:
+        t = getattr(b, "text", None)
+        if t:
+            text_parts.append(t)
+    msg.blocks = [TextBlock(text="".join(text_parts))]
+
 
 settings = get_exp_setting()
 setting_args = {
@@ -187,6 +209,7 @@ class TokenCounter:
         response = llm.chat(
             messages, top_p=top_p, temperature=temperature
         )
+        _flatten_response_content(response)
         out_token_cnt = self.count(response.message.content)
         token_cnt = TokenCount(in_token_cnt=in_token_cnt, out_token_cnt=out_token_cnt)
         self.token_cnts[self.cur_tag].append(token_cnt)
@@ -207,6 +230,7 @@ class TokenCounter:
         response = await llm.achat(
             messages, top_p=top_p, temperature=temperature
         )
+        _flatten_response_content(response)
         out_token_cnt = self.count(response.message.content)
         token_cnt = TokenCount(in_token_cnt=in_token_cnt, out_token_cnt=out_token_cnt)
         async with self.token_cnts_lock:
@@ -336,6 +360,7 @@ class TokenCounterCached(TokenCounter):
             top_p=top_p,
             temperature=temperature,
         )
+        _flatten_response_content(response)
         usage = response.raw["usage"]
         assert isinstance(usage, Usage), f"Unknown usage type: {type(usage)}"
         token_cnt = TokenCountCached(
@@ -371,6 +396,7 @@ class TokenCounterCached(TokenCounter):
             top_p=top_p,
             temperature=temperature,
         )
+        _flatten_response_content(response)
         usage = response.raw["usage"]
         assert isinstance(usage, Usage), f"Unknown usage type: {type(usage)}"
         token_cnt = TokenCountCached(
