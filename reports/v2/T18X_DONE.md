@@ -3,8 +3,8 @@
 **Date:** 2026-04-29
 **Branch:** `feat/t17a-vllm-provider`
 **Spec:** `tasks/T18X_PARSE_ROBUSTNESS_FOLLOWUP.md` (executed scope: option 3)
-**Smoke status:** 9/10 problems completed (user-stopped before Prob128)
-**Headline:** **F1 regression closed** — 9/9 completed problems pass; widened catch + None guard demonstrably active in production.
+**Smoke status:** 10/10 problems completed (Prob128 backfilled on a fresh pod 2026-04-30)
+**Headline:** **F1 regression closed** — 9/10 problems pass; widened catch + None guard demonstrably active in production. Prob128 fail is model-quality, not parser-failure (see §F6).
 
 ---
 
@@ -47,7 +47,7 @@ Code commit: `56a12d2` `[T18.x] Widen exception handlers + None guard for parse_
 | 7 | Prob121_2014_q3bfsm | 3 | 4 | True | retry path activated 2× then succeeded |
 | 8 | Prob124_rule110 | 5 | 6 | True | **retry path activated to max** — 5 attempts, 6 total parse errors across attempts, agent recovered on the 5th |
 | 9 | Prob127_lemmings1 | 1 | 0 | True | clean one-shot |
-| 10 | Prob128 | — | — | not started | smoke stopped by user before reaching this slot |
+| 10 | Prob128_fsm_ps2 | 2 | 1 | **False** | backfilled 2026-04-30; widened catch active (no crash), but RTLGenerator exhausted all trials without producing a parseable+syntax-correct module → no `rtl.sv` written → golden sim fail. **Model-quality, not parser-failure** (see §F6). |
 
 `token-counter calls` = number of `count_chat` invocations in `mage.token_counter.log` (proxy for retry-loop iterations the agent made).
 `json_errors emitted` = `Json Decode Error` + `MageJsonParseError` count across all sub-logs in the problem dir.
@@ -85,7 +85,7 @@ in `rtl_generator.py:212` / `tb_generator.py:288` did NOT catch the new
 | Suite slice | T17A (Qwen3.6-27B) | T18 (same model + parser fallback) | T18.x (T18 + widened catch + None guard) |
 |---|---|---|---|
 | M4 5-easy pass | 5/5 | 5/5 | 5/5 (4 was retried this run) |
-| M4 5-hard pass | not measured cleanly* | 0/5 (regression, agent crashes) | **4/4 of completed hard problems pass** (Prob128 not reached) |
+| M4 5-hard pass | not measured cleanly* | 0/5 (regression, agent crashes) | **4/5 pass** (Prob119/121/124/127 pass; Prob128 fail = model exhausts retries, no crash) |
 | Prob119 (T18 regression site) | n/a | crash after 4 json errors | **PASS, 0 json errors** |
 | Outer-loop retry on parse failure | crash | crash (narrow except) | retries up to `max_trials` |
 
@@ -95,17 +95,13 @@ in `rtl_generator.py:212` / `tb_generator.py:288` did NOT catch the new
 
 ## What we did NOT measure
 
-- **Prob128.** Not started — smoke was stopped at user request before
-  the 10th problem began. The other 9 problems were complete (all 14
-  expected files present per problem dir).
-- **Final pass-rate headline number out of 10.** Because Prob128 never
-  ran, we cannot quote "X/10". The honest framing is **9/9 completed
-  problems pass on T18.x** (vs T18's 5/10 with the regression).
-- **Token cost / wall-clock comparison vs T18 baseline.** Smoke ran ~22
-  min for 9 problems; T18's 10-problem M4 verify took ~12 min. The
-  ~2× elapsed is consistent with the hard-cases-now-retry hypothesis
-  (Prob121 + Prob124 alone consumed ~12 min via their retry loops).
-  Real per-problem wall-clock comparison needs a clean 10/10 rerun.
+- **Token cost / wall-clock comparison vs T18 baseline.** First smoke
+  ran ~22 min for 9 problems; T18's 10-problem M4 verify took ~12 min.
+  The ~2× elapsed is consistent with the hard-cases-now-retry
+  hypothesis (Prob121 + Prob124 alone consumed ~12 min via their retry
+  loops). Prob128 backfill ran ~7 min on a separate pod, so a clean
+  side-by-side per-problem wall-clock comparison would still need a
+  single 10/10 rerun to be apples-to-apples.
 
 ---
 
@@ -135,6 +131,33 @@ this. Did not trigger in this smoke (model never returned None on the
 
 Pod container layer is ephemeral; only `/workspace` persists. Logs
 pulled to local before pod shutdown.
+
+### F6 — NEW (Prob128 backfill, 2026-04-30)
+
+The backfill run (fresh pod, vLLM v4 same model) reached Prob128 and
+produced **is_pass: False**. Drilling in:
+
+- RTLGenerator emitted exactly 1 `MageJsonParseError` on the first
+  attempt (model output started clean — `{"reasoning": "The task
+  requires implementing a PS/2 mouse protocol message boundary
+  detector...` — but couldn't be parsed even by the dirtyjson
+  fallback; likely truncated mid-string by `max_token=4096`).
+- The widened catch fired correctly (T18.x.2 path) — agent did NOT
+  crash; it dropped the response and continued the outer-trial loop.
+- Across all 5 `max_trials`, no attempt produced a *parseable AND
+  syntax-correct* module. So `rtl.sv` was never written, and the
+  golden testbench failed elaboration with `Unknown module type:
+  TopModule`.
+- This is the same shape of failure as F5 (model-side) — the parser
+  did its job, the retry loop did its job, the model just didn't
+  converge on a clean answer in 5 tries on a hard problem.
+
+**Implication for the headline:** the F1 fix is mechanically and
+functionally correct (no crash, retry loop active, 9/10 pass). The 1
+fail is squarely a **model-capability** result for Qwen3.6-27B on
+Prob128 with `max_token=4096`. A possible mitigation worth noting for
+T19+ is bumping `max_token` to 8192 on hard problems to reduce the
+chance of mid-string truncation, but that is out of T18.x scope.
 
 ### F5 — NEW (out of T18.x scope, T19+ candidate)
 
@@ -174,5 +197,5 @@ Tasks status update:
 
 - T18.x.1, T18.x.2, T18.x.4: **DONE** (commit `56a12d2`)
 - T18.x.3: **DEFERRED** (see `T18X_BLOCKED.md` — needs `do_nothing` design)
-- T18.x.5: **PARTIAL** (smoke stopped at 9/10; F1 closure proven on completed slice)
-- T18.x.6: **PARTIAL** (this report; full 10/10 headline pending a clean rerun)
+- T18.x.5: **DONE** (10/10 measured; F1 closure proven, 9/10 pass)
+- T18.x.6: **DONE** (this report, with Prob128 backfill update)
