@@ -161,23 +161,14 @@ class TopAgent:
             else:
                 break
 
-        if tb_need_fix:
-            logger.warning(
-                "TB revision loop exhausted with tb_need_fix still True; treating as functional fail. sim_log head: %s",
-                sim_log[:300],
-            )
-            return False, f"TB revision exhausted: {sim_log[:200]}"
+        assert not tb_need_fix, f"tb_need_fix should be False. sim_log: {sim_log}"
 
         candidates_info: List[Tuple[str, int, str]] = []
-        if rtl_need_fix and sim_mismatch_cnt <= 0:
-            logger.warning(
-                "rtl_need_fix=True but sim_mismatch_cnt<=0 (compile/elab fail); treating as functional fail. sim_log head: %s",
-                sim_log[:300],
-            )
-            return False, f"RTL compile/elab fail with no mismatch count: {sim_log[:200]}"
-
         if rtl_need_fix:
             # Candidates Generation
+            assert (
+                sim_mismatch_cnt > 0
+            ), f"rtl_need_fix should be True only when sim_mismatch_cnt > 0. sim_log: {sim_log}"
             self.rtl_gen.reset()
             candidates = [
                 self.rtl_gen.chat(
