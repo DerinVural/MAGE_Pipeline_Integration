@@ -24,6 +24,7 @@ def _make_agent(tmpdir):
     agent.golden_tb_path = None
     agent.golden_rtl_blackbox_path = None
     agent.bypass_tb_gen = False
+    agent.per_problem_timeout_min = None
     agent.output_dir_per_run = tmpdir
     agent.tb_gen = MagicMock()
     agent.rtl_gen = MagicMock()
