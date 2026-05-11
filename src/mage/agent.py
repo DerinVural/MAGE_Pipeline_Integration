@@ -2,8 +2,9 @@ import json
 import os
 import re
 import sys
+import time
 import traceback
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 from llama_index.core.llms import LLM
 
@@ -14,6 +15,7 @@ from .sim_judge import SimJudge
 from .sim_reviewer import SimReviewer
 from .tb_generator import TBGenerator
 from .token_counter import TokenCounter, TokenCounterCached
+from .utils import MageTimeoutError
 
 logger = get_logger(__name__)
 
@@ -37,6 +39,7 @@ class TopAgent:
         self.golden_rtl_blackbox_path: str | None = None
         self.bypass_tb_gen: bool = False
         self.golden_tb_format: bool = False
+        self.per_problem_timeout_min: Optional[int] = None
         self.tb_gen: TBGenerator | None = None
         self.rtl_gen: RTLGenerator | None = None
         self.sim_reviewer: SimReviewer | None = None
@@ -65,6 +68,25 @@ class TopAgent:
     def set_golden_tb_format(self, golden_tb_format: bool) -> None:
         self.golden_tb_format = golden_tb_format
 
+    def set_per_problem_timeout_min(self, value: Optional[int]) -> None:
+        self.per_problem_timeout_min = value
+
+    def _check_wall_time(self, problem_start: float) -> None:
+        """Raise MageTimeoutError if per-problem wall-time budget exceeded.
+
+        No-op when per_problem_timeout_min is None (upstream behavior).
+        Called at the top of each retry loop body in run_instance.
+        """
+        if self.per_problem_timeout_min is None:
+            return
+        elapsed = time.time() - problem_start
+        budget = self.per_problem_timeout_min * 60
+        if elapsed > budget:
+            raise MageTimeoutError(
+                timeout_min=self.per_problem_timeout_min,
+                elapsed_sec=elapsed,
+            )
+
     def _load_golden_tb_directly(self) -> Tuple[str, str]:
         assert self.golden_tb_path is not None
         with open(self.golden_tb_path, "r") as f:
@@ -89,6 +111,8 @@ class TopAgent:
         assert self.sim_reviewer
         assert self.sim_judge
         assert self.rtl_edit
+
+        problem_start = time.time()
 
         self.tb_gen.reset()
         self.tb_gen.set_golden_tb_path(self.golden_tb_path)
@@ -132,6 +156,7 @@ class TopAgent:
         rtl_need_fix = True
         sim_log = ""
         for i in range(self.sim_max_retry):
+            self._check_wall_time(problem_start)
             # run simulation judge, overwrite is_sim_pass
             is_sim_pass, sim_mismatch_cnt, sim_log = self.sim_reviewer.review()
             if is_sim_pass:
@@ -189,6 +214,7 @@ class TopAgent:
                     enable_cache=True,
                 )
             for i in range(self.rtl_max_candidates):
+                self._check_wall_time(problem_start)
                 logger.info(
                     f"Candidate generation: round {i + 1} / {self.rtl_max_candidates}"
                 )
@@ -220,6 +246,7 @@ class TopAgent:
         if rtl_need_fix:
             # Editor iteration
             for i in range(self.rtl_selected_candidates):
+                self._check_wall_time(problem_start)
                 logger.info(
                     f"Selected candidate: round {i + 1} / {self.rtl_selected_candidates}"
                 )
@@ -291,6 +318,13 @@ class TopAgent:
             if not ret[0]:
                 failure_type = "functional_mismatch"
                 error_msg = ret[1]
+        except MageTimeoutError:
+            exc_info = sys.exc_info()
+            traceback.print_exception(*exc_info)
+            failure_type = "timeout"
+            error_msg = str(exc_info[1])
+            trace = "".join(traceback.format_exception(*exc_info))
+            ret = False, f"Exception: {exc_info[1]}"
         except AssertionError:
             exc_info = sys.exc_info()
             traceback.print_exception(*exc_info)

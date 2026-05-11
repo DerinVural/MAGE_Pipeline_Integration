@@ -225,6 +225,68 @@ class MageJsonParseError(Exception):
         self.original_content = original_content
 
 
+class MageTimeoutError(Exception):
+    """Raised when a single problem exceeds the per-problem wall-time budget.
+
+    The outer _run handler catches this and tags failure_type='timeout' in
+    failure_info.json. Default per_problem_timeout_min=None disables the
+    guard entirely (upstream behavior bit-identical).
+    """
+
+    def __init__(self, timeout_min: int, elapsed_sec: float):
+        super().__init__(
+            f"Per-problem wall-time exceeded ({timeout_min} min, "
+            f"elapsed {elapsed_sec:.1f}s)"
+        )
+        self.timeout_min = timeout_min
+        self.elapsed_sec = elapsed_sec
+
+
+class MageSchemaError(Exception):
+    """Raised when a required key is missing from a parsed JSON dict.
+
+    Used by agent parse_output methods to signal that the model returned
+    valid JSON but with an unexpected shape (missing critical key). The
+    widened except in rtl_generator / tb_generator catches this and routes
+    into the retry loop.
+    """
+
+    def __init__(self, message: str, missing_key: str, dict_keys: list):
+        super().__init__(message)
+        self.missing_key = missing_key
+        self.dict_keys = dict_keys
+
+
+def safe_get(d: dict, key: str, default=None, *, critical: bool = False):
+    """Get a key from a dict with explicit critical/non-critical semantics.
+
+    Args:
+        d: the dict to read from
+        key: the key to look up
+        default: value to return if key is missing (used only when critical=False)
+        critical: if True and key is missing, raise MageSchemaError; if
+                  False and key is missing, return default. Keyword-only so
+                  call sites must spell it out — accidental misuse blocked.
+
+    Returns:
+        d[key] if present.
+        default if missing and not critical.
+
+    Raises:
+        MageSchemaError: if missing and critical=True.
+    """
+    if key in d:
+        return d[key]
+    if critical:
+        raise MageSchemaError(
+            f"Required key '{key}' missing from model output. "
+            f"Available keys: {list(d.keys())}",
+            missing_key=key,
+            dict_keys=list(d.keys()),
+        )
+    return default
+
+
 def parse_json_robust(content: str) -> dict:
     """Parse a JSON dict from a model response with fallbacks.
 

@@ -7,7 +7,7 @@ from pydantic import BaseModel
 from .log_utils import get_logger
 from .prompts import FAILED_TRIAL_PROMPT, ORDER_PROMPT, TB_4_SHOT_EXAMPLES
 from .token_counter import TokenCounter, TokenCounterCached
-from .utils import MageJsonParseError, add_lineno, parse_json_robust
+from .utils import MageJsonParseError, MageSchemaError, add_lineno, parse_json_robust, safe_get
 
 logger = get_logger(__name__)
 
@@ -282,10 +282,10 @@ class TBGenerator:
             output_json_obj: Dict = parse_json_robust(response.message.content)
             ret = TBOutputFormat(
                 reasoning=output_json_obj["reasoning"],
-                interface=output_json_obj["interface"],
-                testbench=output_json_obj["testbench"],
+                interface=safe_get(output_json_obj, "interface", critical=True),
+                testbench=safe_get(output_json_obj, "testbench", critical=True),
             )
-        except (json.decoder.JSONDecodeError, MageJsonParseError) as e:
+        except (json.decoder.JSONDecodeError, MageJsonParseError, MageSchemaError) as e:
             ret = TBOutputFormat(
                 reasoning=f"Json Decode Error: {str(e)}",
                 interface="",
