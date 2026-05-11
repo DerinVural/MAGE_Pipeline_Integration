@@ -100,6 +100,231 @@ def _escape_unescaped_in_strings(s: str) -> str:
     return "".join(out)
 
 
+def _fix_unescaped_quotes_in_values(s: str) -> str:
+    """Repair JSON where the model forgot to escape double-quotes inside string
+    values — common when the value contains source code with $display("..."),
+    $sformatf, etc.
+
+    Schema-aware heuristic: for the first string per key (which is the value),
+    an unescaped " is treated as terminator only if it is followed by:
+      - whitespace + ',' + whitespace + '"<word>"' + whitespace + ':' (next key), or
+      - whitespace + '}' or ']' (end of object/array), or
+      - end-of-input.
+    Otherwise the quote is escaped as backslash+quote. Detection of "inside a
+    value" relies on having just seen ':' outside any string."""
+    next_key_re = re.compile(r'^\s*,\s*"\w+"\s*:')
+    end_obj_re = re.compile(r"^\s*[}\]]")
+
+    out = []
+    n = len(s)
+    i = 0
+    in_str = False
+    esc = False
+    expecting_value = False
+    in_value_str = False
+    while i < n:
+        c = s[i]
+        if not in_str:
+            out.append(c)
+            if c == '"':
+                in_str = True
+                if expecting_value:
+                    in_value_str = True
+                    expecting_value = False
+            elif c == ":":
+                expecting_value = True
+            elif c not in " \t\r\n":
+                if c != ",":
+                    expecting_value = False
+            i += 1
+            continue
+        if esc:
+            out.append(c)
+            esc = False
+            i += 1
+            continue
+        if c == "\\":
+            out.append(c)
+            esc = True
+            i += 1
+            continue
+        if c == '"':
+            if not in_value_str:
+                out.append(c)
+                in_str = False
+                i += 1
+                continue
+            tail = s[i + 1 :]
+            if next_key_re.match(tail) or end_obj_re.match(tail) or tail.strip() == "":
+                out.append(c)
+                in_str = False
+                in_value_str = False
+            else:
+                out.append("\\")
+                out.append(c)
+            i += 1
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
+_VALID_JSON_ESCAPES = set('"\\/bfnrtu')
+
+
+def _fix_invalid_escapes_in_strings(s: str) -> str:
+    """Repair invalid backslash escapes inside JSON string literals.
+
+    JSON only permits \\\" \\\\ \\/ \\b \\f \\n \\r \\t \\uXXXX. Small LLMs
+    emit Verilog/SystemVerilog source containing tokens like ``\\endtask``,
+    ``\\always``, ``\\display`` where the leading backslash was meant
+    literally — these crash strict json.loads with "Invalid \\escape". For
+    each such occurrence inside a string, double the backslash so it
+    survives JSON decoding as a literal ``\\``.
+    """
+    out = []
+    n = len(s)
+    i = 0
+    in_str = False
+    while i < n:
+        c = s[i]
+        if not in_str:
+            out.append(c)
+            if c == '"':
+                in_str = True
+            i += 1
+            continue
+        if c != "\\":
+            out.append(c)
+            if c == '"':
+                in_str = False
+            i += 1
+            continue
+        # backslash inside a string: peek at next char
+        if i + 1 >= n:
+            out.append("\\\\")
+            i += 1
+            continue
+        nxt = s[i + 1]
+        if nxt in _VALID_JSON_ESCAPES:
+            out.append(c)
+            out.append(nxt)
+            i += 2
+            continue
+        # invalid escape — double the backslash so it parses as literal `\`
+        out.append("\\\\")
+        i += 1
+    return "".join(out)
+
+
+class MageJsonParseError(Exception):
+    """Raised when parse_json_robust exhausts all fallback strategies."""
+
+    def __init__(self, message: str, original_content: str):
+        super().__init__(message)
+        self.original_content = original_content
+
+
+def parse_json_robust(content: str) -> dict:
+    """Parse a JSON dict from a model response with fallbacks.
+
+    Tries (in order):
+      1. Strict json.loads on the raw content
+      2. Strict json.loads after stripping markdown fences
+      3. Strict json.loads on the FIRST {...} block extracted via regex
+      4. Strict json.loads on the LAST {...} block (chain-of-thought tail)
+      5. dirtyjson on the original content (forgiving parser)
+
+    Raises MageJsonParseError when every strategy fails. The original
+    content is preserved on the exception for upstream logging.
+    """
+    if content is None:
+        raise MageJsonParseError(
+            "parse_json_robust received None (model returned no content)",
+            original_content="",
+        )
+
+    try:
+        result = json.loads(content, strict=False)
+        if isinstance(result, dict):
+            return result
+    except json.JSONDecodeError:
+        pass
+
+    cleaned = content.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```(?:json)?\s*\n", "", cleaned)
+        cleaned = re.sub(r"\n```\s*$", "", cleaned)
+        try:
+            result = json.loads(cleaned, strict=False)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    first_match = re.search(r"\{.*\}", content, re.DOTALL)
+    if first_match:
+        try:
+            result = json.loads(first_match.group(0), strict=False)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+
+    last_open = content.rfind("{")
+    if last_open >= 0:
+        depth = 0
+        for i in range(last_open, len(content)):
+            if content[i] == "{":
+                depth += 1
+            elif content[i] == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = content[last_open : i + 1]
+                    try:
+                        result = json.loads(candidate, strict=False)
+                        if isinstance(result, dict):
+                            return result
+                    except json.JSONDecodeError:
+                        pass
+                    break
+
+    if dirtyjson is not None:
+        try:
+            result = dirtyjson.loads(content)
+            if isinstance(result, dict):
+                return dict(result)
+        except Exception:
+            pass
+
+    candidate = _strip_code_fences(content)
+    candidate = _extract_outer_braces(candidate)
+    for repaired in (
+        _fix_invalid_escapes_in_strings(_escape_unescaped_in_strings(candidate)),
+        _fix_invalid_escapes_in_strings(
+            _fix_unescaped_quotes_in_values(_escape_unescaped_in_strings(candidate))
+        ),
+    ):
+        try:
+            result = json.loads(repaired, strict=False)
+            if isinstance(result, dict):
+                return result
+        except json.JSONDecodeError:
+            pass
+        if dirtyjson is not None:
+            try:
+                result = dirtyjson.loads(repaired)
+                if isinstance(result, dict):
+                    return dict(result)
+            except Exception:
+                pass
+
+    raise MageJsonParseError(
+        f"All JSON parse strategies failed. Content starts: {content[:200]!r}",
+        original_content=content,
+    )
+
+
 def reformat_json_string(output: str) -> str:
     """Best-effort normalizer for LLM JSON output.
 
