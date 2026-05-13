@@ -180,9 +180,7 @@ def set_exp_setting(temperature: float | None = None, top_p: float | None = None
     return global_exp_setting
 
 
-AGENT_SAMPLING_OVERRIDES: Dict[str, Dict[str, float | None]] = {
-    "SimJudge": {"temperature": 0.0, "top_p": 1.0},
-}
+AGENT_SAMPLING_OVERRIDES: Dict[str, Dict[str, float | None]] = {}
 
 
 def get_agent_sampling(agent_tag: str) -> Tuple[float, float]:

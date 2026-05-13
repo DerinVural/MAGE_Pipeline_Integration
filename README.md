@@ -251,6 +251,82 @@ forensic logs.
 
 ---
 
+## Run parameters (T22 vanilla 7B, vLLM)
+
+T22 runs the four-agent pipeline on the full VerilogEval-V2 set
+(156 problems) with `Qwen/Qwen2.5-Coder-7B-Instruct` served by
+vLLM. The runner is `tests/test_top_agent_vanilla_7b_full.py`.
+
+### Config (matches upstream MAGE paper defaults)
+
+| Parameter | Value | Notes |
+|---|---|---|
+| `provider` | `vllm` | Fork addition (T17A); upstream supports `anthropic`, `openai`, `vertexanthropic` |
+| `model` | `Qwen/Qwen2.5-Coder-7B-Instruct` | Open-weights, served via vLLM OpenAI-compatible API |
+| `type_benchmark` | `verilog_eval_v2` | upstream |
+| `path_benchmark` | `./verilog-eval` | upstream |
+| `filter_instance` | `^Prob.*$` (full set) | CLI-overridable for sharding |
+| `run_identifier` | `t22_vanilla_7b_full` | CLI-overridable |
+| `n` | `1` | pass@1 |
+| `temperature` | `0.85` | paper default |
+| `top_p` | `0.95` | paper default |
+| `max_token` | `8192` | paper default |
+| `use_golden_tb_in_mage` | `True` | paper default — TbGenerator conditioned on golden TB |
+| `bypass_tb_gen` | `False` | fork-added flag (T12); `False` = upstream behavior (TbGen runs) |
+| `golden_tb_format` | `False` | fork-added flag (T14); `False` = upstream pass detection ("SIMULATION PASSED") |
+| `key_cfg_path` | `None` | not needed for vLLM (no API key) |
+| `AGENT_SAMPLING_OVERRIDES` | `{}` | empty — all agents use global 0.85 / 0.95, matching upstream |
+
+All flags resolve to upstream paper behavior. The fork-added flags
+(`bypass_tb_gen`, `golden_tb_format`, `AGENT_SAMPLING_OVERRIDES`) are
+left at their defaults so the pipeline algorithm is bit-for-bit
+equivalent to `stable-lab/MAGE`. Only the LLM backend (open-weights
+Qwen via vLLM instead of Claude/GPT-4o via API) differs from the
+paper run.
+
+### Running it
+
+Single-GPU full run:
+
+```bash
+# Start vLLM server (one terminal)
+CUDA_VISIBLE_DEVICES=0 vllm serve Qwen/Qwen2.5-Coder-7B-Instruct \
+    --host 0.0.0.0 --port 8000 \
+    --max-model-len 32768 --dtype bfloat16
+
+# Run MAGE pipeline (another terminal)
+export VLLM_BASE_URL=http://localhost:8000/v1
+export PYTHONPATH=src
+python tests/test_top_agent_vanilla_7b_full.py \
+    --filter_instance '^Prob.*$' \
+    --run_identifier t22_vanilla_7b_full
+```
+
+Multi-GPU 4-way data-parallel sharding (used for the H200 production
+run, ~1 hour wall-clock for 156 problems):
+
+```bash
+bash run_t22_vanilla_7b_4way.sh
+```
+
+This script spawns 4 vLLM servers (ports 8000–8003, one per GPU) and
+4 MAGE runners, each operating on a 39-problem shard (Prob001-039,
+Prob040-078, Prob079-117, Prob118-156). Aggregate the results with
+`python aggregate_t22_shards.py` (set `N_SHARDS=4`).
+
+### Environment (verified working on H200 SXM, sm_90)
+
+- CUDA driver: 570 (CUDA 12.8 runtime)
+- vLLM: 0.7.3
+- PyTorch: 2.5.1+cu124
+- transformers: 4.48.3 (newer versions break Qwen2Tokenizer with vLLM 0.7.3)
+- tokenizers: ≥0.20, <0.22
+
+For Blackwell GPUs (sm_120, e.g. RTX 6000 Pro), vLLM 0.20.2+ with
+PyTorch 2.11 / CUDA 13 is required — see `tasks/T17A_VLLM_SETUP.md`.
+
+---
+
 ## Citation
 
 If you use this work, please cite both the original MAGE paper and
