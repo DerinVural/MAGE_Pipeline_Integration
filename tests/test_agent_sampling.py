@@ -30,8 +30,8 @@ def test_default_global_for_unknown_agent():
     assert get_agent_sampling("TBGenerator") == (0.85, 0.95)
 
 
-def test_simjudge_override():
-    assert get_agent_sampling("SimJudge") == (0.0, 1.0)
+def test_simjudge_falls_through_to_global():
+    assert get_agent_sampling("SimJudge") == (0.85, 0.95)
 
 
 def test_set_sampling_runtime():
@@ -44,12 +44,18 @@ def test_global_settings_change_propagates():
     assert get_agent_sampling("TBGenerator") == (0.3, 0.95)
 
 
-def test_simjudge_immune_to_global_change():
+def test_simjudge_tracks_global_change():
     set_exp_setting(temperature=0.3)
+    assert get_agent_sampling("SimJudge") == (0.3, 0.95)
+
+
+def test_runtime_override_wins_over_global():
+    set_exp_setting(temperature=0.3)
+    set_agent_sampling("SimJudge", temperature=0.0, top_p=1.0)
     assert get_agent_sampling("SimJudge") == (0.0, 1.0)
 
 
-def test_tokencounter_invokes_override():
+def test_tokencounter_uses_global_when_no_override():
     from mage.token_counter import TokenCounter
 
     mock_llm = MagicMock()
@@ -71,5 +77,5 @@ def test_tokencounter_invokes_override():
 
     mock_llm.chat.assert_called_once()
     _, kwargs = mock_llm.chat.call_args
-    assert kwargs["temperature"] == 0.0
-    assert kwargs["top_p"] == 1.0
+    assert kwargs["temperature"] == 0.85
+    assert kwargs["top_p"] == 0.95
