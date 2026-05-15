@@ -1,0 +1,150 @@
+[2026-05-14 12:40:16,794 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:40:16,796 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic a
+);
+    // Contents from golden testbench omitted for brevity
+    task wavedrom_start; endtask;
+    task wavedrom_stop; endtask;
+    initial begin
+        a <= 1;
+        // ... rest of the stimulus_gen initial block
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    stats stats1 = 0;
+
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    logic a;
+    logic [2:0] q_ref, q_dut;
+
+    RefModule good1 (.clk(clk), .a(a), .q(q_ref));
+    TopModule top_module1 (.clk(clk), .a(a), .q(q_dut));
+    stimulus_gen stim1 (.clk(clk), .a(a));
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep; repeat(5) strobe <= !strobe; @(strobe); endtask
+
+    // Queue variables for mismatch display
+    reg [3:0] input_queue [0:4]; // Assuming width of a is 1 bit
+    reg [2:0] got_output_queue [0:4];
+    reg [2:0] golden_queue [0:4];
+    reg [0:0] reset_queue [0:4];
+    localparam MAX_QUEUE_SIZE = 5;
+
+    // Mismatch detection and queue logic
+    reg [2:0] tb_match_reg;
+    always @(posedge clk, negedge clk) begin
+        // Track current values into queue if not full
+        if (input_queue[0] !== 'x) begin // Check if queue is full
+            // Shift queue elements to the left
+            for (int i=0; i<MAX_QUEUE_SIZE-1; i++) begin
+                input_queue[i] = input_queue[i+1];
+                got_output_queue[i] = got_output_queue[i+1];
+                golden_queue[i] = golden_queue[i+1];
+                reset_queue[i] = reset_queue[i+1];
+            end
+        end
+        // Push new data to the end
+        input_queue[MAX_QUEUE_SIZE-1] = a;
+        got_output_queue[MAX_QUEUE_SIZE-1] = q_dut;
+        golden_queue[MAX_QUEUE_SIZE-1] = q_ref;
+        // For reset, need to track if reset is part of interface; maybe not here.
+        // Assuming no reset signal in the test
+
+        // Check for mismatch
+        if (q_dut !== q_ref) begin
+            if (stats1.errors == 0) begin
+                $display("Mismatch detected at time %t", $time);
+                $display("Last %0d cycles of simulation:", MAX_QUEUE_SIZE);
+                for (int i=0; i<MAX_QUEUE_SIZE; i++) begin
+                    $display("Cycle %0d, input %b, got %h, exp %h", i, input_queue[i], got_output_queue[i], golden_queue[i]);
+                end
+                $display("SIMULATION FAILED - 1 MISMATCH DETECTED, FIRST AT TIME %t", $time);
+                $finish;
+            end
+        end
+    end
+
+    // ... other parts of testbench including initial, final block, error counters
+endmodule
+[2026-05-14 12:40:16,796 - mage.agent - INFO] Initial if:
+[2026-05-14 12:40:16,796 - mage.agent - INFO] module TopModule (input clk, input a, output [2:0] q);
+[2026-05-14 12:40:16,802 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  a
+ - output q (3 bits)
+
+The module implements a sequential circuit. Read the simulation waveforms
+to determine what the circuit does, then implement it.
+
+  time  clk a   q
+  0ns   0   1   x
+  5ns   1   1   4
+  10ns  0   1   4
+  15ns  1   1   4
+  20ns  0   1   4
+  25ns  1   1   4
+  30ns  0   1   4
+  35ns  1   1   4
+  40ns  0   1   4
+  45ns  1   0   4
+  50ns  0   0   4
+  55ns  1   0   5
+  60ns  0   0   5
+  65ns  1   0   6
+  70ns  0   0   6
+  75ns  1   0   0
+  80ns  0   0   0
+  85ns  1   0   1
+  90ns  0   0   1
+
+
+[2026-05-14 12:40:20,437 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:40:20,437 - mage.agent - INFO] module TopModule (input logic clk, input logic a, output logic [2:0] q);
+
+  // Initialize q to 0 to avoid X
+  logic [2:0] state = 0;
+  logic [1:0] a_delay;
+
+  // Delay a by two clocks to detect edges
+  always @(posedge clk) begin
+    a_delay <= {a_delay[0], a};
+  end
+
+  // Increment state when a falls from 1 to 0
+  always @(posedge clk) begin
+    if (a_delay == 2'b10) begin // posedge to negedge transition
+      state <= state + 1;
+    end else if (a) begin // a remains 1, increment after initial phase
+      if (state >= 4) begin
+        state <= 0;
+      end else begin
+        state <= state + 1;
+      end
+    end else if (state == 5) begin // Example state for reset
+      state <= 0;
+    end
+  end
+
+  assign q = state;
+
+endmodule

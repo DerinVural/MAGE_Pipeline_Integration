@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output [511:0] wavedrom_title, output wavedrom_enable); // This is part of the golden testbench; however, TopModule's interface is output zero. The actual TopModule's ports as per the golden testbench are output zero.

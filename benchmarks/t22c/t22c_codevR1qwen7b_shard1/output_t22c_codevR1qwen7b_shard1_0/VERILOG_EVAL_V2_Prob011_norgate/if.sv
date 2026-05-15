@@ -1,0 +1,1 @@
+module TopModule(input a, input b, output out); // NOR functionality // endmodule

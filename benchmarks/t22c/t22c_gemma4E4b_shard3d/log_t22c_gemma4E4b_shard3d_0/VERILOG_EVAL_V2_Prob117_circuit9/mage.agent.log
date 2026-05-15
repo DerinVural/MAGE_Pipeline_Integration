@@ -1,0 +1,1050 @@
+[2026-05-15 11:45:10,484 - mage.agent - INFO] Initial tb:
+[2026-05-15 11:45:10,486 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- Stimulus Generator (Kept as is) ---
+module stimulus_gen (
+	input clk,
+	output logic a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		a <= 1;
+		@(negedge clk) {a} <= 1;
+		@(negedge clk) wavedrom_start("Unknown circuit");
+			repeat(2) @(posedge clk);
+		@(posedge clk) {a} <= 0;
+			repeat(11) @(posedge clk);
+		@(negedge clk) a <= 1;
+			repeat(5) @(posedge clk, negedge clk);
+		a <= 0;
+		repeat(4) @(posedge clk);
+		wavedrom_stop();
+
+		repeat(200) @(posedge clk, negedge clk)
+		a <= &((5)'($urandom));
+	$finish;
+	end
+	endmodule
+
+// --- Testbench Module (Improved) ---
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic a;
+	logic [2:0] q_ref; // Reference output
+	logic [2:0] q_dut; // DUT output
+
+	// --- Queue Management Declarations ---
+	// q is 3 bits. MAX_QUEUE_SIZE >= 2^3 = 8. Set to 8.
+	localparam MAX_QUEUE_SIZE = 8;
+	
+	// Signals to store in queues
+	reg [2:0] input_a_q [$];
+	reg [2:0] output_q_dut_q [$];
+	reg [2:0] golden_q_ref_q [$];
+	reg reset_q [$]; // Tracking reset/strobe proxy if needed, using 1-bit
+
+	// Mismatch tracking for queue display
+	reg mismatch_detected_q = 0;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen::stim1.clk, tb_mismatch, clk, a, q_ref, q_dut);
+	end
+
+	// Verification Signals
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate DUT and stimulus
+	stimulus_gen stim1 (
+		.clk,
+		.a,
+		.wavedrom_title,
+		.wavedrom_enable 
+	);
+	RefModule good1 (
+		.clk,
+		.a,
+		.q(q_ref) );
+	TopModule top_module1 (
+		.clk,
+		.a,
+		.q(q_dut) );
+
+	// Task to wait for time step end (Kept as is)
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end	task
+
+	// Verification assignment (Kept as is)
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+	// Clocked Process for Stats, Queueing, and Mismatch Reporting
+	always @(posedge clk, negedge clk) begin
+		// --- 1. Statistics Update (Original Logic) ---
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			end
+		// Original q_ref vs q_dut check (kept for compatibility)
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+		begin 
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			sstats1.errors_q = stats1.errors_q+1'b1; 
+		end
+		
+		// --- 2. Queue Management (New Requirement) ---
+		
+		// Dequeue if full
+		if (input_a_q.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_a_q.delete(0);
+			output_q_dut_q.delete(0);
+			golden_q_ref_q.delete(0);
+			reset_q.delete(0);
+		end
+
+		// Enqueue current data
+		input_a_q.push_back(a);
+		output_q_dut_q.push_back(q_dut);
+		golden_q_ref_q.push_back(q_ref);
+		reset_q.push_back(1'b0); // Assuming no explicit reset signal present
+
+		// Check for first mismatch ONLY if not already detected
+		if (!mismatch_detected_q && (q_dut !== q_ref)) begin
+			mismatch_detected_q = 1;
+			$display("================================================================================================");
+			$display("!!! FIRST MISMATCH DETECTED AT TIME %0t !!!", $time);
+			$display("Displaying Last %0d Cycles of Simulation (Queue Size: %0d):
+", MAX_QUEUE_SIZE, input_a_q.size());
+
+			for (int i = 0; i < input_a_q.size(); i++) begin
+				// Check for mismatch in the historical window
+				if (output_q_dut_q[i] !== golden_q_ref_q[i]) begin
+					s$display("-> Mismatch occurred at Cycle %0d", i);
+				end
+				$display("Cycle %0d | Input a: %b | Ref q: %h (%b) | Got q: %h (%b)",
+				i,
+				input_a_q[i],
+				golden_q_ref_q[i],
+				golden_q_ref_q[i], 
+				output_q_dut_q[i],
+				output_q_dut_q[i]);
+			end
+			$display("================================================================================================");
+		end
+	end
+
+	// Timeout logic (Kept as is)
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final reporting logic (Updated) 
+	final begin
+		if (stats1.errors == 0) 
+			$display("SIMULATION PASSED");
+		else 
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+	end
+
+endmodule
+[2026-05-15 11:45:10,486 - mage.agent - INFO] Initial if:
+[2026-05-15 11:45:10,486 - mage.agent - INFO] module TopModule (
+    input clk,
+    input a,
+    output logic [2:0] q
+);
+endmodule
+[2026-05-15 11:45:10,492 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  a
+ - output q (3 bits)
+
+The module implements a sequential circuit. Read the simulation waveforms
+to determine what the circuit does, then implement it.
+
+  time  clk a   q
+  0ns   0   1   x
+  5ns   1   1   4
+  10ns  0   1   4
+  15ns  1   1   4
+  20ns  0   1   4
+  25ns  1   1   4
+  30ns  0   1   4
+  35ns  1   1   4
+  40ns  0   1   4
+  45ns  1   0   4
+  50ns  0   0   4
+  55ns  1   0   5
+  60ns  0   0   5
+  65ns  1   0   6
+  70ns  0   0   6
+  75ns  1   0   0
+  80ns  0   0   0
+  85ns  1   0   1
+  90ns  0   0   1
+
+
+[2026-05-15 11:45:54,102 - mage.agent - INFO] Initial rtl:
+[2026-05-15 11:45:54,102 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic a,
+    output logic [2:0] q
+);
+
+    // Register to hold the output state
+    logic [2:0] q_reg;
+
+    // Initialization block to set the known initial state (4 = 100)
+    initial begin
+        q_reg = 3'b100; // Initial state observed at T=5ns is 4
+    end
+
+    // Sequential logic triggered by positive clock edge
+    always @(posedge clk)
+    begin
+        if (a == 1'b1)
+        begin
+            // Hold state if a is high
+            q_reg <= q_reg;
+        end
+        else begin
+            // Increment state if a is low (a == 0)
+            // Observed sequence: 4 -> 5 -> 6 -> 0 -> 1
+            if (q_reg == 3'b110) // If current state is 6
+            begin
+                q_reg <= 3'b000; // Wrap to 0
+            end
+            else if (q_reg == 3'b111) // Handle potential overflow if counter reaches 7 (though not observed)
+            begin
+                q_reg <= 3'b000; 
+            end
+            else
+            begin
+                q_reg <= q_reg + 1'b1;
+            end
+        end
+    end
+
+    // Assign the registered output to the port
+    assign q = q_reg;
+
+endmodule
+[2026-05-15 11:46:00,118 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-15 11:47:11,448 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:47:11,448 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+
+	initial begin
+		a <= 1;
+		@(negedge clk) {a} <= 1;
+		@(negedge clk) wavedrom_start("Unknown circuit");
+			repeat(2) @(posedge clk);
+			@(posedge clk) {a} <= 0;
+			repeat(11) @(posedge clk);
+			@(negedge clk) a <= 1;
+			repeat(5) @(posedge clk, negedge clk);
+			a <= 0;
+			repeat(4) @(posedge clk);
+		wavedrom_stop();
+
+		repeat(200) @(posedge clk, negedge clk)
+		a <= &((5)'($urandom));
+		$finish;
+	end
+
+dendmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic a;
+	logic [2:0] q_ref;
+	logic [2:0] q_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,a,q_ref,q_dut );
+	end
+
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a );
+	RefModule good1 (
+		.clk,
+		a,
+		.q(q_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		a,
+		.q(q_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+	
+	// Variables to capture first mismatch details
+	time first_mismatch_time = 0;
+	logic [2:0] first_q_ref_val = 3'b0;
+	logic [2:0] first_q_dut_val = 3'b0;
+	logic [1:0] first_a_val = 2'b00;
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+			$display("Simulation finished at %0d ps", $time);
+		end
+		else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			
+			// Display input signals (clk, a) and output signals (q_dut, q_ref) at first mismatch
+			$display("--- FIRST MISMATCH DETAILS (Time: %0d ps) ---", stats1.errortime);
+			
+			// Clock state at mismatch (assuming posedge/negedge timing is captured by $time)
+			$display("Input clk: %0d (Binary: %b)", clk, clk);
+			$display("Input a: %b (Binary: %b)", a, a);
+			$display("Expected q_ref: %0d (Hex: %h, Binary: %b)", q_ref, q_ref, q_ref);
+			$display("Actual q_dut: %0d (Hex: %h, Binary: %b)", q_dut, q_dut, q_dut);
+			$display("------------------------------------------");
+		end
+		
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			s
+			sstats1.errors++;
+			end
+		end
+		
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+		begin if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			sstats1.errors_q = stats1.errors_q+1'b1; end
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		h#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+
+// Mock modules required by the golden testbench for compilation
+module RefModule (input logic clk, input logic a, output logic [2:0] q); 
+    // Placeholder implementation to allow testbench to compile
+    assign q = 3'b0;
+endmodule
+
+// Mock TopModule implementation based on the derived logic from the specification trace
+module TopModule (input logic clk, input logic a, output logic [2:0] q);
+    reg [2:0] count = 3'b000;
+
+    always @(posedge clk)
+    begin
+        if (a == 1'b1) begin
+            // Hold state when a=1 (based on initial phase)
+        end else begin // a == 0
+            if (count == 3'b110) begin // If count reaches 6 (0b110)
+                count <= 3'b000; // Reset to 0
+            end else begin
+                count <= count + 3'b1;
+            end
+        end
+    end
+
+    // Initial condition handling based on trace: Start at 4 when a=1, then transitions.
+    // For simulation simplicity, we initialize to the first observed state (4) if a=0 is detected later.
+    // A proper state machine would handle the initial 'x' state, but for functional testing, we set the default based on observed behavior.
+    always @(posedge clk)
+    if (!((clk == 1'b1) && (a == 1'b0) && (count == 3'b100) && (q != 3'b100))) begin
+        // This logic is highly derived. We prioritize the counter behavior.
+    end
+
+    assign q = count;
+endmodule
+
+[2026-05-15 11:48:16,965 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:48:16,965 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+
+	initial begin
+		a <= 1;
+		@(negedge clk) {a} <= 1;
+		@(negedge clk) wavedrom_start("Unknown circuit");
+			repeat(2) @(posedge clk);
+			@(posedge clk) {a} <= 0;
+			repeat(11) @(posedge clk);
+			@(negedge clk) a <= 1;
+			repeat(5) @(posedge clk, negedge clk);
+			a <= 0;
+			repeat(4) @(posedge clk);
+		wavedrom_stop();
+
+		repeat(200) @(posedge clk, negedge clk)
+		a <= &((5)'($urandom));
+		$finish;
+	end
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic [2:0] q_ref;
+	logic [2:0] q_dut;
+
+	// Variables to capture first mismatch details
+	time first_mismatch_time = 0;
+	logic [2:0] first_q_ref_val = 3'b0;
+	logic [2:0] first_q_dut_val = 3'b0;
+	logic [1:0] first_a_val = 2'b00;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,a,q_ref,q_dut );
+	end
+
+	
+	wire tb_match;	// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		.a );
+	RefModule good1 (
+		.clk, 
+		a, 
+		.q(q_ref) );
+	
+	TopModule top_module1 (
+		.clk, 
+		a, 
+		.q(q_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+			$display("Simulation finished at %0d ps", $time);
+		end
+		else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			
+			// Display input signals (clk, a) and output signals (q_dut, q_ref) at first mismatch
+			$display("--- FIRST MISMATCH DETAILS (Time: %0d ps) ---", stats1.errortime);
+			
+			// Clock state at mismatch
+			$display("Input clk: %0d (Binary: %b)", clk, clk);
+			$display("Input a: %b (Binary: %b)", a, a);
+			$display("Expected q_ref: %0d (Hex: %h, Binary: %b)", q_ref, q_ref, q_ref);
+			$display("Actual q_dut: %0d (Hex: %h, Binary: %b)", q_dut, q_dut, q_dut);
+			$display("------------------------------------------");
+		end
+		
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		end
+		
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+		begin 
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			sstats1.errors_q = stats1.errors_q+1'b1; 
+		end
+		end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+
+// Mock modules required by the golden testbench for compilation
+module RefModule (input logic clk, input logic a, output logic [2:0] q);
+    // Placeholder implementation to allow testbench to compile
+    assign q = 3'b0;
+endmodule
+
+
+// Mock TopModule implementation based on the derived logic from the specification trace
+module TopModule (input logic clk, input logic a, output logic [2:0] q);
+    reg [2:0] count = 3'b000;
+
+    always @(posedge clk)
+    begin
+        if (a == 1'b1) begin
+            // Hold state when a=1 (based on initial phase)
+        end else begin // a == 0
+            if (count == 3'b110) begin // If count reaches 6 (0b110)
+                count <= 3'b000; // Reset to 0
+            end else begin
+                count <= count + 3'b1;
+            end
+        end
+    end
+
+    // Initial condition handling based on trace: Start at 4 when a=1, then transitions.
+    // For simulation simplicity, we initialize to the first observed state (4) if a=0 is detected later.
+    // A proper state machine would handle the initial 'x' state, but for functional testing, we set the default based on observed behavior.
+    always @(posedge clk)
+    if (!((clk == 1'b1) && (a == 1'b0) && (count == 3'b100) && (q != 3'b100))) begin
+        // This logic is highly derived. We prioritize the counter behavior.
+    end
+
+    assign q = count;
+endmodule
+
+[2026-05-15 11:51:45,726 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:51:45,726 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+
+	initial begin
+	a <= 1;
+	@(negedge clk) {a} <= 1;
+	@(negedge clk) wavedrom_start("Unknown circuit");
+		repeat(2) @(posedge clk);
+		@(posedge clk) {a} <= 0;
+		repeat(11) @(posedge clk);
+		@(negedge clk) a <= 1;
+		repeat(5) @(posedge clk, negedge clk);
+		a <= 0;
+		repeat(4) @(posedge clk);
+	wavedrom_stop();
+
+	repeat(200) @(posedge clk, negedge clk)
+	a <= &((5)'($urandom));
+	$finish;
+	end
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic a;
+	logic [2:0] q_ref;
+	logic [2:0] q_dut;
+
+	// Variables to capture first mismatch details
+	time first_mismatch_time = 0;
+	logic [2:0] first_q_ref_val = 3'b0;
+	logic [2:0] first_q_dut_val = 3'b0;
+	logic [1:0] first_a_val = 2'b00;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,a,q_ref,q_dut );
+	end
+
+	
+	wire tb_match;	// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a );
+	RefModule good1 (
+		.clk,
+		a,
+		.q(q_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		a,
+		.q(q_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+			$display("Simulation finished at %0d ps", $time);
+		end
+		else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			
+			// Display input signals (clk, a) and output signals (q_dut, q_ref) at first mismatch
+			$display("--- FIRST MISMATCH DETAILS (Time: %0d ps) ---", stats1.errortime);
+			
+			// Clock state at mismatch
+			$display("Input clk: %b (Binary: %b)", clk, clk);
+			$display("Input a: %b (Binary: %b)", a, a);
+			$display("Expected q_ref: %0d (Hex: %h, Binary: %b)", q_ref, q_ref, q_ref);
+			$display("Actual q_dut: %0d (Hex: %h, Binary: %b)", q_dut, q_dut, q_dut);
+			$display("------------------------------------------");
+		end
+		
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		end
+		
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+		begin 
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			sstats1.errors_q = stats1.errors_q+1'b1; 
+		end
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		h#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+
+
+// Mock modules required by the golden testbench for compilation
+module RefModule (input logic clk, input logic a, output logic [2:0] q);
+	// Placeholder implementation to allow testbench to compile
+	assign q = 3'b0;
+endmodule
+
+
+// Mock TopModule implementation based on the derived logic from the specification trace
+module TopModule (input logic clk, input logic a, output logic [2:0] q);
+	reg [2:0] q_reg = 3'b100; // Initial state observed at T=5ns is 4
+
+	// Sequential logic triggered by positive clock edge
+	always @(posedge clk)
+	begin
+		if (a == 1'b1)
+		begin
+			// Hold state if a is high
+			q_reg <= q_reg;
+		end
+		else begin // a == 0
+			// Increment state if a is low
+			if (q_reg == 3'b110) // If current state is 6
+			begin
+				q_reg <= 3'b000; // Wrap to 0
+			end
+			else
+			begin
+				q_reg <= q_reg + 1'b1;
+			end
+			end
+		end
+	end
+
+	// Assign the registered output to the port
+	assign q = q_reg;
+	endmodule
+[2026-05-15 11:52:52,914 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:52:52,915 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+
+	initial begin
+		a <= 1;
+		@(negedge clk) {a} <= 1;
+		@(negedge clk) wavedrom_start("Unknown circuit");
+			repeat(2) @(posedge clk);
+			@(posedge clk) {a} <= 0;
+			repeat(11) @(posedge clk);
+			@(negedge clk) a <= 1;
+			repeat(5) @(posedge clk, negedge clk);
+			a <= 0;
+			repeat(4) @(posedge clk);
+		wavedrom_stop();
+
+		repeat(200) @(posedge clk, negedge clk)
+		a <= &((5)'($urandom));
+		$finish;
+	end
+
+dendmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic a;
+	logic [2:0] q_ref;
+	logic [2:0] q_dut;
+
+	// Variables to capture first mismatch details
+	time first_mismatch_time = 0;
+	logic [2:0] first_q_ref_val = 3'b0;
+	logic [2:0] first_q_dut_val = 3'b0;
+	logic [1:0] first_a_val = 2'b00;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,a,q_ref,q_dut );
+	end
+
+	
+	wire tb_match;	// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a );
+	RefModule good1 (
+		.clk,
+		a,
+		.q(q_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		a,
+		.q(q_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+			$display("Simulation finished at %0d ps", $time);
+		end
+		else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			
+			// Display input signals (clk, a) and output signals (q_dut, q_ref) at first mismatch
+			$display("--- FIRST MISMATCH DETAILS (Time: %0d ps) ---", stats1.errortime);
+			
+			// Clock state at mismatch
+			// Displaying clk as binary since its width is 1
+			$display("Input clk: %b (Binary: %b)", clk, clk);
+			// Displaying a as binary since its width is 1
+			$display("Input a: %b (Binary: %b)", a, a);
+			// Displaying q_ref (3 bits) in HEX and BINARY
+			$display("Expected q_ref: %0d (Hex: %h, Binary: %b)", q_ref, q_ref, q_ref);
+			// Displaying q_dut (3 bits) in HEX and BINARY
+			$display("Actual q_dut: %0d (Hex: %h, Binary: %b)", q_dut, q_dut, q_dut);
+			$display("------------------------------------------");
+		end
+		
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		end
+		
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+		begin 
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			sstats1.errors_q = stats1.errors_q+1'b1; 
+		end
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		h#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+
+
+// Mock modules required by the golden testbench for compilation
+module RefModule (input logic clk, input logic a, output logic [2:0] q);
+	// Placeholder implementation to allow testbench to compile
+	assign q = 3'b0;
+endmodule
+
+
+// Mock TopModule implementation based on the derived logic from the specification trace
+module TopModule (input logic clk, input logic a, output logic [2:0] q);
+	reg [2:0] q_reg = 3'b100; // Initial state observed at T=5ns is 4
+	
+	// Sequential logic triggered by positive clock edge
+	always @(posedge clk)
+	begin
+		if (a == 1'b1)
+		begin
+			// Hold state if a is high
+			q_reg <= q_reg;
+		end
+		else begin // a == 0
+			// Increment state if a is low
+			if (q_reg == 3'b110) // If current state is 6
+			begin
+				q_reg <= 3'b000; // Wrap to 0
+			end
+			else
+			begin
+				q_reg <= q_reg + 1'b1;
+			end
+			end
+		end
+	end
+	
+	// Assign the registered output to the port
+	assign q = q_reg;
+	endmodule

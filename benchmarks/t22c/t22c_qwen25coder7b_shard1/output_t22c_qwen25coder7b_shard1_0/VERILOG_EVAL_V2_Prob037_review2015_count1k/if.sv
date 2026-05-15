@@ -1,0 +1,1 @@
+module TopModule(clk, reset, q); logic clk, reset; logic [9:0] q; endmodule

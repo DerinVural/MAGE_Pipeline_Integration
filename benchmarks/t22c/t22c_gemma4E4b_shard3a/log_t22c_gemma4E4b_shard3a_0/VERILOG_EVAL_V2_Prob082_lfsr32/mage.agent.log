@@ -1,0 +1,198 @@
+[2026-05-15 11:01:38,132 - mage.agent - INFO] Initial tb:
+[2026-05-15 11:01:38,134 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg reset
+);
+
+		initial begin
+			repeat(400) @(posedge clk, negedge clk) begin
+				reset <= !($random & 31);
+			end
+			@(posedge clk) reset <= 1'b0;
+			repeat(200000) @(posedge clk);
+			reset <= 1'b1;
+			repeat(5) @(posedge clk);
+			#1 $finish;
+		end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic [31:0] q_ref;
+	logic [31:0] q_dut;
+
+	// --- Queue Definitions for Sequential Logic Mismatch Tracking ---
+	logic [31:0] input_reset_queue [$];
+	logic [31:0] got_output_queue [$];
+	logic [31:0] golden_queue [$];
+	logic reset_queue [$];
+
+	// MAX_QUEUE_SIZE set to 10 as per constraints, although state space is much larger.
+	localparam MAX_QUEUE_SIZE = 10;
+
+	// --- Original Testbench Setup ---
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,q_ref,q_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		.reset );
+	RefModule good1 (
+		.clk,
+		.reset,
+		.q(q_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		.q(q_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	// --- Queue and Mismatch Detection Logic (Sequential) ---
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+
+		// 1. Manage Queue Size
+		if (input_reset_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_reset_queue.delete(0);
+			got_output_queue.delete(0);
+			golden_queue.delete(0);
+			reset_queue.delete(0);
+		end
+
+		// 2. Push Current State
+		input_reset_queue.push_back(reset);
+		got_output_queue.push_back(q_dut);
+		golden_queue.push_back(q_ref);
+		reset_queue.push_back(reset);
+
+		// 3. Check for Mismatch (q_dut vs q_ref)
+		if (q_dut !== q_ref) begin
+			// If this is the first mismatch, capture the time
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			stats1.errors_q = stats1.errors_q + 1'b1;
+
+			// --- Display Queue Content on First Mismatch (Rule 1.1) ---
+			if (stats1.errors_q == 1) begin
+				$display("Mismatch detected at time %t", $time);
+				$display("\nLast %d cycles of simulation:", input_reset_queue.size());
+
+				for (int i = 0; i < input_reset_queue.size(); i++) begin
+					// Check for match for queue display context
+					if (got_output_queue[i] === golden_queue[i]) begin
+						$display("Match at Cycle %d", i);
+					end else begin
+						$display("Mismatch at Cycle %d", i);
+					end
+					$display("Cycle %d, reset %b, got output %h, exp output %h",
+					i,
+					reset_queue[i],
+					got_output_queue[i],
+					golden_queue[i]
+				);
+				end
+			endif
+		end
+
+		// Original Error Counting Logic (Rule 3 maintained)
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+
+	end
+
+	// Verification Assignment (Must be maintained)
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+
+	// Timeout
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// --- Final Simulation Summary (Improved Display Logic) ---
+	initial begin
+		@(negedge clk); // Wait for initial settling
+		wait(stats1.clocks > 0);
+
+		if (stats1.errors == 0 && stats1.errors_q == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			// Use the time recorded for the first mismatch (errors_q) as required.
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+		end
+		$finish;
+	end
+
+endmodule
+[2026-05-15 11:01:38,134 - mage.agent - INFO] Initial if:
+[2026-05-15 11:01:38,134 - mage.agent - INFO] module TopModule (
+    input clk,
+    input reset,
+    output logic [31:0] q
+);
+[2026-05-15 11:01:38,142 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - output q (32 bits)
+
+A linear feedback shift register is a shift register usually with a few
+XOR gates to produce the next state of the shift register. A Galois LFSR
+is one particular arrangement that shifts right, where a bit position with
+a "tap" is XORed with the LSB output bit (q[0]) to produce its next value,
+while bit positions without a tap shift right unchanged. 
+
+The module should implement a 32-bit Galois LFSR with taps at bit
+positions 32, 22, 2, and 1. Reset should be active high synchronous, and
+should reset the output q to 32'h1. Assume all sequential logic is
+triggered on the positive edge of the clock.
+
+

@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output [511:0] wavedrom_title, output wavedrom_enable);

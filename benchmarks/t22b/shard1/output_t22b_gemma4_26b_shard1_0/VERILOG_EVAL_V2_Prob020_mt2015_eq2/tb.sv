@@ -1,0 +1,129 @@
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic [1:0] A,
+    output logic [1:0] B
+);
+
+    always @(posedge clk, negedge clk)
+        {A, B} <= $random % 16;
+    
+    initial begin
+        repeat(1000) @(negedge clk);
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_z;
+        int errortime_z;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [1:0] A;
+    logic [1:0] B;
+    logic z_ref;
+    logic z_dut;
+
+    // To track if we have already displayed the first mismatch for combinational logic
+    bit first_mismatch_displayed = 0;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, A, B, z_ref, z_dut);
+    end
+
+    wire tb_match;        // Verification
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .A,
+        .B 
+    );
+
+    // RefModule is assumed to be provided or implemented elsewhere as per golden tb requirements
+    // Since it's part of the golden TB, we assume it exists in the environment.
+    RefModule good1 (
+        .A,
+        .B,
+        .z(z_ref) 
+    );
+        
+    TopModule top_module1 (
+        .A,
+        .B,
+        .z(z_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    final begin
+        if (stats1.errors_z == 0) begin
+            $display("SIMULATION PASSED");
+            $display("Hint: Output 'z' has no mismatches.");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_z, stats1.errortime_z);
+            $display("Hint: Output 'z' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_z, stats1.errortime_z);
+        end
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+    
+    assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Original error counting logic
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+
+        if (z_ref !== ( z_ref ^ z_dut ^ z_ref )) begin 
+            if (stats1.errors_z == 0) begin
+                stats1.errortime_z = $time;
+                // Requirement: Display input, output, and expected for combinational mismatch
+                $display("Mismatch detected at time %t", $time);
+                $display("Input A: %b (%h), B: %b (%h)", A, A, B, B);
+                $display("Got z: %b, Expected z: %b", z_dut, z_ref);
+            end
+            stats1.errors_z = stats1.errors_z + 1'b1;
+        end
+    end
+
+    initial begin
+        #1000000
+        $display("TIMEOUT");
+        $finish();
+    end
+
+endmodule

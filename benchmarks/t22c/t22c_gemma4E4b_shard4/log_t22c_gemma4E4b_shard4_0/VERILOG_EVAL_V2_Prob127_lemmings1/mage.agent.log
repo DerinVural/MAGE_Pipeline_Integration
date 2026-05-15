@@ -1,0 +1,1370 @@
+[2026-05-14 12:56:44,671 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:56:44,673 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Replicating stimulus_gen module structure from golden testbench
+module stimulus_gen (
+	input clk,
+	output logic areset,
+	output logic bump_left,
+	output logic bump_right,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+	reg reset;
+	assign areset = reset;
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+		
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+		
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+		srfail = !tb_match;
+		reset <= 0;
+		end
+		if (srfail)
+			sdisplay("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			sdisplay("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+		// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+		a functionality error than the reset being implemented asynchronously.
+		endtask
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		#1;
+	endtask
+		
+		
+		initial begin
+			reset <= 1'b1;
+			{bump_right, bump_left} <= 3'h3;
+			wavedrom_start("Asynchronous reset");
+			reset_test(1);
+			repeat(3) @(posedge clk);
+			{bump_right, bump_left} <= 2;
+			repeat(2) @(posedge clk);
+			{bump_right, bump_left} <= 1;
+			repeat(2) @(posedge clk);
+			wavedrom_stop();
+			
+			@(posedge clk);
+			repeat(200) @(posedge clk, negedge clk) begin
+				{bump_right, bump_left} <= $random & $random;
+				reset <= !($random & 31);
+			end
+
+			#1 $finish;
+		end
+		endmodule
+
+// Module under test (Placeholder - actual implementation would be here)
+module TopModule (
+    input clk,
+    input areset,
+    input bump_left,
+    input bump_right,
+    output walk_left,
+    output walk_right
+);
+	// Minimal logic to allow simulation to run for testing the testbench structure
+	assign walk_left = areset ? 1'b1 : ~bump_left;
+	assign walk_right = areset ? 1'b0 : ~bump_right;
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_walk_left;
+		int errortime_walk_left;
+		int errors_walk_right;
+		int errortime_walk_right;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic areset;
+	logic bump_left;
+	logic bump_right;
+	logic walk_left_ref;
+	logic walk_left_dut;
+	logic walk_right_ref;
+	logic walk_right_dut;
+
+	// --- Queue Declarations for New Requirement ---
+	
+	// Inputs driving the DUT state (excluding clock/reset handled by queue logic context)
+	reg input_queue [7:0]; 
+	// Outputs from DUT
+	reg output_dut_queue [7:0]; 
+	// Golden Reference Outputs
+	reg output_golden_queue [7:0]; 
+	// Reset signals (using areset for simplicity in this context)
+	reg reset_queue [7:0]; 
+	
+	localparam MAX_QUEUE_SIZE = 8; // State machine has 2 states, 8 is sufficient, <= 10 enforced
+	
+	// Counters for tracking error state	
+	reg error_count = 0;
+	reg first_error_time = 0;
+	
+	// --- Clocking and Queue Logic ---
+	always @(posedge clk, negedge clk) begin
+		
+		// 1. Queue Management: Shift contents if full
+		if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_queue.delete(0);
+			output_dut_queue.delete(0);
+			output_golden_queue.delete(0);
+			reset_queue.delete(0);
+		end
+
+		// 2. Store current values
+		// Inputs: {areset, bump_left, bump_right}
+		input_queue.push_back({areset, bump_left, bump_right});
+		// Outputs: {walk_left_dut, walk_right_dut}
+		output_dut_queue.push_back({walk_left_dut, walk_right_dut});
+		// Golden: {walk_left_ref, walk_right_ref}
+		output_golden_queue.push_back({walk_left_ref, walk_right_ref});
+		// Reset
+		reset_queue.push_back(areset);
+
+		// 3. Check for first mismatch
+		if (error_count == 0) begin
+			// Compare the newly added elements (the last element pushed)
+			if ((walk_left_dut !== walk_left_ref) || (walk_right_dut !== walk_right_ref)) begin
+				error_count = 1;
+				first_error_time = $time;
+				$display("\n// Queue-based simulation mismatch display //");
+				$display("Mismatch detected at time %t", $time);
+				$display("\nLast %d cycles of simulation:", input_queue.size());
+
+				for (int i = 0; i < input_queue.size(); i++) begin
+					// Extract values for display
+					logic [2:0] current_input = input_queue[i];
+					logic [1:0] current_dut_output = output_dut_queue[i];
+					logic [1:0] current_golden_output = output_golden_queue[i];
+					logic current_reset = reset_queue[i];
+
+					if (current_dut_output === current_golden_output) begin
+						sdisplay("Got Match at cycle %d", i);
+					end else begin
+						sdisplay("Got Mismatch at cycle %d", i);
+					end
+					// Displaying signals. Since they are 1-bit, we use %b.
+					$display("Cycle %d, reset %b, input %b, got output %b, exp output %b",
+					i,
+					current_reset,
+					current_input,
+					current_dut_output,
+					current_golden_output);
+				end
+			end
+		end
+	end
+
+
+	// --- Original Testbench Structure (Modified for new error tracking) ---
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { walk_left_ref, walk_right_ref } === ( { walk_left_ref, walk_right_ref } ^ { walk_left_dut, walk_right_dut } ^ { walk_left_ref, walk_right_ref } ) );
+	
+	// Original clocking/stats update logic (modified to not double count errors, relying on queue for detailed first error)
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Original logic for stats counting (retained)
+		if (!tb_match) begin
+			// Only increment error count if the queue hasn't registered the first error yet, or if this is a subsequent error.
+			if (error_count == 0) begin
+				// First error already handled by queue display
+				end
+			stats1.errors++;
+			end
+		end
+		
+		// Original detailed output tracking (retained)
+		if (walk_left_ref !== ( walk_left_ref ^ walk_left_dut ^ walk_left_ref ))
+		begin if (stats1.errors_walk_left == 0) stats1.errortime_walk_left = $time;
+			sstats1.errors_walk_left = stats1.errors_walk_left+1'b1; end
+		end
+		if (walk_right_ref !== ( walk_right_ref ^ walk_right_dut ^ walk_right_ref ))
+		begin if (stats1.errors_walk_right == 0) stats1.errortime_walk_right = $time;
+			sstats1.errors_walk_right = stats1.errors_walk_right+1'b1; end
+		end
+	end
+
+   // Add timeout after 100K cycles	
+   initial begin
+     #1000000
+     $display("\nTIMEOUT REACHED.");
+     $finish();
+   end
+
+	// --- Initial Block & Final Reporting --- 
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen::stim1, clk, areset, bump_left, bump_right, walk_left_ref, walk_left_dut, walk_right_ref, walk_right_dut );
+		
+		// Initialize stats and queues
+		stats1.errors = 0;
+		stats1.clocks = 0;
+		// Queues are automatically initialized to empty
+
+		// Reset sequence start
+		reset <= 1'b1;
+		{bump_right, bump_left} <= 3'h3;
+		stim1.wavedrom_start("Asynchronous reset");
+		stim1.reset_test(1);
+		repeat(3) @(posedge clk);
+		{bump_right, bump_left} <= 2;
+		repeat(2) @(posedge clk);
+		{bump_right, bump_left} <= 1;
+		repeat(2) @(posedge clk);
+		stim1.wavedrom_stop();
+		
+		@(posedge clk);
+		repeat(200) @(posedge clk, negedge clk) begin
+			{bump_right, bump_left} <= $random & $random;
+			reset <= !($random & 31);
+		end
+		
+		// Wait until all stimulus is done and finish simulation
+		#1 $finish;
+	end
+
+	// Final reporting block, updated to the required format
+	always @(finish) begin
+		// Print detailed status from original golden testbench (retained)
+		if (stats1.errors_walk_left) $display("Hint: Output 'walk_left' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_walk_left, stats1.errortime_walk_left);
+		else $display("Hint: Output 'walk_left' has no mismatches.");
+		if (stats1.errors_walk_right) $display("Hint: Output 'walk_right' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_walk_right, stats1.errortime_walk_right);
+		else $display("Hint: Output 'walk_right' has no mismatches.");
+		
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+
+		// Final required output format
+		if (stats1.errors == 0)
+			sdisplay("SIMULATION PASSED");
+		else begin
+			// Use the time recorded in the queue check for the first error
+			sdisplay("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, first_error_time);
+		end
+	end
+	endmodule
+[2026-05-14 12:56:44,673 - mage.agent - INFO] Initial if:
+[2026-05-14 12:56:44,673 - mage.agent - INFO] module TopModule (
+    input clk,
+    input areset,
+    input bump_left,
+    input bump_right,
+    output walk_left,
+    output walk_right
+);
+endmodule
+[2026-05-14 12:56:44,679 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+ - input  bump_left
+ - input  bump_right
+ - output walk_left
+ - output walk_right
+
+The module should implement a simple game called Lemmings which involves
+critters with fairly simple brains. So simple that we are going to model
+it using a finite state machine. In the Lemmings' 2D world, Lemmings can
+be in one of two states: walking left (walk_left is 1) or walking right
+(walk_right is 1). It will switch directions if it hits an obstacle. In
+particular, if a Lemming is bumped on the left (by receiving a 1 on
+bump_left), it will walk right. If it's bumped on the right (by receiving
+a 1 on bump_right), it will walk left. If it's bumped on both sides at
+the same time, it will still switch directions.
+
+The module should implement a Moore state machine with two states, two
+inputs, and one output (internal to the module) that models this
+behaviour. areset is positive edge triggered asynchronous resetting the
+Lemming machine to walk left. Assume all sequential logic is triggered on
+the positive edge of the clock.
+
+
+[2026-05-14 13:06:42,703 - mage.agent - INFO] Initial rtl:
+[2026-05-14 13:06:42,704 - mage.agent - INFO] module TopModule (
+    input logic clk,
+    input logic areset,
+    input logic bump_left,
+    input logic bump_right,
+    output logic walk_left,
+    output logic walk_right
+);
+
+    // State Encoding
+    localparam STATE_LEFT  = 2'b00;
+    localparam STATE_RIGHT = 2'b01;
+
+    // State Register and Next State Logic
+    logic [1:0] current_state;
+    logic [1:0] next_state;
+
+    // 1. Sequential Logic (State Register)
+    // Asynchronous reset to STATE_LEFT
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            current_state <= STATE_LEFT;
+        end else begin
+            current_state <= next_state;
+        end
+    end
+
+    // 2. Combinational Logic: Next State Determination
+    always @(*)
+    begin
+        next_state = current_state;
+
+        case (current_state)
+            STATE_LEFT:
+                // Currently walking left
+                // Bump Left -> Switch to Right
+                if (bump_left) begin
+                    next_state = STATE_RIGHT;
+                end
+                // Bump Right -> Switch to Left (Only if not already forced to Right by bump_left)
+                else if (bump_right) begin
+                    next_state = STATE_LEFT;
+                end
+                // Otherwise, stay in current state
+                else begin
+                    next_state = STATE_LEFT;
+                end
+
+            STATE_RIGHT:
+                // Currently walking right
+                // Bump Left -> Switch to Right
+                if (bump_left) begin
+                    next_state = STATE_RIGHT;
+                end
+                // Bump Right -> Switch to Left
+                else if (bump_right) begin
+                    next_state = STATE_LEFT;
+                end
+                // Otherwise, stay in current state
+                else begin
+                    next_state = STATE_RIGHT;
+                end
+        endcase
+    end
+
+    // 3. Combinational Logic: Output Generation (Moore Machine)
+    // Output depends ONLY on the current state
+    always @(*)
+    begin
+        walk_left = 1'b0;
+        walk_right = 1'b0;
+
+        case (current_state)
+            STATE_LEFT:
+                walk_left = 1'b1;
+            STATE_RIGHT:
+                walk_right = 1'b1;
+        endcase
+    end
+
+endmodule
+[2026-05-14 13:06:47,216 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 13:08:31,305 - mage.agent - INFO] Revised tb:
+[2026-05-14 13:08:31,305 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- stimulus_gen (Copied as per golden testbench structure) ---
+module stimulus_gen (
+	input clk,
+	output logic areset,
+	output logic bump_left,
+	output logic bump_right,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+	reg reset;
+	assign areset = reset;
+
+	task reset_test(input async=0);
+	bit arfail, srfail, datafail;
+	
+	@(posedge clk);
+	@(posedge clk) reset <= 0;
+	repeat(3) @(posedge clk);
+	
+	@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+	@(posedge clk) arfail = !tb_match;
+	@(posedge clk) begin
+	srfail = !tb_match;
+	reset <= 0;
+	end
+	if (srfail)
+		s$display("Hint: Your reset doesn't seem to be working.");
+	else if (arfail && (async || !datafail))
+		s$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+	// a functionality error than the reset being implemented asynchronously.
+	endtask
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+task wavedrom_start(input[511:0] title = "");	endtask
+
+task wavedrom_stop;
+	#1;
+endtask
+
+
+
+initial begin
+	reset <= 1'b1;
+	{bump_right, bump_left} <= 3'h3;
+	wavedrom_start("Asynchronous reset");
+	reset_test(1);
+	repeat(3) @(posedge clk);
+	{bump_right, bump_left} <= 2;
+	repeat(2) @(posedge clk);
+	{bump_right, bump_left} <= 1;
+	repeat(2) @(posedge clk);
+	wavedrom_stop();
+	
+	@(posedge clk);
+	repeat(200) @(posedge clk, negedge clk) begin
+		{bump_right, bump_left} <= $random & $random;
+		reset <= !($random & 31);
+	end
+
+	#1 $finish;
+end
+
+endmodule
+
+// --- TopModule Implementation (Based on Specification) ---
+module TopModule (
+    input clk,
+    input areset,
+    input bump_left,
+    input bump_right,
+    output reg walk_left,
+    output reg walk_right
+);
+
+    // State encoding: 0 = Walk Left, 1 = Walk Right
+    typedef enum logic [0:0] {LEFT, RIGHT} state_t;
+    state_t current_state, next_state;
+
+    // Moore FSM: Outputs depend only on current_state
+    always_comb begin
+        if (current_state == LEFT) begin
+            walk_left = 1'b1;
+            walk_right = 1'b0;
+        end else begin // current_state == RIGHT
+            walk_left = 1'b0;
+            walk_right = 1'b1;
+        end
+    end
+
+    // State Register Logic (Sequential Block)
+    always @(posedge clk or posedge areset)
+    begin
+        if (areset) begin
+            // Asynchronous reset to walk left
+            current_state <= LEFT;
+        end else begin
+            current_state <= next_state;
+        end
+    end
+
+    // Next State Logic (Combinational Block)
+    always_comb begin
+        next_state = current_state;
+        
+        // If bumped on the left, switch to walk right
+        if (bump_left == 1'b1) begin
+            next_state = RIGHT;
+        end
+        // If bumped on the right, switch to walk left. 
+        // Note: If both are 1, the 'bump_left' condition above takes precedence in this simple logic flow, resulting in RIGHT.
+        // If the intention is that *any* bump causes a switch, and simultaneous bumps cause a switch, 
+        // we prioritize bump_right if bump_left didn't trigger, or handle the OR condition.
+        // Re-evaluating specification: "If it's bumped on both sides at the same time, it will still switch directions."
+        // Let's define the transition: 
+        // Current LEFT:
+        //   bump_right=1 -> RIGHT
+        //   bump_left=1 -> RIGHT
+        //   Both=1 -> RIGHT (based on bump_left rule)
+        // Current RIGHT:
+        //   bump_left=1 -> RIGHT
+        //   bump_right=1 -> LEFT
+        //   Both=1 -> LEFT (based on bump_right rule, since bump_left already set it to RIGHT)
+        
+        // Simpler implementation based on direct state change: 
+        // Bump Left forces RIGHT. Bump Right forces LEFT.
+        if (bump_left == 1'b1) begin
+            next_state = RIGHT;
+        end else if (bump_right == 1'b1) begin
+            next_state = LEFT;
+        end
+    end
+
+endmodule
+
+// --- tb Module (Improved Golden Testbench) ---
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_walk_left;
+        int errortime_walk_left;
+        int errors_walk_right;
+        int errortime_walk_right;
+
+        int clocks;
+        
+        // New fields for detailed mismatch logging
+        logic [511:0] first_mismatch_inputs_val;
+        logic [511:0] first_mismatch_expected_val;
+        logic [511:0] first_mismatch_actual_val;
+        int first_mismatch_time;
+    } stats;
+    
+    stats stats1;
+    
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic areset;
+    logic bump_left;
+    logic bump_right;
+    logic walk_left_ref;
+    logic walk_left_dut;
+    logic walk_right_ref;
+    logic walk_right_dut;
+
+    // Variables to track first mismatch details
+    logic [511:0] first_mismatch_inputs_track;
+    logic [511:0] first_mismatch_expected_track;
+    logic [511:0] first_mismatch_actual_track;
+    integer first_mismatch_time_track_left = -1;
+    integer first_mismatch_time_track_right = -1;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,bump_left,bump_right,walk_left_ref,walk_left_dut,walk_right_ref,walk_right_dut );
+    end
+
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    // Instantiate stimulus generator
+    stimulus_gen stim1 (
+        .clk, 
+        .areset, 
+        .bump_left, 
+        .bump_right,
+        .wavedrom_title, 
+        .wavedrom_enable, 
+        .tb_match 
+    );
+    
+    // Reference Model
+    RefModule good1 (
+        .clk,
+        .areset,
+        .bump_left,
+        .bump_right,
+        .walk_left(walk_left_ref),
+        .walk_right(walk_right_ref) 
+    );
+        
+    // DUT Instance
+    TopModule top_module1 (
+        .clk,
+        .areset,
+        .bump_left,
+        .bump_right,
+        .walk_left(walk_left_dut),
+        .walk_right(walk_right_dut) 
+    );
+
+    
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;  // Try to delay until the very end of the time step.
+            @(strobe);
+        end
+    endtask
+
+    // Capture current inputs for mismatch reporting
+    always_ff @(posedge clk)
+    begin
+        if (!tb_mismatch)
+            first_mismatch_inputs_track <= {bump_right, bump_left, areset};
+        else
+            first_mismatch_inputs_track <= {1'b0, 1'b0, 1'b0}; // Reset tracking if match occurs
+    end
+
+    // Capture current outputs for mismatch reporting
+    always_ff @(posedge clk)
+    begin
+        if (!tb_mismatch)
+            first_mismatch_actual_track <= {walk_left_dut, walk_right_dut};
+        else
+            first_mismatch_actual_track <= {1'b0, 1'b0};
+    end
+
+    // Verification assignment (Simplified from original, as the original logic was $A 	ext{ XOR } B 	ext{ XOR } A = B$)
+    assign tb_match = ( { walk_left_ref, walk_right_ref } === { walk_left_dut, walk_right_dut } );
+
+    // Verification and Statistics Update
+    always @(posedge clk, negedge clk) begin
+
+        stats1.clocks++;
+        
+        // Check overall match
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        
+        // Check walk_left
+        if (walk_left_ref !== walk_left_dut)
+        begin 
+            if (stats1.errors_walk_left == 0) begin 
+                stats1.errortime_walk_left = $time;
+                first_mismatch_time_track_left = $time;
+            end
+            stats1.errors_walk_left = stats1.errors_walk_left+1'b1;
+        end
+        
+        // Check walk_right
+        if (walk_right_ref !== walk_right_dut)
+        begin 
+            if (stats1.errors_walk_right == 0) begin 
+                stats1.errortime_walk_right = $time;
+                first_mismatch_time_track_right = $time;
+            end
+            stats1.errors_walk_right = stats1.errors_walk_right+1'b1;
+        end
+
+    end
+
+   // Final Reporting
+   initial begin
+       wait(tb_mismatch);
+       @(posedge clk);
+
+       // --- Detailed Mismatch Reporting for First Error ---
+       if (stats1.errors_walk_left > 0) begin
+           $display("\n=======================================================");
+           $display("SIMULATION FAILED - Detailed Mismatch Detected for walk_left at time %0d", stats1.errortime_walk_left);
+           $display("=======================================================");
+           
+           // Input signals at first mismatch
+           $display("--- Input Signals (Time %0d) ---", stats1.errortime_walk_left);
+           $display("CLK: %b", clk);
+           $display("ARESET: %b", areset);
+           $display("BUMP_LEFT: %b", bump_left);
+           $display("BUMP_RIGHT: %b", bump_right);
+           
+           // Outputs at first mismatch
+           $display("\n--- Output Signals (Time %0d) ---", stats1.errortime_walk_left);
+           $display("DUT walk_left: %b (Hex: %h)", walk_left_dut, walk_left_dut);
+           $display("REF walk_left: %b (Hex: %h)", walk_left_ref, walk_left_ref);
+           $display("DUT walk_right: %b (Hex: %h)", walk_right_dut, walk_right_dut);
+           $display("REF walk_right: %b (Hex: %h)", walk_right_ref, walk_right_ref);
+           
+           // Display the tracked inputs for context
+           $display("\n--- Context Inputs at First Mismatch Time ---");
+           $display("Inputs (Reset, Bumps): %b (Hex: %h)", first_mismatch_inputs_track, first_mismatch_inputs_track);
+       end
+
+       if (stats1.errors_walk_right > 0) begin
+           $display("\n=======================================================");
+           $display("SIMULATION FAILED - Detailed Mismatch Detected for walk_right at time %0d", stats1.errortime_walk_right);
+           $display("=======================================================");
+           
+           // Input signals at first mismatch
+           $display("--- Input Signals (Time %0d) ---", stats1.errortime_walk_right);
+           $display("CLK: %b", clk);
+           $display("ARESET: %b", areset);
+           $display("BUMP_LEFT: %b", bump_left);
+           $display("BUMP_RIGHT: %b", bump_right);
+           
+           // Outputs at first mismatch
+           $display("\n--- Output Signals (Time %0d) ---", stats1.errortime_walk_right);
+           $display("DUT walk_left: %b (Hex: %h)", walk_left_dut, walk_left_dut);
+           $display("REF walk_left: %b (Hex: %h)", walk_left_ref, walk_left_ref);
+           $display("DUT walk_right: %b (Hex: %h)", walk_right_dut, walk_right_dut);
+           $display("REF walk_right: %b (Hex: %h)", walk_right_ref, walk_right_ref);
+           
+           // Display the tracked inputs for context
+           $display("\n--- Context Inputs at First Mismatch Time ---");
+           $display("Inputs (Reset, Bumps): %b (Hex: %h)", first_mismatch_inputs_track, first_mismatch_inputs_track);
+       end
+
+       // --- Final Summary --- 
+       if (stats1.errors == 0) begin
+           $display("\n*****************************************");
+           $display("SIMULATION PASSED");
+           $display("*****************************************");
+       end else begin
+           $display("\n=======================================================");
+           $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+           $display("=======================================================");
+       end
+
+       $display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+       $display("Simulation finished at %0d ps", $time);
+       $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+       
+       $finish;
+   end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-14 13:10:19,143 - mage.agent - INFO] Revised tb:
+[2026-05-14 13:10:19,143 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- stimulus_gen (Copied as per golden testbench structure) ---
+module stimulus_gen (
+	input clk,
+	output logic areset,
+	output logic bump_left,
+	output logic bump_right,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+	reg reset;
+	assign areset = reset;
+
+	task reset_test(input async=0);
+	bit arfail, srfail, datafail;
+	
+	@(posedge clk);
+	@(posedge clk) reset <= 0;
+	repeat(3) @(posedge clk);
+	
+	@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+	@(posedge clk) arfail = !tb_match;
+	@(posedge clk) begin
+	srfail = !tb_match;
+	reset <= 0;
+	end
+	if (srfail)
+	s$display("Hint: Your reset doesn't seem to be working.");
+	else if (arfail && (async || !datafail))
+	s$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+	// a functionality error than the reset being implemented asynchronously.
+	endtask
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+task wavedrom_start(input[511:0] title = "");	endtask
+
+task wavedrom_stop;
+	#1;
+endtask
+
+
+
+initial begin
+	reset <= 1'b1;
+	{bump_right, bump_left} <= 3'h3;
+	wavedrom_start("Asynchronous reset");
+	reset_test(1);
+	repeat(3) @(posedge clk);
+	{bump_right, bump_left} <= 2;
+	repeat(2) @(posedge clk);
+	{bump_right, bump_left} <= 1;
+	repeat(2) @(posedge clk);
+	wavedrom_stop();
+	
+	@(posedge clk);
+	repeat(200) @(posedge clk, negedge clk) begin
+		{bump_right, bump_left} <= $random & $random;
+		reset <= !($random & 31);
+	end
+
+	#1 $finish;
+end
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_walk_left;
+		int errortime_walk_left;
+		int errors_walk_right;
+		int errortime_walk_right;
+
+		int clocks;
+		
+		// New fields for detailed mismatch logging
+		logic [511:0] first_mismatch_inputs_val;
+		logic [511:0] first_mismatch_expected_val;
+		logic [511:0] first_mismatch_actual_val;
+		integer first_mismatch_time;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic areset;
+	logic bump_left;
+	logic bump_right;
+	logic walk_left_ref;
+	logic walk_left_dut;
+	logic walk_right_ref;
+	logic walk_right_dut;
+
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,bump_left,bump_right,walk_left_ref,walk_left_dut,walk_right_ref,walk_right_dut );
+	end
+
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.areset,
+		.bump_left,
+		.bump_right );
+	RefModule good1 (
+		.clk,
+		.areset,
+		.bump_left,
+		.bump_right,
+		.walk_left(walk_left_ref),
+		.walk_right(walk_right_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		.areset,
+		.bump_left,
+		.bump_right,
+		.walk_left(walk_left_dut),
+		.walk_right(walk_right_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	endtask
+	
+	
+	// Variables to track first mismatch details
+	logic [511:0] first_mismatch_inputs_track;
+	logic [511:0] first_mismatch_expected_track;
+	logic [511:0] first_mismatch_actual_track;
+	integer first_mismatch_time_track_left = -1;
+	integer first_mismatch_time_track_right = -1;
+
+	// Capture current inputs for mismatch reporting
+	always_ff @(posedge clk) begin
+		if (!tb_mismatch)
+			first_mismatch_inputs_track <= {bump_right, bump_left, areset};
+		else
+			first_mismatch_inputs_track <= {1'b0, 1'b0, 1'b0}; // Reset tracking if match occurs
+	end
+	
+	// Capture current outputs for mismatch reporting
+	always_ff @(posedge clk) begin
+		if (!tb_mismatch)
+			first_mismatch_actual_track <= {walk_left_dut, walk_right_dut};
+		else
+			first_mismatch_actual_track <= {1'b0, 1'b0};
+	end
+
+	// Verification assignment (Following the structure implied by the golden TB)
+	// Original TB used: tb_match = ( { walk_left_ref, walk_right_ref } === ( { walk_left_ref, walk_right_ref } ^ { walk_left_dut, walk_right_dut } ^ { walk_left_ref, walk_right_ref } ) );
+	// This simplifies to: tb_match = ( { walk_left_ref, walk_right_ref } === { walk_left_dut, walk_right_dut } );
+	assign tb_match = ( { walk_left_ref, walk_right_ref } === { walk_left_dut, walk_right_dut } );
+
+	// Verification and Statistics Update
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		// Check overall match
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+		
+		// Check walk_left
+		if (walk_left_ref !== walk_left_dut)
+		begin 
+			if (stats1.errors_walk_left == 0) begin 
+			stats1.errortime_walk_left = $time;
+			first_mismatch_time_track_left = $time;
+			end
+			sstats1.errors_walk_left = stats1.errors_walk_left+1'b1;
+		end
+		
+		// Check walk_right
+		if (walk_right_ref !== walk_right_dut)
+		begin 
+			if (stats1.errors_walk_right == 0) begin 
+			stats1.errortime_walk_right = $time;
+			first_mismatch_time_track_right = $time;
+			end
+			sstats1.errors_walk_right = stats1.errors_walk_right+1'b1;
+		end
+	end
+
+	// Final Reporting
+	initial begin
+		// Wait until simulation is likely done or all errors have been logged
+		// We wait long enough to see most transitions, but the core logic relies on the final check.
+		
+		// --- Detailed Mismatch Reporting for First Error ---
+		if (stats1.errors_walk_left > 0) begin
+			$display("\n=======================================================");
+			$display("SIMULATION FAILED - Detailed Mismatch Detected for walk_left at time %0d", stats1.errortime_walk_left);
+			$display("=======================================================");
+			
+			// Input signals at first mismatch
+			$display("--- Input Signals (Time %0d) ---", stats1.errortime_walk_left);
+			$display("CLK: %b", clk);
+			$display("ARESET: %b", areset);
+			$display("BUMP_LEFT: %b", bump_left);
+			$display("BUMP_RIGHT: %b", bump_right);
+			
+			// Outputs at first mismatch
+			$display("\n--- Output Signals (Time %0d) ---", stats1.errortime_walk_left);
+			// Displaying single bits in both formats as requested
+			$display("DUT walk_left: %b (Hex: %h)", walk_left_dut, walk_left_dut);
+			$display("REF walk_left: %b (Hex: %h)", walk_left_ref, walk_left_ref);
+			$display("DUT walk_right: %b (Hex: %h)", walk_right_dut, walk_right_dut);
+			$display("REF walk_right: %b (Hex: %h)", walk_right_ref, walk_right_ref);
+			
+			// Display the tracked inputs for context
+			$display("\n--- Context Inputs at First Mismatch Time ---");
+			$display("Inputs (Reset, Bumps): %b (Hex: %h)", first_mismatch_inputs_track, first_mismatch_inputs_track);
+		end
+		
+		if (stats1.errors_walk_right > 0) begin
+			$display("\n=======================================================");
+			$display("SIMULATION FAILED - Detailed Mismatch Detected for walk_right at time %0d", stats1.errortime_walk_right);
+			$display("=======================================================");
+			
+			// Input signals at first mismatch
+			$display("--- Input Signals (Time %0d) ---", stats1.errortime_walk_right);
+			$display("CLK: %b", clk);
+			$display("ARESET: %b", areset);
+			$display("BUMP_LEFT: %b", bump_left);
+			$display("BUMP_RIGHT: %b", bump_right);
+			
+			// Outputs at first mismatch
+			$display("\n--- Output Signals (Time %0d) ---", stats1.errortime_walk_right);
+			$display("DUT walk_left: %b (Hex: %h)", walk_left_dut, walk_left_dut);
+			$display("REF walk_left: %b (Hex: %h)", walk_left_ref, walk_left_ref);
+			$display("DUT walk_right: %b (Hex: %h)", walk_right_dut, walk_right_dut);
+			$display("REF walk_right: %b (Hex: %h)", walk_right_ref, walk_right_ref);
+			
+			// Display the tracked inputs for context
+			$display("\n--- Context Inputs at First Mismatch Time ---");
+			$display("Inputs (Reset, Bumps): %b (Hex: %h)", first_mismatch_inputs_track, first_mismatch_inputs_track);
+		end
+		
+		// --- Final Summary ---
+		if (stats1.errors == 0) begin
+			$display("\n*****************************************\nSIMULATION PASSED
+*****************************************\n");
+		end else begin
+			$display("\n=======================================================");
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("=======================================================");
+		end
+		
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		
+		$finish;
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 13:11:55,292 - mage.agent - INFO] Revised tb:
+[2026-05-14 13:11:55,292 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- stimulus_gen (Copied as per golden testbench structure) ---
+module stimulus_gen (
+	input clk,
+	output logic areset,
+	output logic bump_left,
+	output logic bump_right,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+	reg reset;
+	assign areset = reset;
+
+	task reset_test(input async=0);
+	bit arfail, srfail, datafail;
+	
+	@(posedge clk);
+	@(posedge clk) reset <= 0;
+	repeat(3) @(posedge clk);
+
+	@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+	@(posedge clk) arfail = !tb_match;
+	@(posedge clk) begin
+	srfail = !tb_match;
+reset <= 0;
+	end
+	if (srfail)
+	s$display("Hint: Your reset doesn't seem to be working.");
+	else if (arfail && (async || !datafail))
+	s$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+	// a functionality error than the reset being implemented asynchronously.
+	endtask
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");	endtask
+	task wavedrom_stop;
+	#1;
+	endtask
+
+
+
+initial begin
+	reset <= 1'b1;
+	{bump_right, bump_left} <= 3'h3;
+	wavedrom_start("Asynchronous reset");
+	reset_test(1);
+	repeat(3) @(posedge clk);
+	{bump_right, bump_left} <= 2;
+	repeat(2) @(posedge clk);
+	{bump_right, bump_left} <= 1;
+	repeat(2) @(posedge clk);
+	wavedrom_stop();
+	
+	@(posedge clk);
+	repeat(200) @(posedge clk, negedge clk) begin
+		{bump_right, bump_left} <= $random & $random;
+		reset <= !($random & 31);
+	end
+
+	#1 $finish;
+end
+	endmodule
+
+
+// --- tb Module (Improved Golden Testbench) ---
+module tb();
+
+	// Stats structure, cleaned up to avoid syntax errors from previous attempts
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_walk_left;
+		int errortime_walk_left;
+		int errors_walk_right;
+		int errortime_walk_right;
+		int clocks;
+		// Tracking variables for detailed logging
+		logic [511:0] first_mismatch_inputs_val;
+		logic [511:0] first_mismatch_expected_val;
+		logic [511:0] first_mismatch_actual_val;
+		int first_mismatch_time_left;
+		int first_mismatch_time_right;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic areset;
+	logic bump_left;
+	logic bump_right;
+	logic walk_left_ref;
+	logic walk_left_dut;
+	logic walk_right_ref;
+	logic walk_right_dut;
+
+	// Variables to track first mismatch details
+	logic [511:0] first_mismatch_inputs_track;
+	integer first_mismatch_time_track_left = -1;
+	integer first_mismatch_time_track_right = -1;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,bump_left,bump_right,walk_left_ref,walk_left_dut,walk_right_ref,walk_right_dut );
+	end
+
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate stimulus generator
+	stimulus_gen stim1 (
+		.clk,
+		.* , 
+		.areset,
+		.bump_left,
+		.bump_right );
+	
+	// Reference Model
+	RefModule good1 (
+		.clk,
+		.areset,
+		.bump_left,
+		.bump_right,
+		.walk_left(walk_left_ref),
+		.walk_right(walk_right_ref) );
+		
+	// DUT Instance
+	TopModule top_module1 (
+		.clk,
+		areset,
+		bump_left,
+		bump_right,
+		.walk_left(walk_left_dut),
+		.walk_right(walk_right_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	endtask
+	
+
+	// Capture current inputs for mismatch reporting (Triggered on positive clock edge)
+	always_ff @(posedge clk)
+	begin
+		if (!tb_mismatch) // Capture inputs when there is NO mismatch (to track context)
+			first_mismatch_inputs_track <= {bump_right, bump_left, areset};
+		else
+			// Reset tracking if mismatch occurs, as we only care about the FIRST instance
+			first_mismatch_inputs_track <= {1'b0, 1'b0, 1'b0};
+		end
+	
+	// Verification assignment: DUT must equal Reference
+	assign tb_match = ( { walk_left_ref, walk_right_ref } === { walk_left_dut, walk_right_dut } );
+	
+	// Verification and Statistics Update
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		// Check overall match
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		
+		// Check walk_left
+		if (walk_left_ref !== walk_left_dut)
+		begin 
+			if (stats1.errors_walk_left == 0) begin 
+			stats1.errortime_walk_left = $time;
+			first_mismatch_time_track_left = $time;
+			end
+			sstats1.errors_walk_left = stats1.errors_walk_left+1'b1;
+		end
+		
+		// Check walk_right
+		if (walk_right_ref !== walk_right_dut)
+		begin 
+			if (stats1.errors_walk_right == 0) begin 
+			sstats1.errortime_walk_right = $time;
+			first_mismatch_time_track_right = $time;
+			end
+			sstats1.errors_walk_right = stats1.errors_walk_right+1'b1;
+		end
+		end
+
+	// Final Reporting
+	initial begin
+		// Wait long enough to allow simulation to run its course
+		@(negedge clk);
+		
+		// --- Detailed Mismatch Reporting for First Error ---
+		if (stats1.errors_walk_left > 0) begin
+			$display("
+=======================================================");
+			s$display("SIMULATION FAILED - Detailed Mismatch Detected for walk_left at time %0d", stats1.errortime_walk_left);
+			$display("=======================================================");
+			
+			// Input signals at first mismatch
+			$display("--- Input Signals (Time %0d) ---", stats1.errortime_walk_left);
+			$display("CLK: %b", clk);
+			$display("ARESET: %b", areset);
+			$display("BUMP_LEFT: %b", bump_left);
+			$display("BUMP_RIGHT: %b", bump_right);
+			
+			// Outputs at first mismatch
+			$display("
+--- Output Signals (Time %0d) ---", stats1.errortime_walk_left);
+			// Displaying single bits in both formats as requested
+			$display("DUT walk_left: %b (Hex: %h)", walk_left_dut, walk_left_dut);
+			$display("REF walk_left: %b (Hex: %h)", walk_left_ref, walk_left_ref);
+			$display("DUT walk_right: %b (Hex: %h)", walk_right_dut, walk_right_dut);
+			$display("REF walk_right: %b (Hex: %h)", walk_right_ref, walk_right_ref);
+			
+			// Display the tracked inputs for context
+			$display("
+--- Context Inputs at First Mismatch Time ---");
+			$display("Inputs (Reset, Bumps): %b (Hex: %h)", first_mismatch_inputs_track, first_mismatch_inputs_track);
+		end
+		
+		if (stats1.errors_walk_right > 0) begin
+			$display("
+=======================================================");
+			$display("SIMULATION FAILED - Detailed Mismatch Detected for walk_right at time %0d", stats1.errortime_walk_right);
+			$display("=======================================================");
+			
+			// Input signals at first mismatch
+			$display("--- Input Signals (Time %0d) ---", stats1.errortime_walk_right);
+			$display("CLK: %b", clk);
+			$display("ARESET: %b", areset);
+			$display("BUMP_LEFT: %b", bump_left);
+			$display("BUMP_RIGHT: %b", bump_right);
+			
+			// Outputs at first mismatch
+			$display("
+--- Output Signals (Time %0d) ---", stats1.errortime_walk_right);
+			// Displaying single bits in both formats as requested
+			$display("DUT walk_left: %b (Hex: %h)", walk_left_dut, walk_left_dut);
+			$display("REF walk_left: %b (Hex: %h)", walk_left_ref, walk_left_ref);
+			$display("DUT walk_right: %b (Hex: %h)", walk_right_dut, walk_right_dut);
+			$display("REF walk_right: %b (Hex: %h)", walk_right_ref, walk_right_ref);
+			
+			// Display the tracked inputs for context
+			$display("
+--- Context Inputs at First Mismatch Time ---");
+			$display("Inputs (Reset, Bumps): %b (Hex: %h)", first_mismatch_inputs_track, first_mismatch_inputs_track);
+		end
+		
+		// --- Final Summary --- 
+		if (stats1.errors == 0) begin
+			$display("
+*****************************************
+SIMULATION PASSED
+*****************************************
+");
+		end else begin
+			$display("
+=======================================================");
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("=======================================================");
+		end
+		
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		
+		$finish;
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule

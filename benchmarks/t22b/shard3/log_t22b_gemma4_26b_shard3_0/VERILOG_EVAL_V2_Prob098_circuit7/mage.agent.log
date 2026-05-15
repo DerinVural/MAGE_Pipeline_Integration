@@ -1,0 +1,365 @@
+[2026-05-13 14:07:32,321 - mage.agent - INFO] Initial tb:
+[2026-05-13 14:07:32,322 - mage.agent - INFO] `timescale 1 ps/1 ps
+
+module stimulus_gen (
+	input clk,
+	output logic a,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		@(posedge clk) a <= 0;
+		@(negedge clk) wavedrom_start("Unknown circuit");
+			@(posedge clk) a <= 0;
+			repeat(10) @(posedge clk) a <= $urandom % 2;
+		wavedrom_stop();
+
+		repeat(100) @(posedge clk, negedge clk)
+			a <= $urandom % 2;
+		$finish;
+	end
+	
+	assign wavedrom_title = 512'b0;
+	assign wavedrom_enable = 1'b0;
+endmodule
+
+module RefModule (
+	input clk,
+	input a,
+	output logic q
+);
+	// Based on waveform: q(t) = ~a(t-10ns) on posedge
+	// This is equivalent to q <= ~a on posedge clk
+	always @(posedge clk) begin
+		q <= ~a;
+	end
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic q_ref;
+	logic q_dut;
+
+	// Queue for mismatch display
+	logic [0:0] q_a_hist [$];
+	logic [0:0] q_q_ref_hist [$];
+	logic [0:0] q_q_dut_hist [$];
+	localparam MAX_QUEUE_SIZE = 10;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,a,q_ref,q_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.a,
+		.wavedrom_title(wavedrom_title),
+		.wavedrom_enable(wavedrom_enable)
+	);
+
+	RefModule good1 (
+		.clk,
+		.a,
+		.q(q_ref) 
+	);
+		
+	TopModule top_module1 (
+		.clk,
+		.a,
+		.q(q_dut) 
+	);
+
+	// Verification logic
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		// Maintain queue size
+		if (q_a_hist.size() >= MAX_QUEUE_SIZE) begin
+			q_a_hist.delete(0);
+			q_q_ref_hist.delete(0);
+			q_q_dut_hist.delete(0);
+		end
+
+		// Push current values
+		q_a_hist.push_back(a);
+		q_q_ref_hist.push_back(q_ref);
+		q_q_dut_hist.push_back(q_dut);
+
+		stats1.clocks++;
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin 
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			stats1.errors_q = stats1.errors_q + 1;
+			end
+
+		// Display first mismatch details
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+			// We only want to print the queue once at the first error
+			// But the requirement says: "When the first mismatch occurs, display the queue content"
+			// Since this block runs every edge, we check if it's the first error
+			if (stats1.errors_q == 1) begin
+				$display("Mismatch detected at time %t", $time);
+				$display("\nLast %d cycles of simulation:", q_a_hist.size());
+				for (int i = 0; i < q_a_hist.size(); i++) begin
+					$display("Cycle %d, a=%b, q_ref=%b, q_dut=%b", 
+							i, q_a_hist[i], q_q_ref_hist[i], q_q_dut_hist[i]);
+					end
+				end
+			end
+		end
+	end
+
+	initial begin
+		#1000000;
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	final begin
+		if (stats1.errors_q == 0) begin
+			$display("SIMULATION PASSED");
+			$display("Hint: Output 'q' has no mismatches.");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+			$display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+		end
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 14:07:32,323 - mage.agent - INFO] Initial if:
+[2026-05-13 14:07:32,323 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic a,
+    output logic q
+);
+[2026-05-13 14:07:32,335 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  a
+ - output q
+
+This is a sequential circuit. Read the simulation waveforms to determine
+what the circuit does, then implement it.
+
+  time  clk a   q
+  0ns   0   x   x
+  5ns   1   0   x
+  10ns  0   0   x
+  15ns  1   0   1
+  20ns  0   0   1
+  25ns  1   0   1
+  30ns  0   0   1
+  35ns  1   1   1
+  40ns  0   1   1
+  45ns  1   1   0
+  50ns  0   1   0
+  55ns  1   1   0
+  60ns  0   1   0
+  65ns  1   1   0
+  70ns  0   1   0
+  75ns  1   1   0
+  80ns  0   1   0
+  85ns  1   1   0
+  90ns  0   1   0
+
+Assume all sequential logic is triggered on the positive edge of the
+clock.
+
+
+[2026-05-13 14:07:55,953 - mage.agent - INFO] Initial rtl:
+[2026-05-13 14:07:55,953 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic a,
+    output logic q
+);
+
+    // Initialize output to a known value to avoid X
+    initial begin
+        q = 1'b0;
+    end
+
+    // Sequential logic: q follows the inverse of input a
+    always @(posedge clk) begin
+        q <= ~a;
+    end
+
+endmodule
+[2026-05-13 14:08:00,597 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 14:09:04,169 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:09:04,171 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic a,
+    output [511:0] wavedrom_title,
+    output logic wavedrom_enable
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        @(posedge clk) {a} <= 0;
+        @(negedge clk) wavedrom_start("Unknown circuit");
+            @(posedge clk) {a} <= 0;
+            repeat(10) @(posedge clk) a <= $urandom;
+        wavedrom_stop();
+
+        repeat(100) @(posedge clk, negedge clk)
+            a <= $urandom;
+        $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic a;
+    logic q_ref;
+    logic q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, a, q_ref, q_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .a
+    );
+
+    // Note: RefModule is assumed to be provided by the environment as per golden testbench
+    RefModule good1 (
+        .clk,
+        .a,
+        .q(q_ref)
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .a,
+        .q(q_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    // Track first mismatch for detailed display
+    bit first_mismatch_reported = 0;
+    always @(posedge clk, negedge clk) begin
+        if (!tb_match && !first_mismatch_reported) begin
+            $display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+            $display("Signals: clk=%b, a=%b, q_ref=%b, q_dut=%b, expected=%b", clk, a, q_ref, q_dut, q_ref);
+            first_mismatch_reported = 1;
+        end
+    end
+
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin 
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q = stats1.errors_q + 1'b1;
+        end
+    end
+
+    final begin
+        if (stats1.errors_q > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", "q", stats1.errors_q, stats1.errortime_q);
+        end else begin
+            $display("SIMULATION PASSED");
+            $display("Hint: Output 'q' has no mismatches.");
+        end
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+    initial begin
+        #1000000;
+        $display("TIMEOUT");
+        $finish();
+    end
+
+endmodule

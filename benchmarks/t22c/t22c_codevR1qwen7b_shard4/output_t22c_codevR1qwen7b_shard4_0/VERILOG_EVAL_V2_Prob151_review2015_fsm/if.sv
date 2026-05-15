@@ -1,0 +1,10 @@
+module TopModule (
+    input clk,
+    input reset,
+    input data,
+    input done_counting,
+    input ack,
+    output shift_ena,
+    output counting,
+    output done
+);

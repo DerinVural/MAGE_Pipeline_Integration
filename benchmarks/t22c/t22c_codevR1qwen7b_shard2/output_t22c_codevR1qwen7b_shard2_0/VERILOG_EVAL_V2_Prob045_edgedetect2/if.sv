@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, input tb_match, output reg [7:0] in); // Additional outputs like wavedrom_title and wavedrom_enable might exist but are not part of the main interface as per the input_spec; however, the golden testbench shows in in stimulus_gen's ports. The TopModule's interface is clk and 8-bit in, output anyedge. But the golden testbench's tb has clk, in, etc.

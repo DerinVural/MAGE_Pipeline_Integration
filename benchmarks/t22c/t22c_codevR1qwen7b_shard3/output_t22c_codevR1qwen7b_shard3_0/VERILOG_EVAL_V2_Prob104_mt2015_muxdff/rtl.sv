@@ -1,0 +1,1 @@
+module TopModule (input clk, input L, input q_in, input r_in, output logic Q); logic q1, q2; always @(posedge clk) begin if (L) q1 <= r_in; else q1 <= (q_in ^ q1 ^ q_in); end always @(posedge clk) begin if (L) q2 <= q1; else q2 <= (q1 ^ q2 ^ q1); end always @(posedge clk) begin Q <= q2; end endmodule

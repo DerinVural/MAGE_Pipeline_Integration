@@ -1,0 +1,1 @@
+module TopModule (a, b, c, out); logic a, b, c; logic out;

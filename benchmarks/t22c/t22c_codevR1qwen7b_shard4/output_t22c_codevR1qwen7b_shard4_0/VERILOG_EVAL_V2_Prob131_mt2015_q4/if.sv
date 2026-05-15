@@ -1,0 +1,1 @@
+module tb(); logic x; logic y; logic z; TopModule top_module1(.x(x), .y(y), .z(z)); endmodule

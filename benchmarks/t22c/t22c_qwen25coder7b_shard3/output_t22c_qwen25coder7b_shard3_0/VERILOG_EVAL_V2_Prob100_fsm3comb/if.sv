@@ -1,0 +1,1 @@
+logic in; logic [1:0] state; logic [1:0] next_state; logic out;

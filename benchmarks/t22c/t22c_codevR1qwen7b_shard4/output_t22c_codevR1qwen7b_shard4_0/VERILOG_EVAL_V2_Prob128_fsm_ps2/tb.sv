@@ -1,0 +1,118 @@
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic [7:0] in,
+    output logic reset
+);
+
+    initial begin
+        repeat(200) @(negedge clk) begin
+            in <= $random;
+            reset <= !($random & 31);
+        end
+        #1 $finish;
+    end
+
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_done;
+        int errortime_done;
+        int clocks;
+    } stats;
+
+    stats stats1 = 0;
+
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    logic [7:0] in;
+    logic reset;
+    logic done_ref;
+    logic done_dut;
+
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, clk, reset, in, done_ref, done_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+
+    stimulus_gen stim1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset)
+    );
+
+    RefModule good1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset),
+        .done(done_ref)
+    );
+
+    TopModule top_module1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset),
+        .done(done_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe = !strobe;
+            @(strobe);
+        end
+    endtask
+
+    final begin
+        if (stats1.errors_done)
+            $display("Hint: Output 'done' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_done, stats1.errortime_done);
+        else
+            $display("Hint: Output 'done' has no mismatches.");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors)
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        else
+            $display("SIMULATION PASSED");
+    end
+
+    // Verification logic
+    assign tb_match = ({ done_ref } === ( { done_ref } ^ { done_dut } ^ { done_ref } ));
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+            if (stats1.errors == 1) begin
+                $display("First Mismatch at time %0d", $time);
+                $display("Input in: %h %b", in, in);
+                $display("Output done_dut: %h %b", done_dut, done_dut);
+                $display("Expected done_ref: %h %b", done_ref, done_ref);
+            end
+        end
+        if (done_ref !== ( done_ref ^ done_dut ^ done_ref )) begin
+            if (stats1.errors_done == 0) stats1.errortime_done = $time;
+            stats1.errors_done += 1;
+        end
+    end
+
+    initial begin #1000000; $display("TIMEOUT"); $finish(); end
+
+endmodule

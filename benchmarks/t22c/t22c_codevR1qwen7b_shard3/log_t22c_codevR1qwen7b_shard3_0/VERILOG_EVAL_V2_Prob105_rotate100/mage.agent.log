@@ -1,0 +1,484 @@
+[2026-05-14 11:59:31,284 - mage.agent - INFO] Initial tb:
+[2026-05-14 11:59:31,286 - mage.agent - INFO] module tb();
+	random_data_gen rg();
+	TopModule uut ();
+	reg [99:0] expected, got;
+	reg [99:0] q_gold;
+	// Clock generation
+	reg clk = 0;
+	always #5 clk = ~clk;
+
+	// Error counting
+	integer errors = 0;
+	integer err_time;
+
+	// Queue for mismatch display
+	reg [99:0] q_gold_queue [0:9];
+	reg [99:0] q_got_queue [0:9];
+	integer queue_ptr = 0;
+	localparam MAX_QUEUE = 10;
+
+	// Monitoring
+	always @(posedge clk) begin
+		q_gold_queue[queue_ptr] <= q_gold;
+		q_got_queue[queue_ptr] <= got;
+		if (got !== q_gold) begin
+			if (errors == 0) err_time = $time;
+			errors++;
+			if (errors == 1 && queue_ptr < MAX_QUEUE) queue_ptr++;
+		end
+	end
+
+	// Final display
+	initial begin
+		$dumpfile("tb.vcd");
+		$dumpvars(0, tb);
+	end
+
+	initial begin
+		wait(clk); // Wait for first edge
+		for (int i=0; i<100; i++) begin
+			// Test sequence
+			// ... (original test steps from golden testbench if needed, but in this case, simplified)
+		end
+		if (errors) $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", errors, err_time);
+		else $display("SIMULATION PASSED");
+		#10 $finish;
+	end
+endmodule
+[2026-05-14 11:59:31,286 - mage.agent - INFO] Initial if:
+[2026-05-14 11:59:31,286 - mage.agent - INFO] module TopModule (input clk, input load, input [1:0] ena, input [99:0] data, output [99:0] q);
+[2026-05-14 11:59:31,292 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  load
+ - input  ena  (  2 bits)
+ - input  data (100 bits)
+ - output q    (100 bits)
+
+The module should implement a 100-bit left/right rotator, with
+synchronous load and left/right enable. A rotator shifts-in the
+shifted-out bit from the other end of the register, unlike a shifter that
+discards the shifted-out bit and shifts in a zero. If enabled, a rotator
+rotates the bits around and does not modify/discard them.
+
+  (1) load: Loads shift register with data[99:0] instead of rotating.
+      Synchronous active high.
+
+  (2) ena[1:0]: Synchronous. Chooses whether and which direction to
+      rotate:
+      (a) 2'b01 rotates right by one bit,
+      (b) 2'b10 rotates left by one bit,
+      (c) 2'b00 and 2'b11 do not rotate.
+
+  (3) q: The contents of the rotator.
+
+
+[2026-05-14 12:03:15,068 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:03:15,068 - mage.agent - INFO] module TopModule ( input logic clk, input logic load, input logic [1:0] ena, input logic [99:0] data, output logic [99:0] q );
+
+  initial q = 100'b0;
+
+  always_ff @(posedge clk) begin
+    if (load) begin
+      q <= data;
+    end else begin
+      case (ena)
+        2'b01: q <= { q[0], q[99:1] };
+        2'b10: q <= { q[98:0], q[99] };
+        default: q <= q;
+      endcase
+    end
+  end
+
+endmodule
+[2026-05-14 12:03:16,897 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 12:03:33,643 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:03:33,643 - mage.agent - INFO] `timescale 1ps/1ps
+module stimulus_gen (
+    input clk,
+    output reg load,
+    output reg [1:0] ena,
+    output reg [99:0] data
+);
+    always @(posedge clk)
+        data <= {$random,$random,$random,$random};
+
+    initial begin
+        load <= 1;
+        @(posedge clk);
+        @(posedge clk);
+        @(posedge clk);
+        repeat(4000) @(posedge clk, negedge clk) begin
+            load <= !($random & 31);
+            ena <= $random;
+        end
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+
+    stats stats1;
+
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    reg load;
+    reg [1:0] ena;
+    reg [99:0] data;
+    logic [99:0] q_ref, q_dut;
+
+    wire tb_match, tb_mismatch = ~tb_match;
+
+    stimulus_gen stim1 (.clk(clk), .load(load), .ena(ena), .data(data));
+    RefModule good1 (.clk(clk), .load(load), .ena(ena), .data(data), .q(q_ref));
+    TopModule top_module1 (.clk(clk), .load(load), .ena(ena), .data(data), .q(q_dut));
+
+    // Error counting
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        // Check q only
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+
+    // First mismatch display
+    integer first_mismatch_time;
+    integer first_mismatch_errors;
+    reg [99:0] data_at_mismatch, q_ref_at, q_dut_at;
+    reg [1:0] ena_at;
+    reg load_at;
+    integer mismatch_count = 0;
+
+    // Capture first mismatch
+    always @(negedge clk) begin
+        if (!tb_match && mismatch_count == 0) begin
+            first_mismatch_time = $time;
+            data_at_mismatch = data;
+            q_ref_at = q_ref;
+            q_dut_at = q_dut;
+            ena_at = ena;
+            load_at = load;
+            mismatch_count = 1;
+        end
+    end
+
+    // Final display
+    final begin
+        if (stats1.errors_q) begin
+            $display(
+[2026-05-14 12:03:47,105 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:03:47,105 - mage.agent - INFO] `timescale 1ps/1ps
+module stimulus_gen (
+    input clk,
+    output reg load,
+    output reg [1:0] ena,
+    output reg [99:0] data
+);
+    always @(posedge clk)
+        data <= {$random,$random,$random,$random};
+    initial begin
+        load <= 1;
+        @(posedge clk);
+        @(posedge clk);
+        @(posedge clk);
+        repeat(4000) @(posedge clk, negedge clk) begin
+            load <= !($random & 31);
+            ena <= $random;
+        end
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    stats stats1;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    reg load;
+    reg [1:0] ena;
+    reg [99:0] data;
+    logic [99:0] q_ref, q_dut;
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    stimulus_gen stim1 (
+        .clk(clk),
+        .load(load),
+        .ena(ena),
+        .data(data)
+    );
+    RefModule good1 (
+        .clk(clk),
+        .load(load),
+        .ena(ena),
+        .data(data),
+        .q(q_ref)
+    );
+    TopModule top_module1 (
+        .clk(clk),
+        .load(load),
+        .ena(ena),
+        .data(data),
+        .q(q_dut)
+    );
+    assign tb_match = ({q_ref} === ({q_ref} ^ {q_dut} ^ {q_ref}));
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (q_ref !== (q_ref ^ q_dut ^ q_ref)) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+    integer first_mismatch_time;
+    integer first_mismatch_errors;
+    logic [99:0] data_at_mismatch, q_ref_at, q_dut_at;
+    logic [1:0] ena_at;
+    logic load_at;
+    integer mismatch_count = 0;
+    always @(negedge clk) begin
+        if (!tb_match && mismatch_count == 0) begin
+            first_mismatch_time = $time;
+            data_at_mismatch = data;
+            q_ref_at = q_ref;
+            q_dut_at = q_dut;
+            ena_at = ena;
+            load_at = load;
+            mismatch_count = 1;
+        end
+    end
+    final begin
+        if (stats1.errors_q) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+            $display("TIME %0d: data = %h (binary: %b)
+        Expected q_ref: %h (binary: %b), Found q_dut: %h (binary: %b)",
+            first_mismatch_time,
+            data_at_mismatch,
+            data_at_mismatch,
+            q_ref_at,
+            q_ref_at,
+            q_dut_at,
+            q_dut_at
+        );
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+    end
+endmodule
+[2026-05-14 12:03:59,751 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:03:59,752 - mage.agent - INFO] `timescale 1ps/1ps
+module stimulus_gen (
+    input clk,
+    output reg load,
+    output reg [1:0] ena,
+    output reg [99:0] data
+);
+    always @(posedge clk)
+        data <= {$random,$random,$random,$random};
+
+    initial begin
+        load <= 1;
+        @(posedge clk);
+        @(posedge clk);
+        @(posedge clk);
+        repeat(4000) @(posedge clk, negedge clk) begin
+            load <= !($random & 31);
+            ena <= $random;
+        end
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    stats stats1;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    reg load;
+    reg [1:0] ena;
+    reg [99:0] data;
+    logic [99:0] q_ref, q_dut;
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+
+    stimulus_gen stim1 (
+        .clk(clk),
+        .load(load),
+        .ena(ena),
+        .data(data)
+    );
+    RefModule good1 (
+        .clk(clk),
+        .load(load),
+        .ena(ena),
+        .data(data),
+        .q(q_ref)
+    );
+    TopModule top_module1 (
+        .clk(clk),
+        .load(load),
+        .ena(ena),
+        .data(data),
+        .q(q_dut)
+    );
+
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+    integer first_mismatch_time = 0;
+    integer first_mismatch_errors = 0;
+    logic [99:0] data_at_mismatch, q_ref_at, q_dut_at;
+    logic [1:0] ena_at;
+    logic load_at;
+    integer mismatch_count = 0;
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+
+    always @(negedge clk) begin
+        if (!tb_match && mismatch_count == 0) begin
+            first_mismatch_time = $time;
+            data_at_mismatch = data;
+            q_ref_at = q_ref;
+            q_dut_at = q_dut;
+            ena_at = ena;
+            load_at = load;
+            mismatch_count = 1;
+        end
+    end
+
+    final begin
+        if (stats1.errors_q) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+            $display("TIME %0d: data = %h (binary: %b), Expected q_ref: %h (binary: %b), Found q_dut: %h (binary: %b)",
+                first_mismatch_time,
+                data_at_mismatch, data_at_mismatch,
+                q_ref_at, q_ref_at,
+                q_dut_at, q_dut_at);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+    end
+endmodule
+[2026-05-14 12:05:34,060 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:05:34,060 - mage.agent - INFO] `timescale 1ps/1ps
+module stimulus_gen (
+    input clk,
+    output reg load,
+    output reg [1:0] ena,
+    output reg [99:0] data
+);
+    always @(posedge clk) data <= {$random,$random,$random,$random};
+    initial begin
+        load <= 1;
+        #(5000) $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    stats stats1;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic load;
+    logic [1:0] ena;
+    logic [99:0] data;
+    logic [99:0] q_ref, q_dut;
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    stimulus_gen stim1 (.clk(clk), .load(load), .ena(ena), .data(data));
+    RefModule good1 (.clk(clk), .load(load), .ena(ena), .data(data), .q(q_ref));
+    TopModule top_module1 (.clk(clk), .load(load), .ena(ena), .data(data), .q(q_dut));
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+    integer first_mismatch_time = 0;
+    integer first_mismatch_errors = 0;
+    logic [99:0] data_at_mismatch, q_ref_at, q_dut_at;
+    logic [1:0] ena_at;
+    logic load_at;
+    integer mismatch_count = 0;
+    always @(negedge clk) begin
+        if (!tb_match && mismatch_count == 0) begin
+            first_mismatch_time = $time;
+            data_at_mismatch = data;
+            q_ref_at = q_ref;
+            q_dut_at = q_dut;
+            ena_at = ena;
+            load_at = load;
+            mismatch_count = 1;
+        end
+    end
+    final begin
+        if (stats1.errors_q) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+            $display("TIME %0d: data = %h (binary: %b), Expected q_ref: %h (binary: %b), Found q_dut: %h (binary: %b)",
+                first_mismatch_time,
+                data_at_mismatch, data_at_mismatch,
+                q_ref_at, q_ref_at,
+                q_dut_at, q_dut_at);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+    end
+    initial begin
+        #1000000 $finish;
+    end
+endmodule

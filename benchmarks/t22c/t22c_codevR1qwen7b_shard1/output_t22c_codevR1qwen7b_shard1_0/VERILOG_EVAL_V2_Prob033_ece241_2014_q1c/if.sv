@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output logic [7:0] a, b, ...); // Other ports as per original

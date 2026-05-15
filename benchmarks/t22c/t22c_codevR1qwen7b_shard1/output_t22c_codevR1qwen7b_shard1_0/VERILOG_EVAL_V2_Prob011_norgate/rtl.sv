@@ -1,0 +1,1 @@
+module TopModule(input a, input b, output logic out);  assign out = ~(a | b); endmodule

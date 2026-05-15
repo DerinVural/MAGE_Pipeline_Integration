@@ -1,0 +1,1022 @@
+[2026-05-13 12:43:44,708 - mage.agent - INFO] Initial tb:
+[2026-05-13 12:43:44,710 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Reference Module to provide golden values
+module RefModule (
+    input logic clk,
+    input logic reset,
+    output logic [4:0] q
+);
+    logic [4:0] q_reg;
+    always @(posedge clk) begin
+        if (reset) begin
+            q_reg <= 5'b00001;
+        end else begin
+            // Galois LFSR: shift right. Taps at pos 5 (q[4]) and pos 3 (q[2])
+            // If q[0] is 1, XOR with taps.
+            if (q_reg[0]) begin
+                q_reg <= {1'b0, q_reg[4:1]} ^ 5'b01010; // This logic is specific to the tap description
+                // Re-interpreting: Galois LFSR shifts right. 
+                // Next q[4] = q[4] ^ q[0] if tap at 5
+                // Next q[2] = q[2] ^ q[0] if tap at 3
+                // Correct Galois implementation:
+                // q_next[4] = q[0] ? (q[4] ^ 1) : q[4]; ... wait, that's not standard.
+                // Standard: q_next = (q >> 1); if (q[0]) q_next ^= taps;
+                // Let's follow the spec: "bit position with a tap is XORed with the LSB output bit (q[0]) to produce its next value"
+            end else begin
+                q_reg <= {1'b0, q_reg[4:1]};
+            end
+        end
+    end
+    // Let's use a more robust implementation of the spec description:
+    // "shifts right, where a bit position with a 'tap' is XORed with the LSB output bit (q[0]) to produce its next value"
+    // This means q_next[i] = q[i+1] ^ (q[0] if i+1 is a tap)
+    always @(posedge clk) begin
+        if (reset) begin
+            q_reg <= 5'b00001;
+        end else begin
+            automatic logic [4:0] next_q;
+            next_q = {1'b0, q_reg[4:1]};
+            if (q_reg[0]) begin
+                // Tap at pos 5 (index 4) and pos 3 (index 2)
+                next_q[4] = q_reg[4] ^ 1'b1;
+                next_q[2] = q_reg[2] ^ 1'b1;
+            end else begin
+                next_q[4] = q_reg[4];
+                next_q[2] = q_reg[2];
+            end
+            q_reg <= next_q;
+        end
+    end
+    assign q = q_reg;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input [511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask
+
+    initial begin
+        reset <= 1;
+        @(negedge clk);
+        wavedrom_start();
+        reset_test();
+        repeat(8) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) begin
+            reset <= !($random & 31);
+        end
+        @(posedge clk) reset <= 1'b0;
+        repeat(2000) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+endmodule
+
+module tb;
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    logic reset;
+    logic [4:0] q_ref;
+    logic [4:0] q_dut;
+
+    // Error tracking queues
+    logic [4:0] q_ref_q [$];
+    logic [4:0] q_dut_q [$];
+    logic [4:0] q_expected_q [$];
+    logic reset_q [$];
+    localparam MAX_QUEUE_SIZE = 10;
+    bit first_mismatch_displayed = 0;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(0, tb);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .reset,
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .tb_match(tb_match)
+    );
+
+    RefModule good1 (
+        .clk,
+        .reset,
+        .q(q_ref)
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .reset,
+        .q(q_dut)
+    );
+
+    assign tb_match = (q_ref === q_dut);
+
+    always @(posedge clk, negedge clk) begin
+        // Maintain queue
+        if (reset_q.size() >= MAX_QUEUE_SIZE - 1) begin
+            reset_q.delete(0);
+            q_ref_q.delete(0);
+            q_dut_q.delete(0);
+            q_expected_q.delete(0);
+        end
+
+        // Push current values
+        // Note: Since we check mismatch at the same edge, we push the values that were just sampled
+        reset_q.push_back(reset);
+        q_ref_q.push_back(q_ref);
+        q_dut_q.push_back(q_dut);
+        q_expected_q.push_back(q_ref); // In this TB, q_ref is the golden expected
+
+        stats1.clocks++;
+
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            if (q_ref !== q_dut) begin
+                if (stats1.errors_q == 0) stats1.errortime_q = $time;
+                stats1.errors_q++;
+
+                if (!first_mismatch_displayed) begin
+                    $display("Mismatch detected at time %t", $time);
+                    $display("\nLast %d cycles of simulation:", reset_q.size());
+                    for (int i = 0; i < reset_q.size(); i++) begin
+                        $display("Cycle %d, reset %b, got output %h (%b), exp output %h (%b)",
+                            i, reset_q[i], q_dut_q[i], q_dut_q[i], q_expected_q[i], q_expected_q[i]);
+                    end
+                    first_mismatch_displayed = 1;
+                end
+            end
+        end
+    end
+
+    initial begin
+        #1000000;
+        $display("TIMEOUT");
+        $finish();
+    end
+
+    final begin
+        if (stats1.errors_q > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+    end
+endmodule
+[2026-05-13 12:43:44,710 - mage.agent - INFO] Initial if:
+[2026-05-13 12:43:44,710 - mage.agent - INFO] interface TopModule_if;
+    logic clk;
+    logic reset;
+    logic [4:0] q;
+endinterface
+[2026-05-13 12:43:44,716 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - output q (5 bits)
+
+A linear feedback shift register is a shift register usually with a few
+XOR gates to produce the next state of the shift register. A Galois LFSR
+is one particular arrangement that shifts right, where a bit position with
+a "tap" is XORed with the LSB output bit (q[0]) to produce its next value,
+while bit positions without a tap shift right unchanged.  If the taps positions
+are carefully chosen, the LFSR can be made to be "maximum-length". A maximum-length
+LFSR of n bits cycles through 2**n-1 states before repeating (the all-zero state is
+never reached).
+
+The module should implement a 5-bit maximal-length Galois LFSR with taps
+at bit positions 5 and 3. The active-high synchronous reset should reset
+the LFSR output to 1. Assume all sequential logic is triggered on the
+positive edge of the clock.
+
+
+[2026-05-13 12:44:07,807 - mage.agent - INFO] Initial rtl:
+[2026-05-13 12:44:07,807 - mage.agent - INFO] module TopModule(
+    input  logic       clk,
+    input  logic       reset,
+    output logic [4:0] q
+);
+
+    // Sequential logic for the LFSR
+    always @(posedge clk) begin
+        if (reset) begin
+            // Active-high synchronous reset to 1
+            q <= 5'b00001;
+        end else begin
+            // Galois LFSR: shift right
+            // q_next[4:0] = {1'b0, q[4:1]}
+            // If q[0] is 1, XOR the tap positions with 1
+            // Taps are at pos 5 (index 4) and pos 3 (index 2)
+            if (q[0]) begin
+                q <= ( {1'b0, q[4:1]} ) ^ 5'b10100;
+            end else begin
+                q <= {1'b0, q[4:1]};
+            end
+        end
+    end
+
+endmodule
+[2026-05-13 12:44:12,764 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 12:46:00,086 - mage.agent - INFO] Revised tb:
+[2026-05-13 12:46:00,088 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Reference Module implementation to allow testbench to run
+module RefModule (
+    input  logic clk,
+    input  logic reset,
+    output logic [4:0] q
+);
+    logic [4:0] q_reg;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            q_reg <= 5'b00001;
+        end else begin
+            // Galois LFSR 5-bit, taps at 5 and 3 (using 1-based indexing for spec: bits 5 and 3)
+            // In 0-based [4:0]: bit 4 and bit 2 are taps? 
+            // Spec says: "taps at bit positions 5 and 3". 
+            // In a 5-bit register, positions 5 and 3 usually refer to the bits. 
+            // Let's assume 1-based: bit 5 (q[4]) and bit 3 (q[2]).
+            // Galois LFSR: shift right. If tap, XOR with LSB.
+            if (q_reg[0]) begin
+                q_reg <= {1'b0, q_reg[4:1]} ^ (5'b00101); // This is one way to implement Galois.
+                // However, standard Galois implementation:
+                // q_next = {tap_bit, q[4:1]} ^ (tap_bit ? mask : 0)
+                // Let's follow the spec: "a bit position with a tap is XORed with the LSB..."
+                // Logic: q_next[4:1] = q[4:1]; if (q[4] or q[2]) q_next[0] = q[0] ^ ...
+                // Actually, the spec says: "where a bit position with a 'tap' is XORed with the LSB output bit (q[0]) to produce its next value"
+                // This implies: q_next[i] = q[i+1] ^ (q[0] if tap at i+1 else 0)
+                // Let's implement the specific logic for a 5-bit Galois LFSR with taps at 5 and 3.
+            end else begin
+                q_reg <= {1'b0, q_reg[4:1]};
+            end
+        end
+    end
+    // Redefining based on strict Galois interpretation for the test:
+    // A Galois LFSR shifts right. Taps at 5 and 3.
+    // q_next[4] = q[4] (no tap at 5? wait, bit 5 is the MSB)
+    // Let's use the standard: q_next = {q[4:1], 0} ^ (q[0] ? mask : 0)
+    // If taps are at 5 and 3 (1-indexed), mask bits are 4 and 2 (0-indexed).
+    always_ff @(posedge clk) begin
+        if (reset) q_reg <= 5'b00001;
+        else begin
+            logic feedback;
+            feedback = q_reg[0];
+            q_reg <= {1'b0, q_reg[4:1]} ^ (feedback ? 5'b00101 : 5'b00000);
+        end
+    end
+    assign q = q_reg;
+endmodule
+
+module stimulus_gen (
+	input clk,
+	output reg reset,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match	
+);
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+		
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+		
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			reset <= 0;
+		end
+		if (srfail)
+			$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	end
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		reset <= 1;
+		@(negedge clk);
+		wavedrom_start();
+			reset_test();
+			repeat(8) @(posedge clk);
+		@(negedge clk);
+		wavedrom_stop();
+		repeat(400) @(posedge clk, negedge clk) begin
+			reset <= !($random & 31);
+		end
+		@(posedge clk) reset <= 1'b0;
+		repeat(2000) @(posedge clk);
+		reset <= 1'b1;
+		repeat(5) @(posedge clk);
+		#1 $finish;
+	end
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic [4:0] q_ref;
+	logic [4:0] q_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,q_ref,q_dut );
+	end
+
+	wire tb_match;	// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.reset );
+	RefModule good1 (
+		.clk,
+		.reset,
+		.q(q_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		.q(q_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	final begin
+		if (stats1.errors_q) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+			$display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+		end else begin
+			$display("SIMULATION PASSED");
+			$display("Hint: Output 'q' has no mismatches.");
+		end
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end;
+	
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			end;
+
+		// Requirement: Display first mismatch details
+		if (q_ref !== q_dut && stats1.errors_q == 0) begin
+			$display("Mismatch detected at time %0t:", $time);
+			$display("  clk: %b, reset: %b", clk, reset);
+			$display("  Expected q: %h (bin: %b)", q_ref, q_ref);
+			$display("  Actual q:   %h (bin: %b)", q_dut, q_dut);
+		end
+
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+		begin 
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			stats1.errors_q = stats1.errors_q+1'b1; 
+		end
+	end;
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 12:47:30,935 - mage.agent - INFO] Revised tb:
+[2026-05-13 12:47:30,935 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Reference Module implementation to allow testbench to run
+module RefModule (
+    input  logic clk,
+    input  logic reset,
+    output logic [4:0] q
+);
+    logic [4:0] q_reg;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            q_reg <= 5'b00001;
+        end else begin
+            // Galois LFSR: shift right. Taps at 5 and 3 (1-indexed) -> 4 and 2 (0-indexed)
+            // The spec says: bit position with a tap is XORed with the LSB
+            // q_next[i] = q[i+1] ^ (q[0] if tap at i+1 else 0)
+            // For 5-bit: q_next[4]=q[?], q_next[3]=q[4]^q[0]?, q_next[2]=q[3], q_next[1]=q[2]^q[0]?, q_next[0]=q[1]
+            // A standard Galois implementation: q_next = {1'b0, q[4:1]} ^ (q[0] ? mask : 0)
+            // If taps are at 5 and 3, mask bits are at positions 5 and 3 in the shift-in process.
+            // Since we shift right, the tap at bit 5 affects the result of the shift from bit 5.
+            // In a 5-bit right shift: q[4] moves to q[3]. If 5 is a tap, q[3] = q[4] ^ q[0].
+            // q[2] moves to q[1]. If 3 is a tap, q[1] = q[2] ^ q[0].
+            // Mask for taps at 5 and 3 (1-indexed) is 5'b01010 (bits 4 and 2 are 1).
+            // Wait, if we shift right, q[4] is the MSB. Bit 5 is index 4. Bit 3 is index 2.
+            // q_next[3] = q[4] ^ q[0], q_next[1] = q[2] ^ q[0].
+            // This corresponds to mask 5'b01010.
+            q_reg <= {1'b0, q_reg[4:1]} ^ (q_reg[0] ? 5'b01010 : 5'b00000);
+        end
+    end
+    assign q = q_reg;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        reset <= 1;
+        @(negedge clk);
+        wavedrom_start();
+            reset_test();
+            repeat(8) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) begin
+            reset <= !($random & 31);
+        end
+        @(posedge clk) reset <= 1'b0;
+        repeat(2000) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic reset;
+    logic [4:0] q_ref;
+    logic [4:0] q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, reset, q_ref, q_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .reset
+    );
+
+    RefModule good1 (
+        .clk,
+        .reset,
+        .q(q_ref)
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .reset,
+        .q(q_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    final begin
+        if (stats1.errors_q > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+    
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q = stats1.errors_q + 1'b1;
+        end
+
+        // Display first mismatch details
+        if (q_ref !== q_dut && stats1.errors_q == 1) begin
+            $display("Mismatch detected at time %0t:", $time);
+            $display("  clk: %b, reset: %b", clk, reset);
+            $display("  Expected q: %h (bin: %b)", q_ref, q_ref);
+            $display("  Actual q:   %h (bin: %b)", q_dut, q_dut);
+        end
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+endmodule
+[2026-05-13 12:48:52,544 - mage.agent - INFO] Revised tb:
+[2026-05-13 12:48:52,544 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Reference Module implementation to allow testbench to run
+module RefModule (
+    input  logic clk,
+    input  logic reset,
+    output logic [4:0] q
+);
+    logic [4:0] q_reg;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            q_reg <= 5'b00001;
+        end else begin
+            // Galois LFSR 5-bit, taps at 5 and 3 (1-indexed) -> 4 and 2 (0-indexed)
+            // Right shift: q_next = {1'b0, q[4:1]} ^ (q[0] ? mask : 0)
+            // Taps at 5 and 3 means bits 4 and 2 are XORed.
+            q_reg <= {1'b0, q_reg[4:1]} ^ (q_reg[0] ? 5'b01010 : 5'b00000);
+        end
+    end
+    assign q = q_reg;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        reset <= 1;
+        @(negedge clk);
+        wavedrom_start();
+            reset_test();
+            repeat(8) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) begin
+            reset <= !($random & 31);
+        end
+        @(posedge clk) reset <= 1'b0;
+        repeat(2000) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic reset;
+    logic [4:0] q_ref;
+    logic [4:0] q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,q_ref,q_dut );
+    end
+
+    wire tb_match; // Verification
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .reset
+    );
+
+    RefModule good1 (
+        .clk,
+        .reset,
+        .q(q_ref) 
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .reset,
+        .q(q_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    final begin
+        if (stats1.errors_q > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+    
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) begin
+                stats1.errortime_q = $time;
+                $display("Mismatch detected at time %0t:", $time);
+                $display("  clk: %b, reset: %b", clk, reset);
+                $display("  Expected q: %h (bin: %b)", q_ref, q_ref);
+                $display("  Actual q:   %h (bin: %b)", q_dut, q_dut);
+            end
+            stats1.errors_q = stats1.errors_q + 1'b1;
+        end
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+endmodule
+[2026-05-13 12:50:15,908 - mage.agent - INFO] Revised tb:
+[2026-05-13 12:50:15,908 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Reference Module implementation to allow testbench to run
+// In some environments, this might be provided externally.
+module RefModule (
+    input  logic clk,
+    input  logic reset,
+    output logic [4:0] q
+);
+    logic [4:0] q_reg;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            q_reg <= 5'b00001;
+        end else begin
+            // Galois LFSR: shift right. Taps at 5 and 3 (1-indexed) -> 4 and 2 (0-indexed).
+            // Mask 5'b01010 corresponds to indices 4 and 2.
+            q_reg <= {1'b0, q_reg[4:1]} ^ (q_reg[0] ? 5'b01010 : 5'b00000);
+        end
+    end
+    assign q = q_reg;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        reset <= 1;
+        @(negedge clk);
+        wavedrom_start();
+            reset_test();
+            repeat(8) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) begin
+            reset <= !($random & 31);
+        end
+        @(posedge clk) reset <= 1'b0;
+        repeat(2000) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic reset;
+    logic [4:0] q_ref;
+    logic [4:0] q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, reset, q_ref, q_dut);
+    end
+
+    wire tb_match; // Verification
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .reset
+    );
+
+    RefModule good1 (
+        .clk,
+        .reset,
+        .q(q_ref)
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .reset,
+        .q(q_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    final begin
+        if (stats1.errors_q > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+    
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) begin
+                stats1.errortime_q = $time;
+                $display("Mismatch detected at time %0t:", $time);
+                $display("  Inputs: clk=%b, reset=%b", clk, reset);
+                $display("  Expected q: %h (bin: %b)", q_ref, q_ref);
+                $display("  Actual q:   %h (bin: %b)", q_dut, q_dut);
+            end
+            stats1.errors_q = stats1.errors_q + 1'b1;
+        end
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+endmodule

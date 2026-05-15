@@ -1,0 +1,484 @@
+[2026-05-13 15:56:53,726 - mage.agent - INFO] Initial tb:
+[2026-05-13 15:56:53,728 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg load,
+	output reg ena,
+	output reg[1:0] amount,
+	output reg[63:0] data,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		load <= 1;
+		ena <= 0;
+		data <= 'x;
+		amount <= 0;
+		@(posedge clk) data <= 64'h000100;
+		wavedrom_start("Shifting");
+			@(posedge clk) load <= 0; ena <= 1;
+							amount <= 2;
+			@(posedge clk) amount <= 2;
+				@(posedge clk) amount <= 2;
+					@(posedge clk) amount <= 1;
+						@(posedge clk) amount <= 1;
+							@(posedge clk) amount <= 0;
+								@(posedge clk) amount <= 0;
+									@(posedge clk) amount <= 3;
+										@(posedge clk) amount <= 3;
+											@(posedge clk) amount <= 2;
+												@(posedge clk) amount <= 2;
+										@(negedge clk);
+		wavedrom_stop();
+		
+		@(posedge clk); load <= 1; data <= 64'hx;
+		@(posedge clk); load <= 1; data <= 64'h80000000_00000000;
+		wavedrom_start("Arithmetic right shift");
+			@(posedge clk) load <= 0; ena <= 1;
+							amount <= 2;
+			@(posedge clk) amount <= 2;
+				@(posedge clk) amount <= 2;
+					@(posedge clk) amount <= 2;
+						@(posedge clk) amount <= 2;
+						@(negedge clk);
+		wavedrom_stop();
+
+		@(posedge clk);
+		@(posedge clk);
+		
+		
+		
+		repeat(4000) @(posedge clk, negedge clk) begin
+			load <= !($random & 31);
+			ena <= |($random & 15);
+			amount <= $random;
+			data <= {$random,$random};
+		end;
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic load;
+	logic ena;
+	logic [1:0] amount;
+	logic [63:0] data;
+	logic [63:0] q_ref;
+	logic [63:0] q_dut;
+
+	// Queues for mismatch display
+	logic load_q [$];
+	logic ena_q [$];
+	logic [1:0] amount_q [$];
+	logic [63:0] data_q [$];
+	logic [63:0] q_ref_q [$];
+	logic [63:0] q_dut_q [$];
+	localparam MAX_QUEUE_SIZE = 10;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,load,ena,amount,data,q_ref,q_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.load,
+		.ena,
+		.amount,
+		.data );
+	RefModule good1 (
+		.clk,
+		.load,
+		.ena,
+		.amount,
+		.data,
+		.q(q_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.load,
+		.ena,
+		.amount,
+		.data,
+		.q(q_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	final begin
+		if (stats1.errors_q > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+			$display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "q", stats1.errors_q, stats1.errortime_q);
+		end else if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end else begin
+			$display("SIMULATION PASSED");
+			end;
+		end;
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end;
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+	
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		
+		// Manage Queues
+		if (load_q.size() >= MAX_QUEUE_SIZE) begin
+			load_q.delete(0);
+			ena_q.delete(0);
+			amount_q.delete(0);
+			data_q.delete(0);
+			q_ref_q.delete(0);
+			q_dut_q.delete(0);
+		end
+		load_q.push_back(load);
+		ena_q.push_back(ena);
+		amount_q.push_back(amount);
+		data_q.push_back(data);
+		q_ref_q.push_back(q_ref);
+		q_dut_q.push_back(q_dut);
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			end;
+			if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin 
+				if (stats1.errors_q == 0) stats1.errortime_q = $time;
+				stats1.errors_q = stats1.errors_q+1'b1; 
+			end;
+			
+			// Display first mismatch details
+			if (stats1.errors_q == 1) begin
+				$display("Mismatch detected at time %t", $time);
+				$display("\nLast %d cycles of simulation:", load_q.size());
+				for (int i = 0; i < load_q.size(); i++) begin
+					$display("Cycle %d, load=%b, ena=%b, amount=%b, data=%h (%b), q_ref=%h (%b), q_dut=%h (%b)",
+							i, load_q[i], ena_q[i], amount_q[i], data_q[i], data_q[i], q_ref_q[i], q_ref_q[i], q_dut_q[i], q_dut_q[i]);
+					end;
+			end
+		end
+	end;
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end;
+
+endmodule
+[2026-05-13 15:56:53,728 - mage.agent - INFO] Initial if:
+[2026-05-13 15:56:53,728 - mage.agent - INFO] module TopModule (
+    input  logic        clk,
+    input  logic        load,
+    input  logic        ena,
+    input  logic [1:0]  amount,
+    input  logic [63:0] data,
+    output logic [63:0] q
+);
+endmodule
+[2026-05-13 15:56:53,734 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  load
+ - input  ena
+ - input  amount (2 bits)
+ - input  data (64 bits)
+ - output q (64 bits)
+
+The module should implement a 64-bit arithmetic shift register, with
+synchronous load. The shifter can shift both left and right, and by 1 or
+8 bit positions, selected by "amount." Assume the right shit is an
+arithmetic right shift.
+
+Signals are defined as below:
+
+  (1) load: Loads shift register with data[63:0] instead of shifting.
+       Active high.
+  (2) ena: Chooses whether to shift. Active high.
+  (3) amount: Chooses which direction and how much to shift.
+      (a) 2'b00: shift left by 1 bit.
+      (b) 2'b01: shift left by 8 bits.
+      (c) 2'b10: shift right by 1 bit.
+      (d) 2'b11: shift right by 8 bits.
+  (4) q: The contents of the shifter.
+
+
+[2026-05-13 15:57:25,429 - mage.agent - INFO] Initial rtl:
+[2026-05-13 15:57:25,429 - mage.agent - INFO] module TopModule (
+    input  logic        clk,
+    input  logic        load,
+    input  logic        ena,
+    input  logic [1:0]  amount,
+    input  logic [63:0] data,
+    output logic [63:0] q
+);
+
+    // Initialize register to 0 to avoid X state
+    initial begin
+        q = 64'b0;
+    end
+
+    // Sequential logic for load and shift
+    always @(posedge clk) begin
+        if (load) begin
+            q <= data;
+        end else if (ena) begin
+            case (amount)
+                2'b00: begin
+                    // Shift left by 1
+                    q <= q << 1;
+                end
+                2'b01: begin
+                    // Shift left by 8
+                    q <= q << 8;
+                end
+                2'b10: begin
+                    // Arithmetic right shift by 1
+                    // Use $signed to ensure sign extension
+                    q <= $signed(q) >>> 1;
+                end
+                2'b11: begin
+                    // Arithmetic right shift by 8
+                    q <= $signed(q) >>> 8;
+                end
+                default: ;
+            endcase
+        end
+    end
+
+endmodule
+[2026-05-13 15:57:29,164 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 15:58:41,500 - mage.agent - INFO] Revised tb:
+[2026-05-13 15:58:41,500 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic load,
+    output logic ena,
+    output logic [1:0] amount,
+    output logic [63:0] data,
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        load <= 1;
+        ena <= 0;
+        data <= 'x;
+        amount <= 0;
+        @(posedge clk) data <= 64'h000100;
+        wavedrom_start("Shifting");
+            @(posedge clk) load <= 0; ena <= 1;
+                            amount <= 2;
+            @(posedge clk) amount <= 2;
+            @(posedge clk) amount <= 2;
+            @(posedge clk) amount <= 1;
+            @(posedge clk) amount <= 1;
+            @(posedge clk) amount <= 0;
+            @(posedge clk) amount <= 0;
+            @(posedge clk) amount <= 3;
+            @(posedge clk) amount <= 3;
+            @(posedge clk) amount <= 2;
+            @(posedge clk) amount <= 2;
+            @(negedge clk);
+        wavedrom_stop();
+        
+        @(posedge clk); load <= 1; data <= 64'hx;
+        @(posedge clk); load <= 1; data <= 64'h80000000_00000000;
+        wavedrom_start("Arithmetic right shift");
+            @(posedge clk) load <= 0; ena <= 1;
+                            amount <= 2;
+            @(posedge clk) amount <= 2;
+            @(posedge clk) amount <= 2;
+            @(posedge clk) amount <= 2;
+            @(posedge clk) amount <= 2;
+            @(negedge clk);
+        wavedrom_stop();
+
+        @(posedge clk);
+        @(posedge clk);
+        
+        repeat(4000) @(posedge clk, negedge clk) begin
+            load <= !($random & 31);
+            ena <= |($random & 15);
+            amount <= $random;
+            data <= {$random, $random};
+        end
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic load;
+    logic ena;
+    logic [1:0] amount;
+    logic [63:0] data;
+    logic [63:0] q_ref;
+    logic [63:0] q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, load, ena, amount, data, q_ref, q_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .load,
+        .ena,
+        .amount,
+        .data
+    );
+
+    // RefModule is assumed to be provided by the environment
+    RefModule good1 (
+        .clk,
+        .load,
+        .ena,
+        .amount,
+        .data,
+        .q(q_ref)
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .load,
+        .ena,
+        .amount,
+        .data,
+        .q(q_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) begin
+                stats1.errortime_q = $time;
+                $display("\n[MISMATCH DETECTED]");
+                $display("Time: %0t", $time);
+                $display("Inputs: clk=%b, load=%b, ena=%b, amount=%b, data=%h (%b)", clk, load, ena, amount, data, data);
+                $display("Expected q: %h (%b)", q_ref, q_ref);
+                $display("Actual q:   %h (%b)", q_dut, q_dut);
+            end
+            stats1.errors_q = stats1.errors_q + 1'b1;
+        end
+    end
+
+    initial begin
+        #1000000;
+        $display("TIMEOUT");
+        $finish();
+    end
+
+    final begin
+        if (stats1.errors_q > 0) begin
+            $display("\nSIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_q, stats1.errortime_q);
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+            $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        end else begin
+            $display("\nSIMULATION PASSED");
+            $display("Hint: Output 'q' has no mismatches.");
+            $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        end
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+endmodule

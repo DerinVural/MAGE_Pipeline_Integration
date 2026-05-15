@@ -1,0 +1,874 @@
+[2026-05-13 12:58:46,462 - mage.agent - INFO] Initial tb:
+[2026-05-13 12:58:46,464 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Dummy RefModule to make the testbench runnable
+module RefModule (
+    input  logic       clk,
+    input  logic [7:0] in,
+    output logic [7:0] pedge
+);
+    logic [7:0] in_delay;
+    always @(posedge clk) begin
+        in_delay <= in;
+    end
+    assign pedge = in & ~in_delay;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    input tb_match,
+    output reg [7:0] in,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        in <= 0;
+        @(posedge clk);
+        wavedrom_start("");
+        repeat(2) @(posedge clk);
+        in <= 1;
+        repeat(4) @(posedge clk);
+        in <= 0;
+        repeat(4) @(negedge clk);
+        in <= 6;
+        repeat(2) @(negedge clk);
+        in <= 0;        
+        repeat(2) @(posedge clk);
+        wavedrom_stop();
+
+        repeat(200)
+            @(posedge clk, negedge clk) in <= $random;
+        $finish;
+    end
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_pedge;
+        int errortime_pedge;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [7:0] in;
+    logic [7:0] pedge_ref;
+    logic [7:0] pedge_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, in, pedge_ref, pedge_dut);
+    end
+
+    wire tb_match;        // Verification
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .in
+    );
+
+    RefModule good1 (
+        .clk,
+        .in,
+        .pedge(pedge_ref) 
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .in,
+        .pedge(pedge_dut) 
+    );
+
+    // Queue for mismatch display
+    localparam MAX_QUEUE_SIZE = 10;
+    logic [7:0] in_q [$];
+    logic [7:0] dut_q [$];
+    logic [7:0] ref_q [$];
+    bit first_mismatch_displayed = 0;
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    // Verification Logic
+    assign tb_match = ( { pedge_ref } === ( { pedge_ref } ^ { pedge_dut } ^ { pedge_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        // Maintain Queue
+        if (in_q.size() >= MAX_QUEUE_SIZE) begin
+            in_q.delete(0);
+            dut_q.delete(0);
+            ref_q.delete(0);
+        end
+        in_q.push_back(in);
+        dut_q.push_back(pedge_dut);
+        ref_q.push_back(pedge_ref);
+
+        // Error counting (Original Logic)
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (pedge_ref !== ( pedge_ref ^ pedge_dut ^ pedge_ref )) begin 
+            if (stats1.errors_pedge == 0) stats1.errortime_pedge = $time;
+            stats1.errors_pedge = stats1.errors_pedge + 1;
+        end
+
+        // Mismatch Display Logic (New Requirement)
+        if (!tb_match && !first_mismatch_displayed) begin
+            $display("Mismatch detected at time %t", $time);
+            $display("\nLast %d cycles of simulation:", in_q.size());
+            for (int i = 0; i < in_q.size(); i++) begin
+                $display("Cycle %d, in: %h (%b), got output: %h (%b), exp output: %h (%b)",
+                    i, 
+                    in_q[i], in_q[i], 
+                    dut_q[i], dut_q[i], 
+                    ref_q[i], ref_q[i]);
+            end
+            first_mismatch_displayed = 1;
+        end
+    end
+
+    final begin
+        if (stats1.errors_pedge) 
+            $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "pedge", stats1.errors_pedge, stats1.errortime_pedge);
+        else 
+            $display("Hint: Output '%s' has no mismatches.", "pedge");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+    end
+
+    initial begin
+        #1000000
+        $display("TIMEOUT");
+        $finish();
+    end
+
+endmodule
+
+[2026-05-13 12:58:46,464 - mage.agent - INFO] Initial if:
+[2026-05-13 12:58:46,464 - mage.agent - INFO] module TopModule (
+    input  logic       clk,
+    input  logic [7:0] in,
+    output logic [7:0] pedge
+);
+
+[2026-05-13 12:58:46,469 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  in    (8 bits)
+ - output pedge (8 bits)
+
+The module should examine each bit in an 8-bit vector and detect when the
+input signal changes from 0 in one clock cycle to 1 the next (similar to
+positive edge detection). The output bit should be set the cycle after a
+0 to 1 transition occurs.
+
+
+[2026-05-13 12:59:04,589 - mage.agent - INFO] Initial rtl:
+[2026-05-13 12:59:04,589 - mage.agent - INFO] module TopModule (
+    input  logic       clk,
+    input  logic [7:0] in,
+    output logic [7:0] pedge
+);
+
+    // Register to store the delayed input signal
+    logic [7:0] in_d1;
+
+    // Initialize register to avoid unknown state in simulation
+    initial begin
+        in_d1 = 8'b0;
+    end
+
+    // Sequential logic: Delay the input by one clock cycle
+    always @(posedge clk) begin
+        in_d1 <= in;
+    end
+
+    // Combinational logic: Detect 0 to 1 transition
+    // pedge is 1 where current bit is 1 and previous bit was 0
+    always @(*) begin
+        pedge = in & ~in_d1;
+    end
+
+endmodule
+[2026-05-13 12:59:09,760 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 13:00:27,516 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:00:27,516 - mage.agent - INFO] ``timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output reg [7:0] in,
+	output reg [511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		in <= 0;
+		@(posedge clk);
+		wavedrom_start("");
+		repeat(2) @(posedge clk);
+		in <= 1;
+		repeat(4) @(posedge clk);
+		in <= 0;
+		repeat(4) @(negedge clk);
+		in <= 6;
+		repeat(2) @(negedge clk);
+		in <= 0;
+		repeat(2) @(posedge clk);
+		wavedrom_stop();
+
+		repeat(200)
+			@(posedge clk, negedge clk) in <= $random;
+		$finish;
+	end
+	
+endmodule
+
+// Reference module to provide correct behavior for verification
+module RefModule (
+    input clk,
+    input [7:0] in,
+    output [7:0] pedge
+);
+    logic [7:0] in_delayed;
+    always @(posedge clk) begin
+        in_delayed <= in;
+    end
+    assign pedge = in & ~in_delayed;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_pedge;
+		int errortime_pedge;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [7:0] in;
+	logic [7:0] pedge_ref;
+	logic [7:0] pedge_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,in,pedge_ref,pedge_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in 
+	);
+	RefModule good1 (
+		.clk,
+		.in,
+		.pedge(pedge_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.in,
+		.pedge(pedge_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_pedge) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "pedge", stats1.errors_pedge, stats1.errortime_pedge);
+		else $display("Hint: Output '%s' has no mismatches.", "pedge");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { pedge_ref } === ( { pedge_ref } ^ { pedge_dut } ^ { pedge_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("FIRST MISMATCH DETECTED at time %0d ps:", $time);
+				$display("  in       = 0x%h (0b%b)", in, in);
+				$display("  pedge_dut = 0x%h (0b%b)", pedge_dut, pedge_dut);
+				$display("  pedge_ref = 0x%h (0b%b)", pedge_ref, pedge_ref);
+			end
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+
+		if (pedge_ref !== ( pedge_ref ^ pedge_dut ^ pedge_ref ))
+		begin 
+			if (stats1.errors_pedge == 0) stats1.errortime_pedge = $time;
+			stats1.errors_pedge = stats1.errors_pedge+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 13:01:49,271 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:01:49,271 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output reg [7:0] in,
+	output reg [511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		in <= 0;
+		@(posedge clk);
+		wavedrom_start("");
+		repeat(2) @(posedge clk);
+		in <= 1;
+		repeat(4) @(posedge clk);
+		in <= 0;
+		repeat(4) @(negedge clk);
+		in <= 6;
+		repeat(2) @(negedge clk);
+		in <= 0; 
+		repeat(2) @(posedge clk);
+		wavedrom_stop();
+
+		repeat(200)
+			@(posedge clk, negedge clk) in <= $random;
+		$finish;
+	end
+	
+endmodule
+
+module RefModule (
+    input clk,
+    input [7:0] in,
+    output [7:0] pedge
+);
+    logic [7:0] in_d1;
+    always @(posedge clk) begin
+        in_d1 <= in;
+    end
+    assign pedge = in & ~in_d1;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_pedge;
+		int errortime_pedge;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [7:0] in;
+	logic [7:0] pedge_ref;
+	logic [7:0] pedge_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,in,pedge_ref,pedge_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in 
+	);
+	RefModule good1 (
+		.clk,
+		.in,
+		.pedge(pedge_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.in,
+		.pedge(pedge_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_pedge) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "pedge", stats1.errors_pedge, stats1.errortime_pedge);
+		else $display("Hint: Output '%s' has no mismatches.", "pedge");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { pedge_ref } === ( { pedge_ref } ^ { pedge_dut } ^ { pedge_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("FIRST MISMATCH DETECTED at time %0d ps:", $time);
+				$display("  in       = 0x%h (0b%b)", in, in);
+				$display("  pedge_dut = 0x%h (0b%b)", pedge_dut, pedge_dut);
+				$display("  pedge_ref = 0x%h (0b%b)", pedge_ref, pedge_ref);
+			end
+			stats1.errors++;
+		end
+
+		if (pedge_ref !== ( pedge_ref ^ pedge_dut ^ pedge_ref ))
+		begin 
+			if (stats1.errors_pedge == 0) stats1.errortime_pedge = $time;
+			stats1.errors_pedge = stats1.errors_pedge+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 13:03:10,837 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:03:10,837 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output reg [7:0] in,
+	output reg [511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		in <= 0;
+		@(posedge clk);
+		wavedrom_start("");
+		repeat(2) @(posedge clk);
+		in <= 1;
+		repeat(4) @(posedge clk);
+		in <= 0;
+		repeat(4) @(negedge clk);
+		in <= 6;
+		repeat(2) @(negedge clk);
+		in <= 0;	
+		repeat(2) @(posedge clk);
+		wavedrom_stop();
+
+		repeat(200)
+			@(posedge clk, negedge clk) in <= $random;
+		$finish;
+	end;
+	
+endmodule
+
+module RefModule (
+    input clk,
+    input [7:0] in,
+    output [7:0] pedge
+);
+    logic [7:0] in_d1;
+    always @(posedge clk) begin
+        in_d1 <= in;
+    end
+    assign pedge = in & ~in_d1;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_pedge;
+		int errortime_pedge;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [7:0] in;
+	logic [7:0] pedge_ref;
+	logic [7:0] pedge_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,in,pedge_ref,pedge_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in 
+	);
+	RefModule good1 (
+		.clk,
+		.in,
+		.pedge(pedge_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.in,
+		.pedge(pedge_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_pedge) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "pedge", stats1.errors_pedge, stats1.errortime_pedge);
+		else $display("Hint: Output '%s' has no mismatches.", "pedge");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { pedge_ref } === ( { pedge_ref } ^ { pedge_dut } ^ { pedge_ref } ) );
+	// Use explicit sensitivity list here. 
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("FIRST MISMATCH DETECTED at time %0d ps:", $time);
+				$display("  in       = 0x%h (0b%b)", in, in);
+				$display("  pedge_dut = 0x%h (0b%b)", pedge_dut, pedge_dut);
+				$display("  pedge_ref = 0x%h (0b%b)", pedge_ref, pedge_ref);
+			end
+			stats1.errors++;
+		end
+
+		if (pedge_ref !== ( pedge_ref ^ pedge_dut ^ pedge_ref ))
+		begin if (stats1.errors_pedge == 0) stats1.errortime_pedge = $time;
+			stats1.errors_pedge = stats1.errors_pedge+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 13:04:30,691 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:04:30,692 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output reg [7:0] in,
+	output reg [511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		in <= 0;
+		@(posedge clk);
+		wavedrom_start("");
+		repeat(2) @(posedge clk);
+		in <= 1;
+		repeat(4) @(posedge clk);
+		in <= 0;
+		repeat(4) @(negedge clk);
+		in <= 6;
+		repeat(2) @(negedge clk);
+		in <= 0;	
+		repeat(2) @(posedge clk);
+		wavedrom_stop();
+
+		repeat(200)
+			@(posedge clk, negedge clk) in <= $random;
+		$finish;
+	end;
+	
+endmodule
+
+module RefModule (
+    input clk,
+    input [7:0] in,
+    output [7:0] pedge
+);
+    logic [7:0] in_d1;
+    always @(posedge clk) begin
+        in_d1 <= in;
+    end
+    assign pedge = in & ~in_d1;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_pedge;
+		int errortime_pedge;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [7:0] in;
+	logic [7:0] pedge_ref;
+	logic [7:0] pedge_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,in,pedge_ref,pedge_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in );
+	RefModule good1 (
+		.clk,
+		.in,
+		.pedge(pedge_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.in,
+		.pedge(pedge_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	end
+
+	if (stats1.errors_pedge) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "pedge", stats1.errors_pedge, stats1.errortime_pedge);
+	else $display("Hint: Output '%s' has no mismatches.", "pedge");
+
+	$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { pedge_ref } === ( { pedge_ref } ^ { pedge_dut } ^ { pedge_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("FIRST MISMATCH DETECTED at time %0d ps:", $time);
+				$display("  in       = 0x%h (0b%b)", in, in);
+				$display("  pedge_dut = 0x%h (0b%b)", pedge_dut, pedge_dut);
+				$display("  pedge_ref = 0x%h (0b%b)", pedge_ref, pedge_ref);
+			end
+			stats1.errors++;
+		end
+		if (pedge_ref !== ( pedge_ref ^ pedge_dut ^ pedge_ref ))
+		begin 
+			if (stats1.errors_pedge == 0) stats1.errortime_pedge = $time;
+			stats1.errors_pedge = stats1.errors_pedge+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule

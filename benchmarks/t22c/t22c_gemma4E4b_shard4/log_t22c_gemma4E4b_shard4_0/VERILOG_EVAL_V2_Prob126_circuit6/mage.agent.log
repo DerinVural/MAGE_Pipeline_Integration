@@ -1,0 +1,1156 @@
+[2026-05-14 12:48:03,592 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:48:03,594 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- DUT Interface and Reference Model (RefModule) ---
+module stimulus_gen (
+	input clk,
+	output logic [2:0] a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		@(negedge clk) wavedrom_start("Unknown circuit");
+		@(posedge clk) {a} <= 3'b0;
+		repeat(10) @(posedge clk,negedge clk) a <= a + 1;
+		wavedrom_stop();
+
+		repeat(100) @(posedge clk, negedge clk)
+		a <= $urandom;
+		$finish;
+	end
+
+dendmodule
+
+module RefModule (
+	input [2:0] a,
+	output logic [15:0] q
+);
+
+	// Logic derived from the provided sample waveform
+	always_comb begin
+		case (a)
+			3'b0: q = 16'h1232;
+			3'b1: q = 16'haee0;
+			3'b2: q = 16'h27d4;
+			3'b3: q = 16'h5a0e;
+			3'b4: q = 16'h2066;
+			3'b5: q = 16'h64ce;
+			3'b6: q = 16'hc526;
+			3'b7: q = 16'h2f19;
+			default: q = 16'hx;
+		endcase
+	end
+
+dendmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic [2:0] a;
+	logic [15:0] q_ref;
+	logic [15:0] q_dut;
+
+	// Variables for improved mismatch reporting
+	logic first_mismatch_detected = 0;
+	logic [2:0] a_at_first_mismatch;
+	logic [15:0] q_dut_at_first_mismatch;
+	logic [15:0] q_ref_at_first_mismatch;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,q_ref,q_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.*,
+		.a );
+	RefModule good1 (
+		.a,
+		.q(q_ref) );
+	
+	TopModule top_module1 (
+		.a,
+		.q(q_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	// Simplified comparison for combinational logic: tb_match is true if q_ref == q_dut
+	assign tb_match = (q_ref === q_dut);
+
+	// Clocked block for stats tracking (as per golden testbench structure)
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Original error counting logic
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+		if (q_ref !== q_dut)
+		begin 
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			sstats1.errors_q = stats1.errors_q + 1'b1; 
+		end
+	end
+
+	// Combinational Mismatch Capture (First Mismatch Display Requirement)
+	always @(*) begin
+		if (q_ref !== q_dut) begin
+			if (!first_mismatch_detected) begin
+			// Capture state at first mismatch
+			a_at_first_mismatch = a;
+			q_dut_at_first_mismatch = q_dut;
+			q_ref_at_first_mismatch = q_ref;
+			first_mismatch_detected = 1;
+			end
+		end
+		end
+	end
+
+	// Final check and display logic
+	initial begin
+		@(negedge clk);
+		// Wait a bit to ensure all stimulus cycles have run
+		#100;
+
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			end
+		
+		// Display detailed first mismatch information if it occurred
+		if (first_mismatch_detected) begin
+			$display("\n--- FIRST MISMATCH DETAILS ---");
+			$display("Mismatch detected at time %0t", $time);
+			$display("Input (a): Binary = %b, Hex = %h", a_at_first_mismatch, a_at_first_mismatch);
+			$display("Actual Output (q_dut): Binary = %b, Hex = %h", q_dut_at_first_mismatch, q_dut_at_first_mismatch);
+			$display("Expected Output (q_ref): Binary = %b, Hex = %h", q_ref_at_first_mismatch, q_ref_at_first_mismatch);
+			end
+		end
+	
+		// Maintain original final status messages
+		if (stats1.errors_q) $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+		else $display("Hint: Output 'q' has no mismatches.");
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-14 12:48:03,594 - mage.agent - INFO] Initial if:
+[2026-05-14 12:48:03,594 - mage.agent - INFO] module TopModule (
+    input  [2:0] a,
+    output [15:0] q
+);
+// Module implementation based on observation (Not required, but implied for completeness)
+// assign q = case (a) 
+//     3'b0: 16'h1232,
+//     3'b1: 16'haee0,
+//     3'b2: 16'h27d4,
+//     3'b3: 16'h5a0e,
+//     3'b4: 16'h2066,
+//     3'b5: 16'h64ce,
+//     3'b6: 16'hc526,
+//     3'b7: 16'h2f19,
+//     default: 16'hx
+// endcase
+endmodule
+[2026-05-14 12:48:03,601 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  a ( 3 bits)
+ - output q (16 bits)
+
+The module should implement a combinational circuit. Read the simulation
+waveforms to determine what the circuit does, then implement it.
+
+  time  a     q
+  0ns   x     x
+  5ns   x     x
+  10ns  x     x
+  15ns  0  1232
+  20ns  1  aee0
+  25ns  2  27d4
+  30ns  3  5a0e
+  35ns  4  2066
+  40ns  5  64ce
+  45ns  6  c526
+  50ns  7  2f19
+  55ns  0  1232
+  60ns  1  aee0
+  65ns  2  27d4
+  70ns  4  2066
+  75ns  1  aee0
+  80ns  1  aee0
+  85ns  3  5a0e
+  90ns  5  64ce
+
+
+[2026-05-14 12:48:59,564 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:48:59,564 - mage.agent - INFO] module TopModule (
+    input  logic [2:0] a,
+    output logic [15:0] q
+);
+
+    // Combinational logic implementation using a case statement
+    always @* begin
+        case (a)
+            0: q = 16'h1232;
+            1: q = 16'haee0;
+            2: q = 16'h27d4;
+            3: q = 16'h5a0e;
+            4: q = 16'h2066;
+            5: q = 16'h64ce;
+            6: q = 16'hc526;
+            7: q = 16'h2f19;
+            default: q = 16'h0000; 
+        endcase
+    end
+
+endmodule
+[2026-05-14 12:49:05,519 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 12:50:42,542 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:50:42,542 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- Stimulus Generation Module (Preserved from Golden Testbench) ---
+module stimulus_gen (
+	input clk,
+	output logic [2:0] a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		@(negedge clk) wavedrom_start("Unknown circuit");
+		@(posedge clk) {a} <= 3'b0;
+		repeat(10) @(posedge clk,negedge clk) a <= a + 1;
+		wavedrom_stop();
+
+		repeat(100) @(posedge clk, negedge clk)
+		a <= $urandom;
+		$finish;
+	end
+	endmodule
+
+
+// --- Reference Module (Stub for compilation, assumes minimal functionality) ---
+module RefModule (
+    input logic [2:0] a,
+    output logic [15:0] q
+);
+    // This module should ideally implement the correct logic derived from the table
+    // For compilation stability, we will just pass through or use a simple placeholder.
+    assign q = 16'h0000;
+endmodule
+
+
+// --- DUT Module Implementation (Derived from Input Spec Table) ---
+module TopModule (
+    input  logic [2:0] a,
+    output logic [15:0] q
+);
+
+    // Combinational logic implemented via case statement based on input table
+    always_comb begin
+        case (a)
+            3'd0: q = 16'h04D0; // 1232
+            3'd1: q = 16'hAEE0; // aee0
+            3'd2: q = 16'h27D4; // 27d4
+            3'd3: q = 16'h5A0E; // 5a0e
+            3'd4: q = 16'h0806; // 2066
+            3'd5: q = 16'h64CE; // 64ce
+            3'd6: q = 16'hC526; // c526
+            3'd7: q = 16'h2F19; // 2f19
+            default: q = 16'hx0000; // Default case
+        endcase
+    end
+
+endmodule
+
+
+// --- Testbench (Improved) ---
+module tb();
+	
+type struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	}
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic [2:0] a;
+	logic [15:0] q_ref;
+	logic [15:0] q_dut;
+
+	// Tracking variables for first mismatch logging
+	integer first_mismatch_time = -1;
+	logic [2:0] first_mismatch_a = 0;
+	logic [15:0] first_mismatch_q_ref = 0;
+	logic [15:0] first_mismatch_q_dut = 0;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen::stim1, tb_mismatch, a, q_ref, q_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.a, 
+		.wavedrom_title, 
+		.wavedrom_enable
+	);
+		
+	RefModule good1 (
+		.a, 
+		.q(q_ref) );
+		
+	TopModule top_module1 (
+		.a, 
+		.q(q_dut) );
+	
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	
+	// Helper task for display formatting
+	task display_signal;
+		input string name;
+		input logic [15:0] value;
+		input logic [2:0] val_a;
+		
+		$display("\n--- Mismatch Details at Time %0d ps ---\n", $time);
+		$display("Signal: %s", name);
+		$display("  Input A (Dec): %0d | (Bin): %b", val_a, val_a);
+		$display("  DUT Q (Hex): 0x%h | (Bin): %b", value, value);
+		$display("  REF Q (Hex): 0x%h | (Bin): %b", value, value);
+	endtask
+
+	// Verification logic
+	// The original match logic is preserved: ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) )
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+	// Verification and Statistics Counting
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				first_mismatch_time = $time;
+				first_mismatch_a = a;
+				first_mismatch_q_ref = q_ref;
+				first_mismatch_q_dut = q_dut;
+				$display("!!! FIRST MISMATCH DETECTED !!!");
+				display_signal("Output Q", q_dut, a);
+				display_signal("Reference Q", q_ref, a);
+				// Also display A at first mismatch
+				display_signal("Input A", a, a);
+				
+			stats1.errors++;
+			end
+			stats1.errors++;
+		end
+
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+		begin 
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			sstats1.errors_q = stats1.errors_q+1'b1;
+		end
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("\n===================================");
+     $display("TIMEOUT REACHED. Ending simulation.");
+     $display("===================================");
+     $finish();
+   end
+
+	// Final Results Display (Improved Requirement)
+	initial begin
+		@(negedge clk);
+		// Wait a little longer to allow final calculations if needed
+		#100;
+
+		if (stats1.errors == 0) begin
+			$display("\n===================================");
+			$display("SIMULATION PASSED");
+			$display("===================================");
+		end else begin
+			$display("\n===================================");
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("===================================");
+		end
+
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-14 12:51:53,791 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:51:53,791 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- Stimulus Generation Module (Preserved from Golden Testbench) ---
+module stimulus_gen (
+	input clk,
+	output logic [2:0] a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		@(negedge clk) wavedrom_start("Unknown circuit");
+		@(posedge clk) {a} <= 3'b0;
+		repeat(10) @(posedge clk,negedge clk) a <= a + 1;
+		wavedrom_stop();
+		
+		repeat(100) @(posedge clk, negedge clk)
+		a <= $urandom;
+		$finish;
+	end
+	endmodule
+
+// --- Reference Module (Stub for compilation, assumes minimal functionality) ---
+module RefModule (
+    input logic [2:0] a,
+    output logic [15:0] q
+);
+    // This module implements the expected reference values derived from the spec table
+    always_comb begin
+        case (a)
+            3'd0: q = 16'h1232;
+            3'd1: q = 16'haee0;
+            3'd2: q = 16'h27d4;
+            3'd3: q = 16'h5a0e;
+            3'd4: q = 16'h2066;
+            3'd5: q = 16'h64ce;
+            3'd6: q = 16'hc526;
+            3'd7: q = 16'h2f19;
+            default: q = 16'h0000;
+        endcase
+    end
+endmodule
+
+
+// --- DUT Module Implementation (Derived from Input Spec Table) ---
+module TopModule (
+    input  logic [2:0] a,
+    output logic [15:0] q
+);
+
+    // Combinational logic implemented via case statement based on input table
+    always_comb begin
+        case (a)
+            3'd0: q = 16'h1232; // 1232
+            3'd1: q = 16'haee0; // aee0
+            3'd2: q = 16'h27d4; // 27d4
+            3'd3: q = 16'h5a0e; // 5a0e
+            3'd4: q = 16'h2066; // 2066
+            3'd5: q = 16'h64ce; // 64ce
+            3'd6: q = 16'hc526; // c526
+            3'd7: q = 16'h2f19; // 2f19
+            default: q = 16'h0000; // Default case
+        endcase
+    end
+
+endmodule
+
+
+// --- Testbench (Improved) ---
+module tb();
+	
+	type struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	}
+	
+	stats stats1;
+	
+	
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic [2:0] a;
+	logic [15:0] q_ref;
+	logic [15:0] q_dut;
+
+	// Tracking variables for first mismatch logging
+	integer first_mismatch_time = -1;
+	logic [2:0] first_mismatch_a = 0;
+	logic [15:0] first_mismatch_q_ref = 0;
+	logic [15:0] first_mismatch_q_dut = 0;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen::stim1, tb_mismatch, a, q_ref, q_dut );
+	end
+
+
+wire tb_match;
+wire tb_mismatch = ~tb_match;
+	
+stimulus_gen stim1 (
+		.clk,
+		.a,
+		.wavedrom_title,
+		.wavedrom_enable
+);
+	
+RefModule good1 (
+		.a,
+		.q(q_ref) );
+	
+TopModule top_module1 (
+		a,
+		.q(q_dut) );
+	
+	
+bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+	task
+	
+// Helper task for display formatting
+	task display_signal;
+		input string name;
+		input logic [15:0] value;
+		input logic [2:0] val_a;
+		
+		$display("\n--- Mismatch Details at Time %0d ps ---", $time);
+		$display("Signal: %s", name);
+		// Display A
+		$display("  Input A (Dec): %0d | (Bin): %b", val_a, val_a);
+		// Display DUT Q
+		$display("  DUT Q (Hex): 0x%h | (Bin): %b", value, value);
+		// Display REF Q
+		$display("  REF Q (Hex): 0x%h | (Bin): %b", value, value);
+	endtask
+	
+
+// Verification logic
+// The original match logic is preserved: ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) )
+assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+// Verification and Statistics Counting
+always @(posedge clk, negedge clk) begin
+	
+	stats1.clocks++;
+	
+	if (!tb_match) begin
+		if (stats1.errors == 0) begin
+			stats1.errortime = $time;
+			first_mismatch_time = $time;
+			first_mismatch_a = a;
+			first_mismatch_q_ref = q_ref;
+			first_mismatch_q_dut = q_dut;
+			$display("!!! FIRST MISMATCH DETECTED !!!");
+			// Display details at the first mismatch
+			display_signal("Output Q", q_dut, a);
+			display_signal("Reference Q", q_ref, a);
+			display_signal("Input A", a, a);
+		end
+		stats1.errors++;
+	end
+	
+	// The original golden testbench logic for q_ref != (q_ref ^ q_dut ^ q_ref) is preserved
+	if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+	begin 
+		if (stats1.errors_q == 0) stats1.errortime_q = $time;
+		sstats1.errors_q = stats1.errors_q+1'b1; // Corrected typo from original golden tb's logic structure
+	end
+	end
+
+// add timeout after 100K cycles
+initial begin
+  #1000000
+  $display("\n===================================");
+  $display("TIMEOUT REACHED. Ending simulation.");
+  $display("===================================");
+  $finish();
+end
+
+// Final Results Display (Improved Requirement)
+initial begin
+	@(negedge clk);
+	// Wait a little longer to allow final calculations if needed
+	#100;
+
+	if (stats1.errors == 0) begin
+		$display("\n===================================");
+		$display("SIMULATION PASSED");
+		$display("===================================");
+	end else begin
+		$display("\n===================================");
+		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		$display("===================================");
+	end
+	
+	$display("\nTotal mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+end
+
+endmodule
+[2026-05-14 12:53:11,952 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:53:11,952 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- Stimulus Generation Module (Preserved from Golden Testbench) ---
+module stimulus_gen (
+	input clk,
+	output logic [2:0] a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		@(negedge clk) wavedrom_start("Unknown circuit");
+		@(posedge clk) {a} <= 3'b0;
+		repeat(10) @(posedge clk,negedge clk) a <= a + 1;
+		wavedrom_stop();
+
+		repeat(100) @(posedge clk, negedge clk)
+		a <= $urandom;
+		$finish;
+	end
+	endmodule
+
+
+// --- Reference Module (Implemented with correct logic) ---
+module RefModule (
+    input logic [2:0] a,
+    output logic [15:0] q
+);
+    // This module implements the expected reference values derived from the spec table
+    always_comb begin
+        case (a)
+            3'd0: q = 16'h1232; // 1232
+            3'd1: q = 16'haee0; // aee0
+            3'd2: q = 16'h27d4; // 27d4
+            3'd3: q = 16'h5a0e; // 5a0e
+            3'd4: q = 16'h2066; // 2066
+            3'd5: q = 16'h64ce; // 64ce
+            3'd6: q = 16'hc526; // c526
+            3'd7: q = 16'h2f19; // 2f19
+            default: q = 16'h0000;
+        endcase
+    end
+endmodule
+
+
+// --- DUT Module Implementation (TopModule) ---
+module TopModule (
+    input  logic [2:0] a,
+    output logic [15:0] q
+);
+
+    // Combinational logic implemented via case statement based on input table
+    always_comb begin
+        case (a)
+            3'd0: q = 16'h1232; // 1232
+            3'd1: q = 16'haee0; // aee0
+            3'd2: q = 16'h27d4; // 27d4
+            3'd3: q = 16'h5a0e; // 5a0e
+            3'd4: q = 16'h2066; // 2066
+            3'd5: q = 16'h64ce; // 64ce
+            3'd6: q = 16'hc526; // c526
+            3'd7: q = 16'h2f19; // 2f19
+            default: q = 16'h0000; // Default case
+        endcase
+    end
+
+endmodule
+
+
+// --- Testbench (Improved) ---
+module tb();
+	
+type struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	}
+	
+stats stats1;
+	
+// Signals from stimulus_gen
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+	
+reg clk=0;
+initial forever
+		h#5 clk = ~clk;
+
+// Signals being tested
+logic [2:0] a;
+logic [15:0] q_ref;
+logic [15:0] q_dut;
+
+// Tracking variables for first mismatch logging
+integer first_mismatch_time = -1;
+logic [2:0] first_mismatch_a = 0;
+logic [15:0] first_mismatch_q_ref = 0;
+logic [15:0] first_mismatch_q_dut = 0;
+	
+initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen::stim1, tb_mismatch, a, q_ref, q_dut );
+	end
+
+
+wire tb_match;
+wire tb_mismatch = ~tb_match;
+	
+stimulus_gen stim1 (
+		.clk, 
+		a, 
+		wavedrom_title, 
+		wavedrom_enable
+);
+	
+RefModule good1 (
+		a, 
+		.q(q_ref) );
+	
+TopModule top_module1 (
+		a, 
+		.q(q_dut) );
+	
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+// Helper task for display formatting
+task display_signal;
+		input string name;
+		input logic [15:0] value;
+		input logic [2:0] val_a;
+		
+		$display("\n==============================================\n");
+		$display("--- Mismatch Details at Time %0d ps ---", $time);
+		$display("Signal: %s", name);
+		
+		// Display A
+		$display("  Input A (Dec): %0d | (Bin): %b", val_a, val_a);
+		// Display DUT Q
+		$display("  DUT Q (Hex): 0x%h | (Bin): %b", value, value);
+		// Display REF Q
+		$display("  REF Q (Hex): 0x%h | (Bin): %b", value, value);
+	endtask
+	
+
+// Verification logic
+assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+// Verification and Statistics Counting
+always @(posedge clk, negedge clk) begin
+	
+	stats1.clocks++;
+	
+	if (!tb_match) begin
+		if (stats1.errors == 0) begin
+			stats1.errortime = $time;
+			first_mismatch_time = $time;
+			first_mismatch_a = a;
+			first_mismatch_q_ref = q_ref;
+			first_mismatch_q_dut = q_dut;
+			$display("!!! FIRST MISMATCH DETECTED !!!");
+			// Display details at the first mismatch
+			display_signal("Output Q", q_dut, a);
+			display_signal("Reference Q", q_ref, a);
+			display_signal("Input A", a, a);
+		end
+		stats1.errors++;
+	end
+	
+// The original golden testbench logic for q_ref != (q_ref ^ q_dut ^ q_ref) is preserved
+	if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+	begin 
+		if (stats1.errors_q == 0) stats1.errortime_q = $time;
+		sstats1.errors_q = stats1.errors_q+1'b1; 
+	end
+	end
+
+
+// add timeout after 100K cycles
+initial begin
+  #1000000
+  $display("\n==============================================\n");
+  $display("TIMEOUT REACHED. Ending simulation.");
+  $display("==============================================\n");
+  $finish();
+end
+
+// Final Results Display (Improved Requirement)
+initial begin
+	@(negedge clk);
+	#100; // Wait a little longer to allow final calculations if needed
+	
+	if (stats1.errors == 0) begin
+		$display("\n==============================================\n");
+		$display("SIMULATION PASSED");
+		$display("==============================================\n");
+	end else begin
+		$display("\n==============================================\n");
+		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		$display("==============================================\n");
+	end
+	
+	$display("\n==============================================\n");
+	$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-14 12:54:40,022 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:54:40,022 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- Stimulus Generation Module (Preserved from Golden Testbench) ---
+module stimulus_gen (
+	input clk,
+	output logic [2:0] a,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		@(negedge clk) wavedrom_start("Unknown circuit");
+		@(posedge clk) {a} <= 3'b0;
+		repeat(10) @(posedge clk,negedge clk) a <= a + 1;
+		wavedrom_stop();
+
+		repeat(100) @(posedge clk, negedge clk)
+		a <= $urandom;
+		$finish;
+	end
+	endmodule
+
+
+// --- Reference Module (Implemented with correct logic derived from spec) ---
+module RefModule (
+    input logic [2:0] a,
+    output logic [15:0] q
+);
+    // This module implements the expected reference values derived from the spec table
+    always_comb begin
+        case (a)
+            3'd0: q = 16'h1232; // 1232
+            3'd1: q = 16'haee0; // aee0
+            3'd2: q = 16'h27d4; // 27d4
+            3'd3: q = 16'h5a0e; // 5a0e
+            3'd4: q = 16'h2066; // 2066
+            3'd5: q = 16'h64ce; // 64ce
+            3'd6: q = 16'hc526; // c526
+            3'd7: q = 16'h2f19; // 2f19
+            default: q = 16'h0000;
+        endcase
+    end
+endmodule
+
+
+// --- DUT Module Implementation (TopModule - Matches Input Spec) ---
+module TopModule (
+    input  logic [2:0] a,
+    output logic [15:0] q
+);
+
+    // Combinational logic implemented via case statement based on input table
+    always_comb begin
+        case (a)
+            3'd0: q = 16'h1232; // 1232
+            3'd1: q = 16'haee0; // aee0
+            3'd2: q = 16'h27d4; // 27d4
+            3'd3: q = 16'h5a0e; // 5a0e
+            3'd4: q = 16'h2066; // 2066
+            3'd5: q = 16'h64ce; // 64ce
+            3'd6: q = 16'hc526; // c526
+            3'd7: q = 16'h2f19; // 2f19
+            default: q = 16'h0000; // Default case
+        endcase
+    end
+endmodule
+
+
+// --- Testbench (Improved) ---
+module tb();
+	
+	type struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	}
+	
+	stats stats1;
+	
+	// Signals from stimulus_gen
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	// Signals being tested
+	logic [2:0] a;
+	logic [15:0] q_ref;
+	logic [15:0] q_dut;
+
+	// Tracking variables for first mismatch logging
+	integer first_mismatch_time = -1;
+	logic [2:0] first_mismatch_a = 0;
+	logic [15:0] first_mismatch_q_ref = 0;
+	logic [15:0] first_mismatch_q_dut = 0;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen::stim1, tb_mismatch, a, q_ref, q_dut );
+	end
+
+
+wire tb_match;
+wire tb_mismatch = ~tb_match;
+	
+stimulus_gen stim1 (
+		.clk, 
+		a, 
+		wavedrom_title, 
+		wavedrom_enable
+);
+	
+RefModule good1 (
+		a, 
+		.q(q_ref) );
+	
+TopModule top_module1 (
+		a, 
+		.q(q_dut) );
+	
+	
+bit strobe = 0;
+task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+// Helper task for display formatting
+task display_signal;
+		input string name;
+		input logic [15:0] value;
+		input logic [2:0] val_a;
+		
+		$display("\n==============================================\n");
+		$display("--- Mismatch Details at Time %0d ps ---", $time);
+		$display("Signal: %s", name);
+		
+		// Display A
+		$display("  Input A (Dec): %0d | (Bin): %b", val_a, val_a);
+		// Display DUT Q
+		$display("  DUT Q (Hex): 0x%h | (Bin): %b", value, value);
+		// Display REF Q
+		$display("  REF Q (Hex): 0x%h | (Bin): %b", value, value);
+	endtask
+	
+
+// Verification logic
+assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+
+// Verification and Statistics Counting
+always @(posedge clk, negedge clk) begin
+	
+	stats1.clocks++;
+	
+	if (!tb_match) begin
+		if (stats1.errors == 0) begin
+			stats1.errortime = $time;
+			first_mismatch_time = $time;
+			first_mismatch_a = a;
+			first_mismatch_q_ref = q_ref;
+			first_mismatch_q_dut = q_dut;
+			$display("!!! FIRST MISMATCH DETECTED !!!");
+			// Display details at the first mismatch
+		display_signal("Output Q", q_dut, a);
+		display_signal("Reference Q", q_ref, a);
+		display_signal("Input A", a, a);
+		end
+		stats1.errors++;
+	end
+	
+// The original golden testbench logic for q_ref != (q_ref ^ q_dut ^ q_ref) is preserved
+	if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+	begin 
+		if (stats1.errors_q == 0) stats1.errortime_q = $time;
+		sstats1.errors_q = stats1.errors_q+1'b1; 
+	end
+	end
+
+
+// add timeout after 100K cycles
+initial begin
+  #1000000
+  $display("\n==============================================\n");
+  $display("TIMEOUT REACHED. Ending simulation.");
+  $display("==============================================\n");
+  $finish();
+end
+
+// Final Results Display (Improved Requirement)
+initial begin
+	@(negedge clk);
+	#100; // Wait a little longer to allow final calculations if needed
+	
+	if (stats1.errors == 0) begin
+		$display("\n==============================================\n");
+		$display("SIMULATION PASSED");
+		$display("==============================================\n");
+	end else begin
+		$display("\n==============================================\n");
+		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		$display("==============================================\n");
+	end
+	
+	$display("\n==============================================\n");
+	$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+end
+
+endmodule

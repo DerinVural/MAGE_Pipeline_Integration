@@ -1,0 +1,1 @@
+`interface IF_topmodule (logic clk, logic reset, logic in); logic out; endinterface`

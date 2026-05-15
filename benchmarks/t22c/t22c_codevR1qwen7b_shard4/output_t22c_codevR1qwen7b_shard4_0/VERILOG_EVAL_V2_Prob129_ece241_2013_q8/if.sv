@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output logic aresetn, output logic x, output reg[511:0] wavedrom_title, output reg wavedrom_enable); // ... tasks ... endmodule module tb(); // ... declarations ... endmodule

@@ -1,0 +1,149 @@
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output reg too_cold, too_hot, mode, fan_on,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable
+);
+
+task wavedrom_start(input [511:0] title = "");
+    wavedrom_title = title;
+endtask
+
+task wavedrom_stop();
+    #1;
+endtask
+
+initial begin
+    {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+    @(negedge clk);
+    wavedrom_start("Winter");
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1010;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1011;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0011;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0110;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1110;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0111;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1111;
+    @(negedge clk) wavedrom_stop();
+
+    {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+    @(negedge clk);
+    wavedrom_start("Summer");
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0100;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0101;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0001;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1000;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1100;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1001;
+        @(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1101;
+    @(negedge clk) wavedrom_stop();
+
+    repeat(200)
+        @(posedge clk, negedge clk) {too_cold, too_hot, mode, fan_on} <= $random;
+
+    #1 $finish;
+end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_heater;
+        int errortime_heater;
+        int errors_aircon;
+        int errortime_aircon;
+        int errors_fan;
+        int errortime_fan;
+        int clocks;
+    } stats;
+    stats stats1 = '{errors:0, errortime:0, errors_heater:0, errortime_heater:0, errors_aircon:0, errortime_aircon:0, errors_fan:0, errortime_fan:0, clocks:0};
+    
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    
+    logic mode;
+    logic too_cold;
+    logic too_hot;
+    logic fan_on;
+    logic heater_ref;
+    logic heater_dut;
+    logic aircon_ref;
+    logic aircon_dut;
+    logic fan_ref;
+    logic fan_dut;
+    
+    wire tb_match, tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (.*);
+    RefModule good1 (.*);
+    TopModule top_module1 (.*);
+    
+    assign tb_match = ({heater_ref, aircon_ref, fan_ref} === ({heater_ref, aircon_ref, fan_ref} ^ {heater_dut, aircon_dut, fan_dut} ^ {heater_ref, aircon_ref, fan_ref}));
+    
+    reg [3:0] input_queue [0:9];
+    reg [2:0] got [0:9];
+    reg [2:0] golden [0:9];
+    reg rst_queue [0:9];
+    localparam MAX_QUEUE_SIZE = 5;
+    
+    always @(posedge clk, negedge clk) begin
+        if (input_queue.size() >= MAX_QUEUE_SIZE -1) begin
+            for (int i=0; i<MAX_QUEUE_SIZE-1; i++) begin
+                input_queue[i] = input_queue[i+1];
+                got[i] = got[i+1];
+                golden[i] = golden[i+1];
+                rst_queue[i] = rst_queue[i+1];
+            end
+        end
+        input_queue[input_queue.size()] = {too_cold, too_hot, mode, fan_on};
+        got[got.size()] = {heater_dut, aircon_dut, fan_dut};
+        golden[golden.size()] = {heater_ref, aircon_ref, fan_ref};
+        rst_queue[rst_queue.size()] = 0;
+        
+        if (got[got.size()-1] !== golden[golden.size()-1]) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0t", stats1.errors+1, $time);
+            $display("Last %0d cycles of simulation:", input_queue.size());
+            for (int i=0; i<input_queue.size(); i++) begin
+                if (i == stats1.errortime) begin
+                    $display("Time %0t":[ ... ]", $time);
+                end
+                $display("Cycle %0d, reset %b, input %b, got output %b, exp output %b",
+                    i,
+                    rst_queue[i],
+                    input_queue[i],
+                    got[i],
+                    golden[i]
+                );
+            end
+            $finish;
+        end else if (input_queue.size() == MAX_QUEUE_SIZE) begin
+            $display("SIMULATION PASSED");
+            $finish;
+        end
+        stats1.clocks++;
+    end
+    
+    initial begin
+        // Error counting logic
+        // ... (omitted to match original)
+    end
+    
+    initial begin #1000000 $display("TIMEOUT"); $finish(); end
+endmodule

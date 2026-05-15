@@ -1,0 +1,457 @@
+[2026-05-14 11:48:14,787 - mage.agent - INFO] Initial tb:
+[2026-05-14 11:48:14,788 - mage.agent - INFO] `timescale 1ps/1ps
+`define OK 12
+`define INCORRECT 13
+
+interface tb;
+	logic clk;
+	logic a;
+	logic b;
+	logic [511:0] wavedrom_title;
+	logic wavedrom_enable;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+endinterface
+tb tb_inst();
+
+stimulus_gen stim1 (
+	.tb_inst.clk,
+	.tb_inst.a,
+	.tb_inst.b,
+	.tb_inst.wavedrom_title,
+	.tb_inst.wavedrom_enable
+);
+RefModule good1 (
+	.tb_inst.a,
+	.tb_inst.b,
+	.good1.out_assign(tb_inst.out_assign_ref),
+	.good1.out_alwaysblock(tb_inst.out_alwaysblock_ref)
+);
+TopModule top_module1 (
+	.top_module1.a,
+	.top_module1.b,
+	.top_module1.out_assign(tb_inst.out_assign_dut),
+	.top_module1.out_alwaysblock(tb_inst.out_alwaysblock_dut)
+);
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	end
+endtask
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_inst.clk, tb_mismatch, tb_inst.a, tb_inst.b, tb_inst.out_assign_ref, tb_inst.out_assign_dut, tb_inst.out_alwaysblock_ref, tb_inst.out_alwaysblock_dut );
+end
+
+wire tb_match;  // Verification
+wire tb_mismatch = ~tb_match;
+
+bit [INPUT_WIDTH-1:0] input_queue [$];
+bit [OUTPUT_WIDTH-1:0] got_output_queue [$];
+bit [OUTPUT_WIDTH-1:0] golden_queue [$];
+bit rst_queue [$];
+parameter INPUT_WIDTH = 1;
+parameter OUTPUT_WIDTH = 1;
+parameter MAX_QUEUE_SIZE = 2;
+
+always @(posedge tb_inst.clk, negedge tb_inst.clk) begin
+	if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+		input_queue.delete(0);
+		got_output_queue.delete(0);
+		golden_queue.delete(0);
+		rst_queue.delete(0);
+	end
+
+	input_queue.push_back({tb_inst.a, tb_inst.b});
+	got_output_queue.push_back({top_module1.out_assign_dut, top_module1.out_alwaysblock_dut});
+	golden_queue.push_back({tb_inst.out_assign_ref, tb_inst.out_alwaysblock_ref});
+	reset_queue.push_back(0);
+
+	// Check for first mismatch
+	if ({top_module1.out_assign_dut, top_module1.out_alwaysblock_dut} !== {tb_inst.out_assign_ref, tb_inst.out_alwaysblock_ref}) begin
+		$display("Mismatch detected at time %t", $time);
+		$display("\nLast %d cycles of simulation:", input_queue.size());
+		for (int i = 0; i < input_queue.size(); i++) begin
+			if ({got_output_queue[i][0], got_output_queue[i][1]} === {golden_queue[i][0], golden_queue[i][1]}) begin
+				$display("Got Match at");
+			end else begin
+				$display("Got Mismatch at");
+			end
+			$display("Cycle %d, input_a %b, input_b %b, got_output_assign %b, got_output_alwaysblock %b, exp_output_assign %b, exp_output_alwaysblock %b",
+				i,
+				input_queue[i][0], input_queue[i][1],
+				got_output_queue[i][0], got_output_queue[i][1],
+				golden_queue[i][0], golden_queue[i][1]
+			);
+		end
+	end
+end
+
+final begin
+	if (tb_inst.stats1.errors_out_assign) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_assign", tb_inst.stats1.errors_out_assign, tb_inst.stats1.errortime_out_assign);
+	else $display("Hint: Output '%s' has no mismatches.", "out_assign");
+	if (tb_inst.stats1.errors_out_alwaysblock) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_alwaysblock", tb_inst.stats1.errors_out_alwaysblock, tb_inst.stats1.errortime_out_alwaysblock);
+	else $display("Hint: Output '%s' has no mismatches.", "out_alwaysblock");
+
+	$display("Hint: Total mismatched samples is %1d out of %1d samples\n", tb_inst.stats1.errors, tb_inst.stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", tb_inst.stats1.errors, tb_inst.stats1.clocks);
+	if (tb_inst.stats1.errors == 0) $display("SIMULATION PASSED");
+	else $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", tb_inst.stats1.errors, tb_inst.stats1.errortime);
+end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { top_module1.out_assign_dut, top_module1.out_alwaysblock_dut } === ( { top_module1.out_assign_dut, top_module1.out_alwaysblock_dut } ^ { tb_inst.out_assign_ref, tb_inst.out_alwaysblock_ref } ^ { top_module1.out_assign_dut, top_module1.out_alwaysblock_dut } ) );
+// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+// the sensitivity list of the @(strobe) process, which isn't implemented.
+always @(posedge tb_inst.clk, negedge tb_inst.clk) begin
+	tb_inst.stats1.clocks++;
+	if (!tb_match) begin
+		if (tb_inst.stats1.errors == 0) tb_inst.stats1.errortime = $time;
+		tb_inst.stats1.errors++;
+	end
+	if (top_module1.out_assign_dut !== ( top_module1.out_assign_dut ^ tb_inst.out_assign_ref ^ top_module1.out_assign_dut ))
+	begin if (tb_inst.stats1.errors_out_assign == 0) tb_inst.stats1.errortime_out_assign = $time;
+		tb_inst.stats1.errors_out_assign = tb_inst.stats1.errors_out_assign+1'b1; end
+	if (top_module1.out_alwaysblock_dut !== ( top_module1.out_alwaysblock_dut ^ tb_inst.out_alwaysblock_ref ^ top_module1.out_alwaysblock_dut ))
+	begin if (tb_inst.stats1.errors_out_alwaysblock == 0) tb_inst.stats1.errortime_out_alwaysblock = $time;
+		tb_inst.stats1.errors_out_alwaysblock = tb_inst.stats1.errors_out_alwaysblock+1'b1; end
+end
+
+initial begin
+	tb_inst.stats1 = '{errors: 0, errortime: 0, errors_out_assign: 0, errortime_out_assign: 0, errors_out_alwaysblock: 0, errortime_out_alwaysblock: 0, clocks: 0};
+	tb_inst.wavedrom_title = "AND gate";
+	tb_inst.wavedrom_enable = 1;
+	{tb_inst.a, tb_inst.b} <= 1'b0;
+	repeat(10) @(posedge tb_inst.clk)
+		{tb_inst.a, tb_inst.b} <= tb_inst.count++;
+	tb_inst.wavedrom_stop;
+	repeat(200) @(posedge tb_inst.clk, negedge tb_inst.clk)
+		{tb_inst.b, tb_inst.a} <= $random;
+	#1 $finish;
+end
+
+endmodule
+
+module RefModule(
+	.input a,
+	.input b,
+	.output out_assign,
+	.output out_alwaysblock
+);
+assign out_assign = a & b;
+always @(*)
+out_alwaysblock = a & b;
+endmodule
+
+module TopModule(
+	.input a,
+	.input b,
+	.output out_assign,
+	.output out_alwaysblock
+);
+assign out_assign = a & b;
+always @(*)
+out_alwaysblock = a & b;
+endmodule
+[2026-05-14 11:48:14,789 - mage.agent - INFO] Initial if:
+[2026-05-14 11:48:14,789 - mage.agent - INFO] interface tb;
+	logic clk;
+	logic a;
+	logic b;
+	logic [511:0] wavedrom_title;
+	logic wavedrom_enable;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+endinterface
+[2026-05-14 11:48:14,794 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  a
+ - input  b
+ - output out_assign
+ - output out_alwaysblock
+
+The module should implement an AND gate using both an assign statement
+and a combinational always block.
+
+
+[2026-05-14 11:48:16,693 - mage.agent - INFO] Initial rtl:
+[2026-05-14 11:48:16,693 - mage.agent - INFO] module TopModule(
+    input  logic a,
+    input  logic b,
+    output logic out_assign,
+    output logic out_alwaysblock
+);
+
+    assign out_assign = a & b;
+
+    always @(*)
+    begin
+        out_alwaysblock = a & b;
+    end
+
+endmodule;
+[2026-05-14 11:48:17,731 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 11:48:32,511 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:48:32,511 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output reg a, b,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable
+);
+task wavedrom_start(input[511:0] title = "/");endtasktask wavedrom_stop;#1;endtaskinitial beginint count;count = 0;{a,b} <= 1'b0;wavedrom_start("AND gate");repeat(10) @(posedge clk){a,b} <= count++;
+wavedrom_stop();repeat(200) @(posedge clk,negedge clk){b,a} <= $random;#1$finish;endendmodule
+
+module tb();typedef struct packed {
+    int errors;
+    int errortime;
+    int errors_out_assign;
+    int errortime_out_assign;
+    int errors_out_alwaysblock;
+    int errortime_out_alwaysblock;
+    int clocks;
+} stats;stats stats1;wire[511:0] wavedrom_title;wire wavedrom_enable;int wavedrom_hide_after_time;reg clk=0;initial forever#5clk=~clk;logic a;logic b;logic out_assign_ref;logic out_assign_dut;logic out_alwaysblock_ref;logic out_alwaysblock_dut;initial begin$dumpfile("wave.vcd");$dumpvars(1,tb_mismatch,a,b,out_assign_ref,out_assign_dut,out_alwaysblock_ref,out_alwaysblock_dut );endwire tb_match;//Verificationwire tb_mismatch=~tb_match;stimulus_gen stim1 (.clk(clk),.a(a),.b(b));RefModule good1 (.a(a),.b(b),.out_assign(out_assign_ref),.out_alwaysblock(out_alwaysblock_ref));TopModule top_module1 (.a(a),.b(b),.out_assign(out_assign_dut),.out_alwaysblock(out_alwaysblock_dut));bit strobe=0;task wait_for_end_of_timestep;repeat(5)beginstrobe<=!strobe;@(strobe);endendtaskfinal beginif(stats1.errors_out_assign)$display("Hint: Output '\"out_assign\"' has %0d mismatches. First mismatch occurred at time %0d.",stats1.errors_out_assign,stats1.errortime_out_assign);else$display("Hint: Output '\"out_assign\"' has no mismatches.");if(stats1.errors_out_alwaysblock)$display("Hint: Output '\"out_alwaysblock\"' has %0d mismatches. First mismatch occurred at time %0d.",stats1.errors_out_alwaysblock,stats1.errortime_out_alwaysblock);else$display("Hint: Output '\"out_alwaysblock\"' has no mismatches.");$display("Hint: Total mismatched samples is %1d out of %1d samples\n",stats1.errors,stats1.clocks);$display("Simulation finished at %0d ps",$time);$display("Mismatches: %1d in %1d samples",stats1.errors,stats1.clocks);endassign tb_match={(out_assign_ref^out_alwaysblock_ref),(out_assign_ref^out_alwaysblock_ref),(out_assign_ref^out_alwaysblock_ref)}==(out_assign_ref==(out_assign_ref^out_alwaysblock_dut^out_assign_ref));always@(posedge clk,negedge clk)beginstats1.clocks++;if(!tb_match)beginif(stats1.errors==0)stats1.errortime=$time;stats1.errors++;endif((out_assign_ref!=(out_assign_ref^out_alwaysblock_dut^out_assign_ref)))beginif(stats1.errors_out_assign==0)stats1.errortime_out_assign=$time;stats1.errors_out_assign=stats1.errors_out_assign+1'b1;endif((out_alwaysblock_ref!=(out_alwaysblock_ref^out_alwaysblock_dut^out_alwaysblock_ref)))beginif(stats1.errors_out_alwaysblock==0)stats1.errortime_out_alwaysblock=$time;stats1.errors_out_alwaysblock=stats1.errors_out_alwaysblock+1'b1;endend// add timeout after 100K cyclesinitial begin#1000000$display("TIMEOUT");$finish();endendmodule
+[2026-05-14 11:48:48,379 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:48:48,379 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+task wavedrom_start(input[511:0] title = "/");endtask
+task wavedrom_stop;#1;endtask
+initial begin
+	int count;
+	count = 0;
+	{a,b} <= 1'b0;
+	wavedrom_start("AND gate");
+	repeat(10) @(posedge clk)
+		{a,b} <= count++;
+	wavedrom_stop();
+	repeat(200) @(posedge clk, negedge clk)
+		{b,a} <= $random;
+	#1 $finish;
+end
+endmodule
+
+module tb();
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_alwaysblock;
+		int errortime_out_alwaysblock;
+		int clocks;
+	} stats;
+	stats stats1;
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	reg clk=0;
+	initial forever
+		#5 clk=~clk;
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+	initial begin
+		$dumpfile("wave.vcd");
+		$dumpvars(1, tb_mismatch, a, b, out_assign_ref, out_assign_dut, out_alwaysblock_ref, out_alwaysblock_dut);
+	end
+	wire tb_match; // Verification
+	wire tb_mismatch = ~tb_match;
+	stimulus_gen stim1 (.clk(clk), .a(a), .b(b));
+	RefModule good1 (.a(a), .b(b), .out_assign(out_assign_ref), .out_alwaysblock(out_alwaysblock_ref));
+	TopModule top_module1 (.a(a), .b(b), .out_assign(out_assign_dut), .out_alwaysblock(out_alwaysblock_dut));
+	bit strobe=0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end
+	endtask
+	final begin
+		if (stats1.errors_out_assign) $display("Hint: Output '"out_assign"' has %0d mismatches. First mismatch occurred at time %0t", stats1.errors_out_assign, stats1.errortime_out_assign);
+		else $display("Hint: Output '"out_assign"' has no mismatches.");
+		if (stats1.errors_out_alwaysblock) $display("Hint: Output '"out_alwaysblock"' has %0d mismatches. First mismatch occurred at time %0t", stats1.errors_out_alwaysblock, stats1.errortime_out_alwaysblock);
+		else $display("Hint: Output '"out_alwaysblock"' has no mismatches.");
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0t ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		if (stats1.errors == 0) $display("SIMULATION PASSED");
+		else $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0t", stats1.errors, stats1.errortime_out_assign);
+	end
+	assign tb_match = {(out_assign_ref^out_alwaysblock_ref),(out_assign_ref^out_alwaysblock_ref),(out_assign_ref^out_alwaysblock_ref)}==(out_assign_ref==(out_assign_ref^out_alwaysblock_dut^out_assign_ref));
+	always@(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if ((out_assign_ref != (out_assign_ref^out_alwaysblock_dut^out_assign_ref))) begin
+			if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+			stats1.errors_out_assign = stats1.errors_out_assign + 1'b1;
+		end
+		if ((out_alwaysblock_ref != (out_alwaysblock_ref^out_alwaysblock_dut^out_alwaysblock_ref))) begin
+			if (stats1.errors_out_alwaysblock == 0) stats1.errortime_out_alwaysblock = $time;
+			stats1.errors_out_alwaysblock = stats1.errors_out_alwaysblock + 1'b1;
+		end
+	end
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+endmodule
+
+[2026-05-14 11:49:06,624 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:49:06,625 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+task wavedrom_start(input[511:0] title = "/");endtask
+task wavedrom_stop;#1;endtask
+
+initial begin
+	int count; count = 0;
+	{a,b} <= 1'b0;
+	wavedrom_start("AND gate");
+	repeat(10) @(posedge clk)
+		{a,b} <= count++;
+	wavedrom_stop();
+	repeat(200) @(posedge clk, negedge clk)
+		{b,a} <= $random;
+	#1 $finish;
+end
+endmodule
+
+module tb();
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_alwaysblock;
+		int errortime_out_alwaysblock;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+	
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,out_assign_ref,out_assign_dut,out_alwaysblock_ref,out_alwaysblock_dut );
+	end
+	
+	wire tb_match; 	// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b );
+	RefModule good1 (
+		.a,
+		.b,
+		.out_assign(out_assign_ref),
+		.out_alwaysblock(out_alwaysblock_ref) );
+	TopModule top_module1 (
+		.a,
+		.b,
+		.out_assign(out_assign_dut),
+		.out_alwaysblock(out_alwaysblock_dut) );
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+	
+	final begin
+		if (stats1.errors_out_assign) $display("Hint: Output '\"out_assign\"' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_assign, stats1.errortime_out_assign);
+		else $display("Hint: Output '\"out_assign\"' has no mismatches.");
+		if (stats1.errors_out_alwaysblock) $display("Hint: Output '\"out_alwaysblock\"' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_alwaysblock, stats1.errortime_out_alwaysblock);
+		else $display("Hint: Output '\"out_alwaysblock\"' has no mismatches.");
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		if (stats1.errors == 0) $display("SIMULATION PASSED");
+		else $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime_out_assign);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_assign_ref, out_alwaysblock_ref } === ( { out_assign_ref, out_alwaysblock_ref } ^ { out_assign_dut, out_alwaysblock_dut } ^ { out_assign_ref, out_alwaysblock_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (out_assign_ref !== ( out_assign_ref ^ out_alwaysblock_dut ^ out_assign_ref ))
+		begin if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+				stats1.errors_out_assign = stats1.errors_out_assign+1'b1; end
+		if (out_alwaysblock_ref !== ( out_alwaysblock_ref ^ out_alwaysblock_dut ^ out_alwaysblock_ref ))
+		begin if (stats1.errors_out_alwaysblock == 0) stats1.errortime_out_alwaysblock = $time;
+				stats1.errors_out_alwaysblock = stats1.errors_out_alwaysblock+1'b1; end
+		
+	end
+	
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+	
+endmodule
+

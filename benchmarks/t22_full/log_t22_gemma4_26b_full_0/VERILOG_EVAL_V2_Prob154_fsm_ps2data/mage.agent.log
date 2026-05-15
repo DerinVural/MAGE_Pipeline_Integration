@@ -1,0 +1,365 @@
+[2026-05-12 22:57:14,077 - mage.agent - INFO] TB Gen BYPASSED — loaded golden testbench from ./verilog-eval/dataset_spec-to-rtl/Prob154_fsm_ps2data_test.sv
+[2026-05-12 22:57:14,079 - mage.agent - INFO] Initial tb:
+[2026-05-12 22:57:14,079 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic [7:0] in,
+	output logic reset
+);
+
+	initial begin
+		repeat(200) @(negedge clk) begin
+			in <= $random;
+			reset <= !($random & 31);
+		end
+		reset <= 1'b0;
+		in <= '0;
+		repeat(10) @(posedge clk);
+		
+		repeat(200) begin
+			in <= $random;
+			in[3] <= 1'b1;
+			@(posedge clk);
+			in <= $random;
+			@(posedge clk);
+			in <= $random;
+			@(posedge clk);
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_bytes;
+		int errortime_out_bytes;
+		int errors_done;
+		int errortime_done;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [7:0] in;
+	logic reset;
+	logic [23:0] out_bytes_ref;
+	logic [23:0] out_bytes_dut;
+	logic done_ref;
+	logic done_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,in,reset,out_bytes_ref,out_bytes_dut,done_ref,done_dut );
+	end
+
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in,
+		.reset );
+	RefModule good1 (
+		.clk,
+		.in,
+		.reset,
+		.out_bytes(out_bytes_ref),
+		.done(done_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.in,
+		.reset,
+		.out_bytes(out_bytes_dut),
+		.done(done_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors_out_bytes) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_bytes", stats1.errors_out_bytes, stats1.errortime_out_bytes);
+		else $display("Hint: Output '%s' has no mismatches.", "out_bytes");
+		if (stats1.errors_done) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "done", stats1.errors_done, stats1.errortime_done);
+		else $display("Hint: Output '%s' has no mismatches.", "done");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_bytes_ref, done_ref } === ( { out_bytes_ref, done_ref } ^ { out_bytes_dut, done_dut } ^ { out_bytes_ref, done_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (out_bytes_ref !== ( out_bytes_ref ^ out_bytes_dut ^ out_bytes_ref ))
+		begin if (stats1.errors_out_bytes == 0) stats1.errortime_out_bytes = $time;
+			stats1.errors_out_bytes = stats1.errors_out_bytes+1'b1; end
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+		begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			stats1.errors_done = stats1.errors_done+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+
+[2026-05-12 22:57:14,079 - mage.agent - INFO] Initial if:
+[2026-05-12 22:57:14,079 - mage.agent - INFO] 
+[2026-05-12 22:57:14,083 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - input  in (8 bits)
+ - output out_bytes (24 bits)
+ - output done
+
+The module should implement a finite state machine that will search for
+message boundaries when given an input byte stream. The algorithm we'll
+use is to discard bytes until we see one with in[3]=1. We then assume
+that this is byte 1 of a message, and signal the receipt of a message
+once all 3 bytes have been received (done). The FSM should signal done in
+the cycle immediately after the third byte of each message was
+successfully received.
+
+Implement the datapath module that will output the 24-bit (3 byte)
+message whenever a packet is received (out_bytes[23:16] is the first
+byte, out_bytes[15:8] is the second byte, etc.). The reset signal is
+active high synchronous. out_bytes needs to be valid whenever the done
+signal is asserted. You may output anything at other times (i.e.,
+don't-care). Assume all sequential logic is triggered on the positive
+edge of the clock.
+
+Here is an example waveform:
+
+  time   clk rst in  done out_bytes
+  0ns    0   1    0  x         x
+  5ns    1   1    0  0         x
+  10ns   0   1    0  0         x
+  15ns   1   0   2c  0         x
+  20ns   0   0   2c  0         x
+  25ns   1   0   81  0         x
+  30ns   0   0   81  0         x
+  35ns   1   0    9  0         x
+  40ns   0   0    9  0         x
+  45ns   1   0   6b  1    2c8109
+  50ns   0   0   6b  1    2c8109
+  55ns   1   0    d  0         x
+  60ns   0   0    d  0         x
+  65ns   1   0   8d  0         x
+  70ns   0   0   8d  0         x
+  75ns   1   0   6d  1    6b0d8d
+  80ns   0   0   6d  1    6b0d8d
+  85ns   1   0   12  0         x
+  90ns   0   0   12  0         x
+  95ns   1   0    1  0         x
+  100ns  0   0    1  0         x
+  105ns  1   0    d  1    6d1201
+  110ns  0   0    d  1    6d1201
+  115ns  1   0   76  0         x
+  120ns  0   0   76  0         x
+  125ns  1   0   3d  0         x
+  130ns  0   0   3d  0         x
+  135ns  1   0   ed  1     d763d
+  140ns  0   0   ed  1     d763d
+  145ns  1   0   8c  0         x
+  150ns  0   0   8c  0         x
+  155ns  1   0   f9  0         x
+  160ns  0   0   f9  0         x
+  165ns  1   0   ce  1    ed8cf9
+  170ns  0   0   ce  1    ed8cf9
+  175ns  1   0   c5  0         x
+  180ns  0   0   c5  0         x
+  185ns  1   0   aa  0         x
+  190ns  0   0   aa  0         x
+
+
+[2026-05-12 22:58:24,062 - mage.agent - INFO] Initial rtl:
+[2026-05-12 22:58:24,063 - mage.agent - INFO] module TopModule(
+    input  logic       clk,
+    input  logic       reset,
+    input  logic [7:0] in,
+    output logic [23:0] out_bytes,
+    output logic       done
+);
+
+    // State definitions
+    localparam STATE_SEARCH    = 3'd0;
+    localparam STATE_BYTE2     = 3'd1;
+    localparam STATE_BYTE3     = 3'd2;
+    localparam STATE_DONE      = 3'd3;
+
+    // State register
+    logic [2:0] state;
+    
+    // Data registers
+    logic [7:0] b1, b2, b3;
+
+    // Sequential logic
+    always @(posedge clk) begin
+        if (reset) begin
+            state <= STATE_SEARCH;
+            b1 <= 8'h0;
+            b2 <= 8'h0;
+            b3 <= 8'h0;
+        end else begin
+            case (state)
+                STATE_SEARCH:
+                    if (in[3] == 1'b1) begin
+                        b1 <= in;
+                        state <= STATE_BYTE2;
+                    end else begin
+                        state <= STATE_SEARCH;
+                    end
+
+                STATE_BYTE2:
+                    begin
+                        b2 <= in;
+                        state <= STATE_BYTE3;
+                    end
+
+                STATE_BYTE3:
+                    begin
+                        b3 <= in;
+                        state <= STATE_DONE;
+                    end
+
+                STATE_DONE:
+                    begin
+                        // After signaling done, we check if the current 'in' (which was the 3rd byte)
+                        // is actually the start of a new message. 
+                        // Wait, the waveform shows 'done' is asserted the cycle AFTER the 3rd byte is received.
+                        // In the waveform: 
+                        // Cycle N: in=09 (3rd byte), done=0, out=0
+                        // Cycle N+1: in=d  (next byte), done=1, out=2c8109
+                        // This means the 3rd byte is latched, then in the NEXT cycle, 'done' is high.
+                        // Let's re-evaluate.
+                        state <= STATE_SEARCH; // This will be handled by the transition logic below
+                    end
+                
+                default:
+                    state <= STATE_SEARCH;
+            endcase
+        end
+    end
+
+    // Refined FSM for the specific 'done' timing in waveform
+    // The waveform shows: 
+    // Byte 1: in=2c (in[3]=1) -> state changes
+    // Byte 2: in=81 -> state changes
+    // Byte 3: in=09 -> state changes to DONE, and in the NEXT cycle done=1.
+    // However, in the next cycle, the 'in' is the new byte 'd'.
+    // So the transition from DONE to SEARCH must happen simultaneously with checking the NEW 'in'.
+
+    // Let's use a simpler state machine logic to match the waveform exactly.
+    // State 0: Searching for in[3]==1
+    // State 1: Just received Byte 1, waiting for Byte 2
+    // State 2: Just received Byte 2, waiting for Byte 3
+    // State 3: Just received Byte 3, signaling DONE
+
+    // Resetting the logic above to follow the pattern.
+    // We will use a single always block for the FSM to ensure clean transitions.
+
+    logic [2:0] state_reg;
+    logic [7:0] r1, r2, r3;
+
+    always @(posedge clk) begin
+        if (reset) begin
+            state_reg <= STATE_SEARCH;
+            r1 <= 8'h0;
+            r2 <= 8'h0;
+            r3 <= 8'h0;
+        end else begin
+            case (state_reg)
+                STATE_SEARCH:
+                    if (in[3] == 1'b1) begin
+                        r1 <= in;
+                        state_reg <= STATE_BYTE2;
+                    end else begin
+                        state_reg <= STATE_SEARCH;
+                    end
+
+                STATE_BYTE2:
+                    begin
+                        r2 <= in;
+                        state_reg <= STATE_BYTE3;
+                    end
+
+                STATE_BYTE3:
+                    begin
+                        r3 <= in;
+                        state_reg <= STATE_DONE;
+                    end
+
+                STATE_DONE:
+                    begin
+                        // In the cycle we are in STATE_DONE, we are looking at the new 'in'.
+                        // If the new 'in' has in[3]==1, we start a new sequence.
+                        if (in[3] == 1'b1) begin
+                            r1 <= in;
+                            state_reg <= STATE_BYTE2;
+                        end else begin
+                            state_reg <= STATE_SEARCH;
+                        end
+                    end
+                default:
+                    state_reg <= STATE_SEARCH;
+            endcase
+        end
+    end
+
+    // Combinational outputs
+    always @(*) begin
+        done = 1'b0;
+        out_bytes = 24'h0;
+        if (state_reg == STATE_DONE) begin
+            done = 1'b1;
+            out_bytes = {r1, r2, r3};
+        end
+    end
+
+endmodule

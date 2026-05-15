@@ -1,0 +1,3 @@
+module TopModule (input a, input b, input c, input d, output logic q);
+    assign q = (a & b) | (b & c) | (c & d) | (d & a);
+endmodule

@@ -1,0 +1,1 @@
+module TopModule (input clk, input reset, output logic [31:0] q);

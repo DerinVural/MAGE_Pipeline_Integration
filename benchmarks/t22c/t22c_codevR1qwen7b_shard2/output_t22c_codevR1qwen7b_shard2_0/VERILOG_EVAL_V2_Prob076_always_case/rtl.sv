@@ -1,0 +1,1 @@
+module TopModule (input [2:0] sel, input [3:0] data0, data1, data2, data3, data4, data5, output logic [3:0] out); always @(*) begin if (sel >= 0 && sel <=5) case (sel) 0: out = data0; 1: out = data1; 2: out = data2; 3: out = data3; 4: out = data4; 5: out = data5; default: out = 0; endcase else out =0; end endmodule

@@ -1,0 +1,1 @@
+interface TopModule_if; logic clk; logic reset; logic shift_ena; endinterface

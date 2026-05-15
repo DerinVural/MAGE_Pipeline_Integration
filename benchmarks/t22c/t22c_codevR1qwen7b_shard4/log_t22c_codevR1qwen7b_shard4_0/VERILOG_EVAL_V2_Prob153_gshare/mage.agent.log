@@ -1,0 +1,233 @@
+[2026-05-14 14:08:19,807 - mage.agent - INFO] Initial tb:
+[2026-05-14 14:08:19,808 - mage.agent - INFO] `timescale 1ps/1ps
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_predict_taken;
+        int errortime_predict_taken;
+        int errors_predict_history;
+        int errortime_predict_history;
+        int clocks;
+    } stats;
+    stats stats1;
+    wire tb_match, tb_mismatch;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    // Declare all ports as logic and connect in stimulus_gen
+    logic areset;
+    logic predict_valid;
+    logic [6:0] predict_pc;
+    logic train_valid;
+    logic train_taken;
+    logic train_mispredicted;
+    logic [6:0] train_history;
+    logic [6:0] train_pc;
+    logic predict_taken_ref;
+    logic [6:0] predict_history_ref;
+    logic predict_taken_dut;
+    logic [6:0] predict_history_dut;
+
+    stimulus_gen stim1(
+        .clk(clk),
+        .areset(areset),
+        .predict_valid(predict_valid),
+        .predict_pc(predict_pc),
+        .train_valid(train_valid),
+        .train_taken(train_taken),
+        .train_mispredicted(train_mispredicted),
+        .train_history(train_history),
+        .train_pc(train_pc),
+        .tb_match(tb_match)
+    );
+
+    RefModule good1(
+        .clk(clk),
+        .areset(areset),
+        .predict_valid(predict_valid),
+        .predict_pc(predict_pc),
+        .train_valid(train_valid),
+        .train_taken(train_taken),
+        .train_mispredicted(train_mispredicted),
+        .train_history(train_history),
+        .train_pc(train_pc),
+        .predict_taken(predict_taken_ref),
+        .predict_history(predict_history_ref)
+    );
+
+    TopModule top_module1(
+        .clk(clk),
+        .areset(areset),
+        .predict_valid(predict_valid),
+        .predict_pc(predict_pc),
+        .train_valid(train_valid),
+        .train_taken(train_taken),
+        .train_mispredicted(train_mispredicted),
+        .train_history(train_history),
+        .train_pc(train_pc),
+        .predict_taken(predict_taken_dut),
+        .predict_history(predict_history_dut)
+    );
+
+    assign tb_match = ({predict_taken_ref, predict_history_ref} === ({predict_taken_ref, predict_history_ref} ^ {predict_taken_dut, predict_history_dut} ^ {predict_taken_ref, predict_history_ref}));
+
+    // Queue for mismatch display
+    localparam MAX_QUEUE_SIZE = 8;
+    reg [6:0] predict_pc_queue [0:MAX_QUEUE_SIZE-1];
+    reg predict_valid_queue [0:MAX_QUEUE_SIZE-1];
+    reg [6:0] predict_history_dut_queue [0:MAX_QUEUE_SIZE-1];
+    reg [6:0] predict_history_ref_queue [0:MAX_QUEUE_SIZE-1];
+    reg predict_taken_dut_queue [0:MAX_QUEUE_SIZE-1];
+    reg predict_taken_ref_queue [0:MAX_QUEUE_SIZE-1];
+    reg [6:0] train_pc_queue [0:MAX_QUEUE_SIZE-1];
+    reg train_valid_queue [0:MAX_QUEUE_SIZE-1];
+    reg areset_queue [0:MAX_QUEUE_SIZE-1];
+    integer i;
+
+    always @(posedge clk, negedge clk) begin
+        if (stats1.errors == 0 && !tb_match) begin
+            // Push to queue
+            if ($size(predict_pc_queue) >= MAX_QUEUE_SIZE -1) begin
+                $delete(predict_pc_queue, 0);
+                $delete(predict_valid_queue, 0);
+                $delete(predict_history_dut_queue, 0);
+                $delete(predict_history_ref_queue, 0);
+                $delete(predict_taken_dut_queue, 0);
+                $delete(predict_taken_ref_queue, 0);
+                $delete(train_pc_queue, 0);
+                $delete(train_valid_queue, 0);
+                $delete(areset_queue, 0);
+            end
+            predict_pc_queue = predict_pc;
+            predict_valid_queue = predict_valid;
+            predict_history_dut_queue = predict_history_dut;
+            predict_history_ref_queue = predict_history_ref;
+            predict_taken_dut_queue = predict_taken_dut;
+            predict_taken_ref_queue = predict_taken_ref;
+            train_pc_queue = train_pc;
+            train_valid_queue = train_valid;
+            areset_queue = areset;
+
+            // Check for first mismatch
+            if (!tb_match) begin
+                if (stats1.errors == 0) begin
+                    $display("Mismatch detected at time %t", $time);
+                    $display("Last %d cycles of simulation: ", MAX_QUEUE_SIZE);
+                    for (i=0; i<MAX_QUEUE_SIZE; i=i+1) begin
+                        if (predict_history_ref_queue[i] === predict_history_dut_queue[i])
+                            $display("Got Match at");
+                        else
+                            $display("Got Mismatch at");
+                        $display(	"Cycle %0d, reset %b, predict_pc %h, predict_valid %b, predict_history_dut %b, predict_taken_dut %b, predict_taken_ref %b, train_pc %h, train_valid %b",
+                            i, areset_queue[i], predict_pc_queue[i], predict_valid_queue[i], predict_history_dut_queue[i], predict_taken_dut_queue[i], predict_taken_ref_queue[i], train_pc_queue[i], train_valid_queue[i]);
+                    end
+                end
+                stats1.errors = stats1.errors + 1;
+                stats1.errortime = $time;
+                if (i == 0) begin
+                    $display("SIMULATION FAILED - 1 MISMATCH DETECTED, FIRST AT TIME %t", $time);
+                    $finish;
+                end
+            end
+        end
+        stats1.clocks++;
+    end
+
+    initial begin
+        areset = 1;
+        predict_valid = 0;
+        train_valid = 0;
+        // ... (stimulus from golden testbench)
+    end
+
+    initial begin
+        // Timeout after 1e6 cycles
+        #1000000;
+        $display("TIMEOUT");
+        $finish;
+    end
+
+    // Final checks and display
+    final begin
+        if (stats1.errors == 0)
+            $display("SIMULATION PASSED");
+    end
+endmodule
+[2026-05-14 14:08:19,808 - mage.agent - INFO] Initial if:
+[2026-05-14 14:08:19,808 - mage.agent - INFO] module TopModule (
+    input clk,
+    input areset,
+    input predict_valid,
+    input [6:0] predict_pc,
+    output predict_taken,
+    output [6:0] predict_history,
+    input train_valid,
+    input train_taken,
+    input train_mispredicted,
+    input [6:0] train_history,
+    input [6:0] train_pc
+);
+[2026-05-14 14:08:19,814 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+
+ - input  predict_valid,
+ - input  predict_pc (7 bits)
+ - output predict_taken
+ - output predict_history (7 bits)
+
+ - input  train_valid
+ - input  train_taken
+ - input  train_mispredicted
+ - input  train_history (7 bits)
+ - input  train_pc (7 bits)
+
+The module should implement a gshare branch predictor with 7-bit pc and
+7-bit global history, hashed (using xor) into a 7-bit index. This index
+accesses a 128-entry table of two-bit saturating counters. The branch
+predictor should contain a 7-bit global branch history register. The
+branch predictor has two sets of interfaces: One for doing predictions
+and one for doing training. The prediction interface is used in the
+processor's Fetch stage to ask the branch predictor for branch direction
+predictions for the instructions being fetched. Once these branches
+proceed down the pipeline and are executed, the true outcomes of the
+branches become known. The branch predictor is then trained using the
+actual branch direction outcomes.
+
+When a branch prediction is requested (predict_valid = 1) for a given pc,
+the branch predictor produces the predicted branch direction and state of
+the branch history register used to make the prediction. The branch
+history register is then updated (at the next positive clock edge) for
+the predicted branch.
+
+When training for a branch is requested (train_valid = 1), the branch
+predictor is told the pc and branch history register value for the branch
+that is being trained, as well as the actual branch outcome and whether
+the branch was a misprediction (needing a pipeline flush). Update the
+pattern history table (PHT) to train the branch predictor to predict this
+branch more accurately next time. In addition, if the branch being
+trained is mispredicted, also recover the branch history register to the
+state immediately after the mispredicting branch completes execution.
+
+If training for a misprediction and a prediction (for a different,
+younger instruction) occurs in the same cycle, both operations will want
+to modify the branch history register. When this happens, training takes
+precedence, because the branch being predicted will be discarded anyway.
+If training and prediction of the same PHT entry happen at the same time,
+the prediction sees the PHT state before training because training only
+modifies the PHT at the next positive clock edge. The following timing
+diagram shows the timing when training and predicting PHT entry 0 at the
+same time. The training request at cycle 4 changes the PHT entry state in
+cycle 5, but the prediction request in cycle 4 outputs the PHT state at
+cycle 4, without considering the effect of the training request in cycle
+4. Reset is asynchronous active-high.
+
+Assume all sequential logic is triggered on the positive edge of the
+clock.
+
+

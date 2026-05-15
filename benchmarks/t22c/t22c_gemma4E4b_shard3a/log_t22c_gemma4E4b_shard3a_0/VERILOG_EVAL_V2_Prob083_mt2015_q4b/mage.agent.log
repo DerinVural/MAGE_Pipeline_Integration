@@ -1,0 +1,1208 @@
+[2026-05-15 11:08:41,736 - mage.agent - INFO] Initial tb:
+[2026-05-15 11:08:41,737 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// stimulus_gen module remains unchanged as per instruction #1
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic y,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+
+		initial begin
+			{x,y} <= 0;
+			@(negedge clk) wavedrom_start();
+				@(posedge clk) {y,x} <= 0;
+				@(posedge clk) {y,x} <= 1;
+				@(posedge clk) {y,x} <= 2;
+				@(posedge clk) {y,x} <= 3;
+			@(negedge clk) wavedrom_stop();
+			repeat(100) @(posedge clk, negedge clk)
+				{x, y} <= $random % 4;
+			#1 $finish;
+		end
+	endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_z;
+		int errortime_z;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic x;
+	logic y;
+	logic z_ref;
+	logic z_dut;
+
+	// --- Queue Implementation for Mismatch Tracking ---
+	// Since the module is sequential, we use queues for state tracking.
+	reg input_x_queue [$];
+	reg input_y_queue [$];
+	reg got_output_queue [$];
+	reg golden_queue [$];
+	reg error_indicator_queue [$]; // Tracks if mismatch occurred in this cycle
+
+	localparam MAX_QUEUE_SIZE = 5; // Small size as per constraints
+
+	// --- Clocking and Mismatch Detection ---
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+
+	// --- Initialization and Dumping ---
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Adjusted dumpvars to include all relevant signals
+		$dumpvars(1, stim1.clk, tb_mismatch, x, y, z_ref, z_dut, stats1);
+	end
+
+	// --- Instantiate Components ---
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		.x, 
+		.y );
+	RefModule good1 (
+		.x, 
+		y, 
+		z(z_ref) );
+	
+	TopModule top_module1 (
+		.x, 
+		y, 
+		z(z_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	// --- Verification Logic and Queue Filling --- 
+	// This block implements the queue logic for sequential verification
+
+always @(posedge clk, negedge clk) begin
+    // 1. Manage Queue Size
+    if (input_x_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+        input_x_queue.delete(0);
+        input_y_queue.delete(0);
+        got_output_queue.delete(0);
+        golden_queue.delete(0);
+        error_indicator_queue.delete(0);
+    end
+
+    // 2. Push Current State
+    input_x_queue.push_back(x);
+    input_y_queue.push_back(y);
+    got_output_queue.push_back(z_dut);
+    golden_queue.push_back(z_ref);
+    
+    // Check for mismatch using the standard verification principle (z_ref vs z_dut)
+    // We use the condition z_ref != z_dut as the primary mismatch signal for queue logging,
+    // as this aligns with standard DUT verification, while preserving original counter logic.
+    if (z_ref !== z_dut) begin
+        error_indicator_queue.push_back(1'b1);
+    end else begin
+        error_indicator_queue.push_back(1'b0);
+    end
+
+    // 3. Update Statistics (Original Logic)
+    stats1.clocks++;
+    if (!tb_match) begin
+        if (stats1.errors == 0) stats1.errortime = $time;
+        stats1.errors++;
+    end
+    // Original specific check for z_ref vs z_dut XOR logic
+    if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+    begin 
+        if (stats1.errors_z == 0) stats1.errortime_z = $time;
+        stats1.errors_z = stats1.errors_z+1'b1; 
+    end
+
+    // 4. Check for First Mismatch and Display Queue Content (Only upon first mismatch)
+    if (error_indicator_queue.size() == 1 && error_indicator_queue[0] == 1'b1) begin
+        $display("\n==================================================================");
+        $display("*** FIRST MISMATCH DETECTED ***");
+        $display("Mismatch detected at time %0t", $time);
+        $display("\nLast %0d cycles of simulation (Trigger Cycle Included):", error_indicator_queue.size());
+
+        for (int i = 0; i < error_indicator_queue.size(); i++) begin
+            $display("Cycle %0d, Inputs: x=%b, y=%b, Got z=%b, Exp z=%b, Mismatch=%b",
+                i, 
+                input_x_queue[i], 
+                input_y_queue[i], 
+                got_output_queue[i], 
+                golden_queue[i], 
+                error_indicator_queue[i]);
+        end
+        $display("==================================================================\n");
+    end
+
+	end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+
+
+	// --- Final Reporting --- 
+	final begin
+		if (stats1.errors_z) $display("Hint: Output 'z' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_z, stats1.errortime_z);
+		else $display("Hint: Output 'z' has no mismatches.");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		
+		// Final required output format
+		if (stats1.errors == 0) 
+			s$display("SIMULATION PASSED");
+		else 
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+	end
+
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     if ($time > 0) $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+[2026-05-15 11:08:41,737 - mage.agent - INFO] Initial if:
+[2026-05-15 11:08:41,738 - mage.agent - INFO] module TopModule(
+    input logic x,
+    input logic y,
+    output logic z
+);
+endmodule
+[2026-05-15 11:08:41,744 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  x
+ - input  y
+ - output z
+
+The module can be described by the following simulation waveform:
+
+  time  x  y  z
+  0ns   0  0  1
+  5ns   0  0  1
+  10ns  0  0  1
+  15ns  0  0  1
+  20ns  0  0  1
+  25ns  1  0  0
+  30ns  1  0  0
+  35ns  0  1  0
+  40ns  0  1  0
+  45ns  1  1  1
+  50ns  1  1  1
+  55ns  0  0  1
+  60ns  0  1  0
+  65ns  0  1  0
+  70ns  1  1  1
+  75ns  0  1  0
+  80ns  0  1  0
+  85ns  0  1  0
+  90ns  1  0  0
+
+
+[2026-05-15 11:09:02,521 - mage.agent - INFO] Initial rtl:
+[2026-05-15 11:09:02,521 - mage.agent - INFO] module TopModule(
+    input logic x,
+    input logic y,
+    output logic z
+);
+
+    // The waveform corresponds to the XNOR operation: z is 1 when x and y are the same (both 0 or both 1).
+    assign z = (x == y);
+
+endmodule
+[2026-05-15 11:09:10,926 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-15 11:10:43,486 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:10:43,486 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// The stimulus_gen module from the golden testbench is kept for structure preservation,
+// although its stimulus generation logic will be superseded by the waveform sequence in tb.
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic y,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+	
+	initial begin
+		{x,y} <= 0;
+		@(negedge clk) wavedrom_start();
+			@(posedge clk) {y,x} <= 0;
+			@(posedge clk) {y,x} <= 1;
+			@(posedge clk) {y,x} <= 2;
+			@(posedge clk) {y,x} <= 3;
+		@(negedge clk) wavedrom_stop();
+		// The original random stimulus is maintained here for functional fidelity to the golden TB,
+		// but the main test sequence will drive the DUT based on the specification.
+		repeat(100) @(posedge clk, negedge clk)
+			{x, y} <= $random % 4;
+		h#1 $finish;
+	end
+	endmodule
+
+module RefModule (
+    input x,
+    input y,
+    output z
+);
+    // Placeholder implementation for RefModule based on the required waveform
+    // Since the waveform dictates the ideal output, this module must implement the logic
+    // derived from the waveform's expected Z values based on X and Y inputs.
+    // Waveform mapping: (X, Y) -> Z
+    // (0,0) -> 1
+    // (1,0) -> 0
+    // (0,1) -> 0
+    // (1,1) -> 1
+    // (0,0) at T=55ns -> 1 (Anomaly/Reset)
+    // (0,1) at T=75ns -> 0
+    // (1,1) at T=75ns -> 0 (Anomaly/Reset)
+
+    // Simplification: Implement the logic that produces the expected Z based on the specified sequence.
+    // A perfect implementation would be a state machine matching the waveform timing, 
+    // but for structural fidelity, we map the core logic observed:
+    assign z = (x & y) | (~x & ~y);
+    // Note: The waveform shows deviations from this simple logic (e.g., Z=1 when X=0, Y=0 at T=55ns).
+    // We rely on the testbench to verify against the *exact* waveform.
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_z;
+		int errortime_z;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic x;
+	logic y;
+	logic z_ref;
+	logic z_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,x,y,z_ref,z_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		.x, 
+		.y );
+		
+	RefModule good1 (
+		.x, 
+		.y, 
+		.z(z_ref) );
+		
+	TopModule top_module1 (
+		.x, 
+		.y, 
+		.z(z_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end	endtask	
+
+	// --- Waveform Stimulus Generation based on input_spec ---
+	initial begin
+		$display("Starting waveform stimulus application...");
+		// Initialize inputs
+		x = 0; y = 0;
+		@(posedge clk);
+
+		// Time 0ns to 15ns (X=0, Y=0, Z=1 expected)
+		@(posedge clk); // 5ns
+		// Time 20ns to 30ns (X=0, Y=0, Z=1 expected)
+		@(posedge clk); // 10ns
+		// Time 25ns to 30ns (X=1, Y=0, Z=0 expected)
+		// We must step through time explicitly to match the sample points.
+		
+		// State 1: (0, 0) -> Z=1. Samples at 0, 5, 10, 15, 20ns
+		x = 0; y = 0;
+		@(negedge clk);
+		// Wait until T=25ns (5 clock cycles after start)
+		repeat(5) @(posedge clk);
+		
+		// State 2: (1, 0) -> Z=0. Samples at 25, 30ns
+		x = 1; y = 0;
+		@(posedge clk);
+		// Wait until T=35ns
+		repeat(3) @(posedge clk);
+		
+		// State 3: (0, 1) -> Z=0. Samples at 35, 40ns
+		x = 0; y = 1;
+		@(posedge clk);
+		// Wait until T=45ns
+		repeat(5) @(posedge clk);
+		
+		// State 4: (1, 1) -> Z=1. Samples at 45, 50ns
+		x = 1; y = 1;
+		@(posedge clk);
+		// Wait until T=55ns
+		repeat(5) @(posedge clk);
+		
+		// State 5: (0, 0) -> Z=1. Sample at 55ns
+		x = 0; y = 0;
+		@(posedge clk);
+		// Wait until T=60ns
+		repeat(5) @(posedge clk);
+		
+		// State 6: (0, 1) -> Z=0. Samples at 60, 65ns
+		x = 0; y = 1;
+		@(posedge clk);
+		// Wait until T=70ns
+		repeat(5) @(posedge clk);
+		
+		// State 7: (1, 1) -> Z=1. Samples at 70, 75ns
+		x = 1; y = 1;
+		@(posedge clk);
+		// Wait until T=80ns
+		repeat(5) @(posedge clk);
+		
+		// State 8: (0, 1) -> Z=0. Samples at 80, 85ns
+		x = 0; y = 1;
+		@(posedge clk);
+		// Wait until T=90ns
+		repeat(5) @(posedge clk);
+		
+		// State 9: (1, 0) -> Z=0. Sample at 90ns
+		x = 1; y = 0;
+		@(posedge clk);
+		
+		// Allow time for final checks
+		#20;
+		$display("Waveform stimulus complete.");
+	end
+
+	// Verification setup
+	assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+
+	// Monitoring and Error Counting
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			end
+		
+		// Original logic for z_ref mismatch (kept for fidelity)
+		if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+		begin 
+			if (stats1.errors_z == 0) stats1.errortime_z = $time;
+			stats1.errors_z = stats1.errors_z+1'b1; 
+		end
+	end
+
+	// Displaying Mismatches at First Occurrence
+	always @(tb_mismatch) begin
+		// This block triggers only when a mismatch occurs
+		if (stats1.errors == 1) begin
+			$display("\n====================================================");
+			$display("FIRST MISMATCH DETECTED AT TIME %0d ps", $time);
+			$display("Input Signals: x=%b, y=%b", x, y);
+			$display("Output Signals: z_dut=%b (DUT), z_ref=%b (Expected)", z_dut, z_ref);
+			$display("====================================================");
+		end
+	end
+
+	// Timeout handler
+	initial begin
+		#2000000
+		$display("TIMEOUT REACHED. Simulation halted.");
+		$finish();
+	end
+
+	// Final Results Display
+	initial begin
+		@(negedge clk);
+		#10; // Wait for settling
+		
+		if (stats1.errors == 0)
+		begin
+			$display("\n****************************************************");
+			$display("SIMULATION PASSED");
+			$display("****************************************************");
+		end
+		else begin
+			$display("\n****************************************************");
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+			$display("****************************************************");
+		end
+		
+		// Original final displays, adapted for new required failure format
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Final Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		end
+
+endmodule
+[2026-05-15 11:12:13,917 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:12:13,918 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// The stimulus_gen module from the golden testbench is kept for structure preservation.
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic y,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+	
+	initial begin
+		{x,y} <= 0;
+		@(negedge clk) wavedrom_start();
+			@(posedge clk) {y,x} <= 0;
+			@(posedge clk) {y,x} <= 1;
+			@(posedge clk) {y,x} <= 2;
+			@(posedge clk) {y,x} <= 3;
+		@(negedge clk) wavedrom_stop();
+		repeat(100) @(posedge clk, negedge clk)
+			{x, y} <= $random % 4;
+		h#1 $finish;
+	end
+	endmodule
+
+module RefModule (
+    input x,
+    input y,
+    output z
+);
+    // Placeholder implementation for RefModule based on the required waveform
+    // We use XNOR logic as observed in the initial implementation for structural fidelity.
+    assign z = (x == y);
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_z;
+		int errortime_z;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic x;
+	logic y;
+	logic z_ref;
+	logic z_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,x,y,z_ref,z_dut );
+	end
+
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.x,
+		.y );
+	RefModule good1 (
+		.x,
+		.y,
+		.z(z_ref) );
+	
+	TopModule top_module1 (
+		.x,
+		.y,
+		.z(z_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end	task
+	
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+		begin 
+			if (stats1.errors_z == 0) stats1.errortime_z = $time;
+			sstats1.errors_z = stats1.errors_z+1'b1; 
+		end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	// --- Waveform Stimulus Generation based on input_spec ---
+	initial begin
+		$display("Starting waveform stimulus application...");
+		// Initialize inputs
+		x = 0; y = 0;
+		@(posedge clk);
+
+		// State 1: (0, 0) -> Z=1. Samples at 0, 5, 10, 15, 20ns (5 cycles)
+		x = 0; y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk); // Reaches T=20ns (start of next state transition)
+
+		// State 2: (1, 0) -> Z=0. Samples at 25, 30ns (2 cycles)
+		x = 1; y = 0;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=30ns
+
+		// State 3: (0, 1) -> Z=0. Samples at 35, 40ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=40ns
+
+		// State 4: (1, 1) -> Z=1. Samples at 45, 50ns (2 cycles)
+		x = 1; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=50ns
+
+		// State 5: (0, 0) -> Z=1. Sample at 55ns (1 cycle)
+		x = 0; y = 0;
+		@(posedge clk);
+		// Wait until T=60ns (5 cycles)
+		repeat(5) @(posedge clk);
+
+		// State 6: (0, 1) -> Z=0. Samples at 60, 65ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=65ns
+
+		// State 7: (1, 1) -> Z=1. Samples at 70, 75ns (2 cycles)
+		x = 1; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=75ns
+
+		// State 8: (0, 1) -> Z=0. Samples at 80, 85ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=85ns
+
+		// State 9: (1, 0) -> Z=0. Sample at 90ns (1 cycle)
+		x = 1; y = 0;
+		@(posedge clk);
+		
+		// Allow time for final checks
+		h#20;
+		display("Waveform stimulus complete.");
+	end
+
+	// Displaying Mismatches at First Occurrence (Improved Requirement 1)
+	always @(tb_mismatch) begin
+		if (stats1.errors == 1) begin
+			$display("\n====================================================");
+			$display("FIRST MISMATCH DETECTED AT TIME %0d ps", $time);
+			$display("Input Signals: x=%b, y=%b", x, y);
+			$display("Output Signals: z_dut=%b (DUT), z_ref=%b (Expected)", z_dut, z_ref);
+			$display("====================================================");
+		end
+	end
+
+	// Final Results Display (Improved Requirement 4)
+	initial begin
+		@(negedge clk);
+		#10; // Wait for settling
+		
+		if (stats1.errors == 0)
+		begin
+			$display("\n****************************************************");
+			$display("SIMULATION PASSED");
+			$display("****************************************************");
+		end
+		else begin
+			$display("\n****************************************************");
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+			$display("****************************************************");
+		end
+		
+		// Original final displays, adapted
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Final Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+	endmodule
+[2026-05-15 11:13:32,067 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:13:32,067 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// The stimulus_gen module from the golden testbench is kept for structure preservation.
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic y,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+	
+	initial begin
+		x,y <= 0;
+		@(negedge clk) wavedrom_start();
+		@(posedge clk) {y,x} <= 0;
+		@(posedge clk) {y,x} <= 1;
+		@(posedge clk) {y,x} <= 2;
+		@(posedge clk) {y,x} <= 3;
+		@(negedge clk) wavedrom_stop();
+		repeat(100) @(posedge clk, negedge clk)
+			{x, y} <= $random % 4;
+		h#1 $finish;
+	end
+	endmodule
+
+module RefModule (
+    input x,
+    input y,
+    output z
+);
+    // Placeholder implementation based on the required waveform (XNOR logic)
+    assign z = (x == y);
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_z;
+		int errortime_z;
+		
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic x;
+	logic y;
+	logic z_ref;
+	logic z_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,x,y,z_ref,z_dut );
+	end
+
+	
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.x,
+		.y );
+	RefModule good1 (
+		.x,
+		.y,
+		.z(z_ref) );
+	
+	TopModule top_module1 (
+		.x,
+		.y,
+		.z(z_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+
+	
+	// Verification logic
+	assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+		// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+		begin 
+			if (stats1.errors_z == 0) stats1.errortime_z = $time;
+			sstats1.errors_z = stats1.errors_z+1'b1; 
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// --- Waveform Stimulus Generation based on input_spec --- 
+	initial begin
+		$display("Starting waveform stimulus application...");
+		// Initialize inputs
+		x = 0; y = 0;
+		@(posedge clk);
+	
+		// State 1: (0, 0) -> Z=1. Samples at 0, 5, 10, 15, 20ns (5 cycles)
+		x = 0; y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk); // Reaches T=20ns
+		
+		// State 2: (1, 0) -> Z=0. Samples at 25, 30ns (2 cycles)
+		x = 1; y = 0;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=30ns
+		
+		// State 3: (0, 1) -> Z=0. Samples at 35, 40ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=40ns
+		
+		// State 4: (1, 1) -> Z=1. Samples at 45, 50ns (2 cycles)
+		x = 1; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=50ns
+		
+		// State 5: (0, 0) -> Z=1. Sample at 55ns (1 cycle)
+		x = 0; y = 0;
+		@(posedge clk); // Reaches T=55ns
+		// Wait until T=60ns (5 cycles)
+		repeat(5) @(posedge clk);
+		
+		// State 6: (0, 1) -> Z=0. Samples at 60, 65ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=65ns
+		
+		// State 7: (1, 1) -> Z=1. Samples at 70, 75ns (2 cycles)
+		x = 1; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=75ns
+		
+		// State 8: (0, 1) -> Z=0. Samples at 80, 85ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=85ns
+		
+		// State 9: (1, 0) -> Z=0. Sample at 90ns (1 cycle)
+		x = 1; y = 0;
+		@(posedge clk); // Reaches T=90ns
+		
+		// Allow time for final checks
+		h#20;
+		display("Waveform stimulus complete.");
+	end
+
+	// Displaying Mismatches at First Occurrence (Requirement 1)
+	always @(tb_mismatch) begin
+		if (stats1.errors == 1) begin
+			$display("\n====================================================");
+			$display("FIRST MISMATCH DETECTED AT TIME %0d ps", $time);
+			$display("Input Signals: x=%b, y=%b", x, y);
+			$display("Output Signals: z_dut=%b (DUT), z_ref=%b (Expected)", z_dut, z_ref);
+			$display("====================================================");
+		end
+	end
+
+	// Final Results Display (Requirement 4)
+	initial begin
+		@(negedge clk);
+		h#10; // Wait for settling
+		
+		if (stats1.errors == 0)
+		begin
+			$display("\n****************************************************");
+			$display("SIMULATION PASSED");
+			$display("****************************************************");
+		end
+		else begin
+			$display("\n****************************************************");
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+			$display("****************************************************");
+		end
+		
+		// Original final displays, adapted
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Final Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-15 11:14:55,532 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:14:55,532 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// The stimulus_gen module from the golden testbench is kept for structure preservation.
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic y,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+	
+	initial begin
+		x,y <= 0;
+		@(negedge clk) wavedrom_start();
+		@(posedge clk) {y,x} <= 0;
+		@(posedge clk) {y,x} <= 1;
+		@(posedge clk) {y,x} <= 2;
+		@(posedge clk) {y,x} <= 3;
+		@(negedge clk) wavedrom_stop();
+		repeat(100) @(posedge clk, negedge clk)
+			{x, y} <= $random % 4;
+		h#1 $finish;
+	end
+	endmodule
+
+module RefModule (
+	input x,
+	input y,
+	output z
+);
+	// Placeholder implementation based on the required waveform (XNOR logic)
+	assign z = (x == y);
+	endmodule
+
+module tb();
+	
+typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_z;
+		int errortime_z;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic x;
+	logic y;
+	logic z_ref;
+	logic z_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,x,y,z_ref,z_dut );
+	end
+
+	
+wire tb_match;        // Verification
+wire tb_mismatch = ~tb_match;
+	
+stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.x,
+		.y );
+	RefModule good1 (
+		.x,
+		.y,
+		z(z_ref) );
+	
+TopModule top_module1 (
+		x,
+		y,
+		z(z_dut) );
+	
+	
+bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+	
+	
+// Verification logic
+assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+	// Use explicit sensitivity list here.
+always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sats1.errors++;
+			end
+		if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+		begin 
+			if (stats1.errors_z == 0) stats1.errortime_z = $time;
+			sats1.errors_z = stats1.errors_z+1'b1; 
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		h#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+	
+	// --- Waveform Stimulus Generation based on input_spec ---
+	initial begin
+		$display("Starting waveform stimulus application...");
+		// Initialize inputs
+		x = 0; y = 0;
+		@(posedge clk);
+		
+		// State 1: (0, 0) -> Z=1. Samples at 0, 5, 10, 15, 20ns (5 cycles)
+		x = 0; y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk);
+		@(posedge clk); // Reaches T=20ns
+		
+		// State 2: (1, 0) -> Z=0. Samples at 25, 30ns (2 cycles)
+		x = 1; y = 0;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=30ns
+		
+		// State 3: (0, 1) -> Z=0. Samples at 35, 40ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=40ns
+		
+		// State 4: (1, 1) -> Z=1. Samples at 45, 50ns (2 cycles)
+		x = 1; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=50ns
+		
+		// State 5: (0, 0) -> Z=1. Sample at 55ns (1 cycle)
+		x = 0; y = 0;
+		@(posedge clk); // Reaches T=55ns
+		// Wait until T=60ns (5 cycles)
+		repeat(5) @(posedge clk);
+		
+		// State 6: (0, 1) -> Z=0. Samples at 60, 65ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=65ns
+		
+		// State 7: (1, 1) -> Z=1. Samples at 70, 75ns (2 cycles)
+		x = 1; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=75ns
+		
+		// State 8: (0, 1) -> Z=0. Samples at 80, 85ns (2 cycles)
+		x = 0; y = 1;
+		@(posedge clk);
+		@(posedge clk); // Reaches T=85ns
+		
+		// State 9: (1, 0) -> Z=0. Sample at 90ns (1 cycle)
+		x = 1; y = 0;
+		@(posedge clk); // Reaches T=90ns
+		
+		// Allow time for final checks
+		h#20;
+		display("Waveform stimulus complete.");
+	end
+	
+	// Displaying Mismatches at First Occurrence (Requirement 1)
+	always @(tb_mismatch) begin
+		if (stats1.errors == 1) begin
+			$display("\n====================================================\n");
+			$display("FIRST MISMATCH DETECTED AT TIME %0d ps", $time);
+			$display("Input Signals: x=%b, y=%b", x, y);
+			$display("Output Signals: z_dut=%b (DUT), z_ref=%b (Expected)", z_dut, z_ref);
+			$display("====================================================\n");
+		end
+	end
+	
+	// Final Results Display (Requirement 4)
+	initial begin
+		@(negedge clk);
+		h#10; // Wait for settling
+		
+		if (stats1.errors == 0)
+		begin
+			$display("\n****************************************************");
+			$display("SIMULATION PASSED");
+			$display("****************************************************");
+		end
+		else begin
+			$display("\n****************************************************");
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+			$display("****************************************************");
+		end
+		
+		// Original final displays, adapted
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Final Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+endmodule

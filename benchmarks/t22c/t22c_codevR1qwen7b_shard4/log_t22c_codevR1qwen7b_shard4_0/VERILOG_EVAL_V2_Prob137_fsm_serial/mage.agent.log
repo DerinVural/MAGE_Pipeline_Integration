@@ -1,0 +1,183 @@
+[2026-05-14 13:23:50,030 - mage.agent - INFO] Initial tb:
+[2026-05-14 13:23:50,032 - mage.agent - INFO] `timescale 1ps/1ps
+
+module stimulus_gen (
+    input clk,
+    output logic in,
+    output logic reset
+);
+    initial begin
+        reset <= 1;
+        in <= 1;
+        @(posedge clk);
+        reset <= 0;
+        in <= 0;
+        repeat(9) @(posedge clk);
+        in <= 1;
+        @(posedge clk);
+        in <= 0;
+        repeat(9) @(posedge clk);
+        in <= 1;
+        @(posedge clk);
+        in <= 0;
+        repeat(10) @(posedge clk);
+        in <= 1;
+        @(posedge clk);
+        in <= 0;
+        repeat(10) @(posedge clk);
+        in <= 1;
+        @(posedge clk);
+        in <= 0;
+        repeat(9) @(posedge clk);
+        in <= 1;
+        @(posedge clk);
+        repeat(800) @(posedge clk, negedge clk) begin
+            in <= $random;
+            reset <= !($random & 31);
+        end
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_done;
+        int errortime_done;
+        int clocks;
+    } stats;
+    stats stats1 = '0;
+
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    logic in;
+    logic reset;
+    logic done_ref;
+    logic done_dut;
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+
+    stimulus_gen stim1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset)
+    );
+
+    RefModule good1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset),
+        .done(done_ref)
+    );
+
+    TopModule top_module1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset),
+        .done(done_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep(); repeat(5) begin strobe <= !strobe; @(strobe); end endtask
+
+    reg [1:0] input_queue [$], got_output_queue [$], golden_queue [$]; reg reset_queue [$];
+    localparam MAX_QUEUE_SIZE = 9;
+
+    always @(posedge clk, negedge clk) begin
+        if (input_queue.size() >= MAX_QUEUE_SIZE) begin
+            input_queue.delete(0); got_output_queue.delete(0); golden_queue.delete(0); reset_queue.delete(0);
+        end
+        input_queue.push_back(in); got_output_queue.push_back(done_dut); golden_queue.push_back(done_ref); reset_queue.push_back(reset);
+
+        if (got_output_queue[MAX_QUEUE_SIZE-2] !== golden_queue[MAX_QUEUE_SIZE-2]) begin
+            $display(
+[2026-05-14 13:23:50,032 - mage.agent - INFO] Initial if:
+[2026-05-14 13:23:50,032 - mage.agent - INFO] module TopModule (input clk, input reset, input in, output done);
+[2026-05-14 13:23:50,039 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - input  in
+ - output done
+
+In many (older) serial communications protocols, each data byte is sent
+along with a start bit and a stop bit, to help the receiver delimit bytes
+from the stream of bits. One common scheme is to use one start bit (0), 8
+data bits, and 1 stop bit (1). The line is also at logic 1 when nothing
+is being transmitted (idle).
+
+Implement a finite state machine that will identify when bytes have been
+correctly received when given a stream of bits. It needs to identify the
+start bit, wait for all 8 data bits, then verify that the stop bit was
+correct. If the stop bit does not appear when expected, the FSM must wait
+until it finds a stop bit before attempting to receive the next byte.
+Include a active-high synchronous reset. Note that the serial protocol
+sends the least significant bit first.
+
+Assume all sequential logic is triggered on the positive edge of the
+clock.
+
+
+[2026-05-14 13:23:55,020 - mage.agent - INFO] Initial rtl:
+[2026-05-14 13:23:55,020 - mage.agent - INFO] module TopModule (input clk, input reset, input in, output done);
+  logic [2:0] state, next_state;
+  logic [3:0] counter;
+  logic [7:0] data_reg;
+  logic done_reg;
+  localparam IDLE = 3'b000,
+            START = 3'b001,
+            DATA = 3'b010,
+            STOP = 3'b011,
+            ERROR = 3'b100;
+
+  // State register
+  always @(posedge clk) begin
+    if (reset) state <= IDLE;
+    else state <= next_state;
+  end
+
+  // Data and counter registers
+  always @(posedge clk) begin
+    if (reset) begin
+      data_reg <= 8'h0;
+      counter <= 4'h0;
+      done_reg <= 0;
+    end else begin
+      if (state == DATA) begin
+        data_reg <= {in, data_reg[7:1]}; // LSB first
+        counter <= counter + 1;
+      end else if (state == STOP) begin
+        counter <= 0;
+        if (in) done_reg <= 1;
+        else done_reg <= 0; // Stop error
+      end else begin
+        data_reg <= data_reg;
+        counter <= 0;
+        done_reg <= 0;
+      end
+    end
+  end
+
+  // Next state logic
+  always @(*) begin
+    next_state = state;
+    case (state)
+      IDLE: next_state = (in == 0) ? START : IDLE;
+      START: next_state = (counter == 4'd9) ? DATA : START;
+      DATA: next_state = (counter == 4'd8) ? STOP : DATA;
+      STOP: next_state = (in == 1) ? IDLE : ERROR;
+      ERROR: next_state = (in == 1) ? IDLE : ERROR;
+      default: next_state = IDLE;
+    endcase
+  end
+
+  // Done output
+  assign done = done_reg;
+
+endmodule

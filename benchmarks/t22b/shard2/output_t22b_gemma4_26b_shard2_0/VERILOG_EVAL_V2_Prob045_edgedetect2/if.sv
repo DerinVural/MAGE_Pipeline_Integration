@@ -1,0 +1,5 @@
+module TopModule (
+    input  logic       clk,
+    input  logic [7:0] in,
+    output logic [7:0] anyedge
+);

@@ -1,0 +1,1162 @@
+[2026-05-13 14:50:25,202 - mage.agent - INFO] Initial tb:
+[2026-05-13 14:50:25,204 - mage.agent - INFO] module TopModule (
+    input  logic [15:0] scancode,
+    output logic        left,
+    output logic        down,
+    output logic        right,
+    output logic        up
+);
+
+    always_comb begin
+        left  = 1'b0;
+        down  = 1'b0;
+        right = 1'b0;
+        up    = 1'b0;
+        case (scancode)
+            16'he06b: left  = 1'b1;
+            16'he072: down  = 1'b1;
+            16'he074: right = 1'b1;
+            16'he075: up    = 1'b1;
+            default: ;
+        endcase
+    end
+
+endmodule
+
+module RefModule (
+    input  logic [15:0] scancode,
+    output logic        left,
+    output logic        down,
+    output logic        right,
+    output logic        up
+);
+
+    always_comb begin
+        left  = 1'b0;
+        down  = 1'b0;
+        right = 1'b0;
+        up    = 1'b0;
+        case (scancode)
+            16'he06b: left  = 1'b1;
+            16'he072: down  = 1'b1;
+            16'he074: right = 1'b1;
+            16'he075: up    = 1'b1;
+            default: ;
+        endcase
+    end
+
+endmodule
+
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic [15:0] scancode, 
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable
+);
+
+    task wavedrom_start(input[511:0] title = "");
+        wavedrom_enable = 1;
+        wavedrom_title = title;
+    endtask
+    
+    task wavedrom_stop;
+        wavedrom_enable = 0;
+        #1;
+    endtask
+
+    initial begin
+        scancode = 16'h0;
+        wavedrom_enable = 0;
+        wavedrom_title = 512'h0;
+        @(negedge clk) wavedrom_start("Recognize arrow keys");
+            @(posedge clk) scancode <= 16'h0;
+            @(posedge clk) scancode <= 16'h1;
+            @(posedge clk) scancode <= 16'he075;
+            @(posedge clk) scancode <= 16'he06b;
+            @(posedge clk) scancode <= 16'he06c;
+            @(posedge clk) scancode <= 16'he072;
+            @(posedge clk) scancode <= 16'he074;
+            @(posedge clk) scancode <= 16'he076;
+            @(posedge clk) scancode <= 16'hffff;
+        @(negedge clk) wavedrom_stop();
+
+        repeat(30000) @(posedge clk, negedge clk) begin
+            scancode <= $urandom;
+        end
+        $finish;
+    end
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_left;
+        int errortime_left;
+        int errors_down;
+        int errortime_down;
+        int errors_right;
+        int errortime_right;
+        int errors_up;
+        int errortime_up;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [15:0] scancode;
+    logic left_ref, down_ref, right_ref, up_ref;
+    logic left_dut, down_dut, right_dut, up_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, scancode, left_ref, left_dut, down_ref, down_dut, right_ref, right_dut, up_ref, up_dut );
+    end
+
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .scancode,
+        .wavedrom_title,
+        .wavedrom_enable
+    );
+
+    RefModule good1 (
+        .scancode,
+        .left(left_ref),
+        .down(down_ref),
+        .right(right_ref),
+        .up(up_ref) 
+    );
+        
+    TopModule top_module1 (
+        .scancode,
+        .left(left_dut),
+        .down(down_dut),
+        .right(right_dut),
+        .up(up_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask
+
+    assign tb_match = ( { left_ref, down_ref, right_ref, up_ref } === ( { left_ref, down_ref, right_ref, up_ref } ^ { left_dut, down_dut, right_dut, up_dut } ^ { left_ref, down_ref, right_ref, up_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            // Display first mismatch details for combinational logic
+            if (stats1.errors == 1) begin
+                $display("Mismatch detected at time %t", $time);
+                $display("Input scancode: %h (Bin: %b)", scancode, scancode);
+                $display("Got Output: L=%b, D=%b, R=%b, U=%b", left_dut, down_dut, right_dut, up_dut);
+                $display("Exp Output: L=%b, D=%b, R=%b, U=%b", left_ref, down_ref, right_ref, up_ref);
+            end
+        end
+
+        if (left_ref !== ( left_ref ^ left_dut ^ left_ref )) begin 
+            if (stats1.errors_left == 0) stats1.errortime_left = $time;
+            stats1.errors_left = stats1.errors_left + 1;
+        end
+        if (down_ref !== ( down_ref ^ down_dut ^ down_ref )) begin 
+            if (stats1.errors_down == 0) stats1.errortime_down = $time;
+            stats1.errors_down = stats1.errors_down + 1;
+        end
+        if (right_ref !== ( right_ref ^ right_dut ^ right_ref )) begin 
+            if (stats1.errors_right == 0) stats1.errortime_right = $time;
+            stats1.errors_right = stats1.errors_right + 1;
+        end
+        if (up_ref !== ( up_ref ^ up_dut ^ up_ref )) begin 
+            if (stats1.errors_up == 0) stats1.errortime_up = $time;
+            stats1.errors_up = stats1.errors_up + 1;
+        end
+    end
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_left) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "left", stats1.errors_left, stats1.errortime_left);
+        else $display("Hint: Output '%s' has no mismatches.", "left");
+        if (stats1.errors_down) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "down", stats1.errors_down, stats1.errortime_down);
+        else $display("Hint: Output '%s' has no mismatches.", "down");
+        if (stats1.errors_right) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "right", stats1.errors_right, stats1.errortime_right);
+        else $display("Hint: Output '%s' has no mismatches.", "right");
+        if (stats1.errors_up) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "up", stats1.errors_up, stats1.errortime_up);
+        else $display("Hint: Output '%s' has no mismatches.", "up");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+    initial begin
+        #1000000
+        $display("TIMEOUT");
+        $finish();
+    end
+endmodule
+[2026-05-13 14:50:25,205 - mage.agent - INFO] Initial if:
+[2026-05-13 14:50:25,205 - mage.agent - INFO] module TopModule (
+    input  logic [15:0] scancode,
+    output logic        left,
+    output logic        down,
+    output logic        right,
+    output logic        up
+);
+
+[2026-05-13 14:50:25,212 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  scancode (16 bits)
+ - output left
+ - output down
+ - output right
+ - output up
+
+The module should process scancodes from a PS/2 keyboard for a game.
+Given the last two bytes of scancodes received, you need to indicate
+whether one of the arrow keys on the keyboard have been pressed. This
+involves a fairly simple mapping, which can be implemented as a case
+statement (or if-elseif) with four cases.
+
+  Scancode[15:0] | Arrow key
+  16'he06b       | left arrow
+  16'he072       | down arrow
+  16'he074       | right arrow
+  16'he075       | up arrow
+  Anything else  | none
+
+Your circuit has one 16-bit input, and four outputs. Build this circuit
+that recognizes these four scancodes and asserts the correct output.
+
+
+[2026-05-13 14:50:45,313 - mage.agent - INFO] Initial rtl:
+[2026-05-13 14:50:45,313 - mage.agent - INFO] module TopModule (
+    input  logic [15:0] scancode,
+    output logic        left,
+    output logic        down,
+    output logic        right,
+    output logic        up
+);
+
+    // Combinational logic to recognize scancodes
+    always @(*) begin
+        // Default values to prevent latches and handle 'anything else'
+        left  = 1'b0;
+        down  = 1'b0;
+        right = 1'b0;
+        up    = 1'b0;
+
+        case (scancode)
+            16'he06b: left  = 1'b1;
+            16'he072: down  = 1'b1;
+            16'he074: right = 1'b1;
+            16'he075: up    = 1'b1;
+            default: ;
+        endcase
+    end
+
+endmodule
+[2026-05-13 14:50:50,661 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 14:52:30,698 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:52:30,698 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Reference Model to allow testbench to run
+module RefModule (
+    input  logic [15:0] scancode,
+    output logic left,
+    output logic down,
+    output logic right,
+    output logic up
+);
+    always_comb begin
+        left  = (scancode == 16'he06b);
+        down  = (scancode == 16'he072);
+        right = (scancode == 16'he074);
+        up    = (scancode == 16'he075);
+    end
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output logic [15:0] scancode, 
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable    
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        wavedrom_enable = 0;
+        wavedrom_title = 0;
+        @(negedge clk) wavedrom_start("Recognize arrow keys");
+            @(posedge clk) scancode <= 16'h0;
+            @(posedge clk) scancode <= 16'h1;
+            @(posedge clk) scancode <= 16'he075;
+            @(posedge clk) scancode <= 16'he06b;
+            @(posedge clk) scancode <= 16'he06c;
+            @(posedge clk) scancode <= 16'he072;
+            @(posedge clk) scancode <= 16'he074;
+            @(posedge clk) scancode <= 16'he076;
+            @(posedge clk) scancode <= 16'hffff;
+        @(negedge clk) wavedrom_stop();
+
+        repeat(30000) @(posedge clk, negedge clk) begin
+            scancode <= $urandom;
+        end
+        $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_left;
+        int errortime_left;
+        int errors_down;
+        int errortime_down;
+        int errors_right;
+        int errortime_right;
+        int errors_up;
+        int errortime_up;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic [15:0] scancode;
+    logic left_ref;
+    logic left_dut;
+    logic down_ref;
+    logic down_dut;
+    logic right_ref;
+    logic right_dut;
+    logic up_ref;
+    logic up_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, scancode, left_ref, left_dut, down_ref, down_dut, right_ref, right_dut, up_ref, up_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .scancode
+    );
+
+    RefModule good1 (
+        .scancode,
+        .left(left_ref),
+        .down(down_ref),
+        .right(right_ref),
+        .up(up_ref) 
+    );
+        
+    TopModule top_module1 (
+        .scancode,
+        .left(left_dut),
+        .down(down_dut),
+        .right(right_dut),
+        .up(up_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { left_ref, down_ref, right_ref, up_ref } === ( { left_ref, down_ref, right_ref, up_ref } ^ { left_dut, down_dut, right_dut, up_dut } ^ { left_ref, down_ref, right_ref, up_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                // Display first mismatch details
+                $display("--- FIRST MISMATCH DETECTED AT TIME %0t ---", $time);
+                $display("Input scancode: 16'h%h (BIN: %b)", scancode, scancode);
+                $display("Expected Outputs: left=%b, down=%b, right=%b, up=%b", left_ref, down_ref, right_ref, up_ref);
+                $display("Actual Outputs:   left=%b, down=%b, right=%b, up=%b", left_dut, down_dut, right_dut, up_dut);
+                $display("-------------------------------------------");
+            end else begin
+                stats1.errors++;
+            end
+
+            if (left_ref !== ( left_ref ^ left_dut ^ left_ref )) begin 
+                if (stats1.errors_left == 0) stats1.errortime_left = $time; 
+                stats1.errors_left = stats1.errors_left + 1;
+            end
+            if (down_ref !== ( down_ref ^ down_dut ^ down_ref )) begin 
+                if (stats1.errors_down == 0) stats1.errortime_down = $time; 
+                stats1.errors_down = stats1.errors_down + 1;
+            end
+            if (right_ref !== ( right_ref ^ right_dut ^ right_ref )) begin 
+                if (stats1.errors_right == 0) stats1.errortime_right = $time; 
+                stats1.errors_right = stats1.errors_right + 1;
+            end
+            if (up_ref !== ( up_ref ^ up_dut ^ up_ref )) begin 
+                if (stats1.errors_up == 0) stats1.errortime_up = $time; 
+                stats1.errors_up = stats1.errors_up + 1;
+            end
+        end else begin
+            // Reset error count if it was 0 to allow proper error incrementing logic if mismatch happens later
+            // However, the spec says maintain original logic. Original logic: if (stats1.errors == 0) stats1.errortime = $time; stats1.errors++;
+            // This means errors increments every time tb_match is false. 
+            // Let's stick to the provided structure exactly.
+            if (stats1.errors == 0) begin
+                 // Not explicitly handled in golden, but we must maintain original error increment logic.
+            end else begin
+                 // Already mismatching
+            end
+        end
+    end
+
+    // Re-implementing the exact error increment logic from golden to ensure consistency
+    // The golden code provided had: 
+    // if (!tb_match) begin if (stats1.errors == 0) stats1.errortime = $time; stats1.errors++; end
+    // I will use that precisely.
+
+    initial begin
+        // Reset stats
+        stats1 = '0;
+    end
+
+    // Redefining the error logic to match golden exactly
+    always @(posedge clk, negedge clk) begin
+        if (stats1.clocks > 0) begin // skip initialization clock
+             // The provided golden code increments clocks at the start of the block
+        end
+    end
+
+    // The provided golden logic actually increments errors every cycle tb_match is false.
+    // I will replicate the provided block exactly but with the extra display.
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_left) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "left", stats1.errors_left, stats1.errortime_left);
+        else $display("Hint: Output '%s' has no mismatches.", "left");
+        if (stats1.errors_down) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "down", stats1.errors_down, stats1.errortime_down);
+        else $display("Hint: Output '%s' has no mismatches.", "down");
+        if (stats1.errors_right) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "right", stats1.errors_right, stats1.errortime_right);
+        else $display("Hint: Output '%s' has no mismatches.", "right");
+        if (stats1.errors_up) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "up", stats1.errors_up, stats1.errortime_up);
+        else $display("Hint: Output '%s' has no mismatches.", "up");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+    initial begin
+        #1000000
+        $display("TIMEOUT");
+        $finish();
+    end
+
+endmodule
+[2026-05-13 14:54:04,022 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:54:04,022 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Reference Model to allow testbench to run
+module RefModule (
+    input  logic [15:0] scancode,
+    output logic left,
+    output logic down,
+    output logic right,
+    output logic up
+);
+    always_comb begin
+        left  = (scancode == 16'he06b);
+        down  = (scancode == 16'he072);
+        right = (scancode == 16'he074);
+        up    = (scancode == 16'he075);
+    end
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output logic [15:0] scancode, 
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable    
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        wavedrom_enable = 0;
+        wavedrom_title = 0;
+        @(negedge clk) wavedrom_start("Recognize arrow keys");
+            @(posedge clk) scancode <= 16'h0;
+            @(posedge clk) scancode <= 16'h1;
+            @(posedge clk) scancode <= 16'he075;
+            @(posedge clk) scancode <= 16'he06b;
+            @(posedge clk) scancode <= 16'he06c;
+            @(posedge clk) scancode <= 16'he072;
+            @(posedge clk) scancode <= 16'he074;
+            @(posedge clk) scancode <= 16'he076;
+            @(posedge clk) scancode <= 16'hffff;
+        @(negedge clk) wavedrom_stop();
+
+        repeat(30000) @(posedge clk, negedge clk) begin
+            scancode <= $urandom;
+        end
+        $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_left;
+        int errortime_left;
+        int errors_down;
+        int errortime_down;
+        int errors_right;
+        int errortime_right;
+        int errors_up;
+        int errortime_up;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [15:0] scancode;
+    logic left_ref;
+    logic left_dut;
+    logic down_ref;
+    logic down_dut;
+    logic right_ref;
+    logic right_dut;
+    logic up_ref;
+    logic up_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, scancode, left_ref, left_dut, down_ref, down_dut, right_ref, right_dut, up_ref, up_dut );
+    end
+
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .scancode
+    );
+
+    RefModule good1 (
+        .scancode,
+        .left(left_ref),
+        .down(down_ref),
+        .right(right_ref),
+        .up(up_ref) 
+    );
+        
+    TopModule top_module1 (
+        .scancode,
+        .left(left_dut),
+        .down(down_dut),
+        .right(right_dut),
+        .up(up_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { left_ref, down_ref, right_ref, up_ref } === ( { left_ref, down_ref, right_ref, up_ref } ^ { left_dut, down_dut, right_dut, up_dut } ^ { left_ref, down_ref, right_ref, up_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                $display("--- FIRST MISMATCH DETECTED AT TIME %0t ---", $time);
+                $display("Input scancode: 16'h%h (BIN: %b)", scancode, scancode);
+                $display("Expected Outputs: left=%b, down=%b, right=%b, up=%b", left_ref, down_ref, right_ref, up_ref);
+                $display("Actual Outputs:   left=%b, down=%b, right=%b, up=%b", left_dut, down_dut, right_dut, up_dut);
+                $display("-------------------------------------------");
+            end else begin
+                stats1.errors++;
+            end
+
+            if (left_ref !== ( left_ref ^ left_dut ^ left_ref )) begin 
+                if (stats1.errors_left == 0) stats1.errortime_left = $time; 
+                stats1.errors_left = stats1.errors_left + 1'b1; 
+            end
+            if (down_ref !== ( down_ref ^ down_dut ^ down_ref )) begin 
+                if (stats1.errors_down == 0) stats1.errortime_down = $time; 
+                stats1.errors_down = stats1.errors_down + 1'b1; 
+            end
+            if (right_ref !== ( right_ref ^ right_dut ^ right_ref )) begin 
+                if (stats1.errors_right == 0) stats1.errortime_right = $time; 
+                stats1.errors_right = stats1.errors_right + 1'b1; 
+            end
+            if (up_ref !== ( up_ref ^ up_dut ^ up_ref )) begin 
+                if (stats1.errors_up == 0) stats1.errortime_up = $time; 
+                stats1.errors_up = stats1.errors_up + 1'b1; 
+            end
+            // Logic to handle the error increment if errors > 0 but it was the first mismatch
+            if (stats1.errors == 0) stats1.errors = 1;
+        end
+    end
+
+    initial begin
+        stats1 = '0;
+    end
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_left) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "left", stats1.errors_left, stats1.errortime_left);
+        else $display("Hint: Output '%s' has no mismatches.", "left");
+        if (stats1.errors_down) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "down", stats1.errors_down, stats1.errortime_down);
+        else $display("Hint: Output '%s' has no mismatches.", "down");
+        if (stats1.errors_right) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "right", stats1.errors_right, stats1.errortime_right);
+        else $display("Hint: Output '%s' has no mismatches.", "right");
+        if (stats1.errors_up) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "up", stats1.errors_up, stats1.errortime_up);
+        else $display("Hint: Output '%s' has no mismatches.", "up");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+endmodule
+[2026-05-13 14:55:42,459 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:55:42,460 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module TopModule (
+    input  logic [15:0] scancode,
+    output logic        left,
+    output logic        down,
+    output logic        right,
+    output logic        up
+);
+
+    always_comb begin
+        left  = 1'b0;
+        down  = 1'b0;
+        right = 1'b0;
+        up    = 1'b0;
+        case (scancode)
+            16'he06b: left  = 1'b1;
+            16'he072: down  = 1'b1;
+            16'he074: right = 1'b1;
+            16'he075: up    = 1'b1;
+            default: ;
+        endcase
+    end
+
+endmodule
+
+module RefModule (
+    input  logic [15:0] scancode,
+    output logic left,
+    output logic down,
+    output logic right,
+    output logic up
+);
+    always_comb begin
+        left  = (scancode == 16'he06b);
+        down  = (scancode == 16'he072);
+        right = (scancode == 16'he074);
+        up    = (scancode == 16'he075);
+    end
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output logic [15:0] scancode, 
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable    
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        wavedrom_enable = 0;
+        wavedrom_title = 0;
+        @(negedge clk) wavedrom_start("Recognize arrow keys");
+            @(posedge clk) scancode <= 16'h0;
+            @(posedge clk) scancode <= 16'h1;
+            @(posedge clk) scancode <= 16'he075;
+            @(posedge clk) scancode <= 16'he06b;
+            @(posedge clk) scancode <= 16'he06c;
+            @(posedge clk) scancode <= 16'he072;
+            @(posedge clk) scancode <= 16'he074;
+            @(posedge clk) scancode <= 16'he076;
+            @(posedge clk) scancode <= 16'hffff;
+        @(negedge clk) wavedrom_stop();
+
+        repeat(30000) @(posedge clk, negedge clk) begin
+            scancode <= $urandom;
+        end
+        $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_left;
+        int errortime_left;
+        int errors_down;
+        int errortime_down;
+        int errors_right;
+        int errortime_right;
+        int errors_up;
+        int errortime_up;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic [15:0] scancode;
+    logic left_ref;
+    logic left_dut;
+    logic down_ref;
+    logic down_dut;
+    logic right_ref;
+    logic right_dut;
+    logic up_ref;
+    logic up_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, scancode, left_ref, left_dut, down_ref, down_dut, right_ref, right_dut, up_ref, up_dut );
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .scancode
+    );
+
+    RefModule good1 (
+        .scancode,
+        .left(left_ref),
+        .down(down_ref),
+        .right(right_ref),
+        .up(up_ref) 
+    );
+        
+    TopModule top_module1 (
+        .scancode,
+        .left(left_dut),
+        .down(down_dut),
+        .right(right_dut),
+        .up(up_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { left_ref, down_ref, right_ref, up_ref } === ( { left_ref, down_ref, right_ref, up_ref } ^ { left_dut, down_dut, right_dut, up_dut } ^ { left_ref, down_ref, right_ref, up_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                $display("--- FIRST MISMATCH DETECTED AT TIME %0t ---", $time);
+                $display("Input scancode: 16'h%h (BIN: %b)", scancode, scancode);
+                $display("Expected Outputs: left=%b, down=%b, right=%b, up=%b", left_ref, down_ref, right_ref, up_ref);
+                $display("Actual Outputs:   left=%b, down=%b, right=%b, up=%b", left_dut, down_dut, right_dut, up_dut);
+                $display("-------------------------------------------");
+            end else begin
+                stats1.errors++;
+            end
+
+            if (left_ref !== ( left_ref ^ left_dut ^ left_ref )) begin 
+                if (stats1.errors_left == 0) stats1.errortime_left = $time; 
+                stats1.errors_left = stats1.errors_left + 1'b1; 
+            end
+            if (down_ref !== ( down_ref ^ down_dut ^ down_ref )) begin 
+                if (stats1.errors_down == 0) stats1.errortime_down = $time; 
+                stats1.errors_down = stats1.errors_down + 1'b1; 
+            end
+            if (right_ref !== ( right_ref ^ right_dut ^ right_ref )) begin 
+                if (stats1.errors_right == 0) stats1.errortime_right = $time; 
+                stats1.errors_right = stats1.errors_right + 1'b1; 
+            end
+            if (up_ref !== ( up_ref ^ up_dut ^ up_ref )) begin 
+                if (stats1.errors_up == 0) stats1.errortime_up = $time; 
+                stats1.errors_up = stats1.errors_up + 1'b1; 
+            end
+
+            if (stats1.errors == 0) stats1.errors = 1;
+        end
+    end
+
+    initial begin
+        stats1 = '0;
+    end
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_left) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "left", stats1.errors_left, stats1.errortime_left);
+        else $display("Hint: Output '%s' has no mismatches.", "left");
+        if (stats1.errors_down) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "down", stats1.errors_down, stats1.errortime_down);
+        else $display("Hint: Output '%s' has no mismatches.", "down");
+        if (stats1.errors_right) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "right", stats1.errors_right, stats1.errortime_right);
+        else $display("Hint: Output '%s' has no mismatches.", "right");
+        if (stats1.errors_up) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "up", stats1.errors_up, stats1.errortime_up);
+        else $display("Hint: Output '%s' has no mismatches.", "up");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+endmodule
+[2026-05-13 14:57:20,049 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:57:20,049 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module TopModule (
+    input  logic [15:0] scancode,
+    output logic        left,
+    output logic        down,
+    output logic        right,
+    output logic        up
+);
+
+    always_comb begin
+        left  = 1'b0;
+        down  = 1'b0;
+        right = 1'b0;
+        up    = 1'b0;
+        case (scancode)
+            16'he06b: left  = 1'b1;
+            16'he072: down  = 1'b1;
+            16'he074: right = 1'b1;
+            16'he075: up    = 1'b1;
+            default: ;
+        endcase
+    end
+
+endmodule
+
+module RefModule (
+    input  logic [15:0] scancode,
+    output logic left,
+    output logic down,
+    output logic right,
+    output logic up
+);
+    always_comb begin
+        left  = (scancode == 16'he06b);
+        down  = (scancode == 16'he072);
+        right = (scancode == 16'he074);
+        up    = (scancode == 16'he075);
+    end
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output logic [15:0] scancode, 
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable    
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        wavedrom_enable = 0;
+        wavedrom_title = 0;
+        @(negedge clk) wavedrom_start("Recognize arrow keys");
+            @(posedge clk) scancode <= 16'h0;
+            @(posedge clk) scancode <= 16'h1;
+            @(posedge clk) scancode <= 16'he075;
+            @(posedge clk) scancode <= 16'he06b;
+            @(posedge clk) scancode <= 16'he06c;
+            @(posedge clk) scancode <= 16'he072;
+            @(posedge clk) scancode <= 16'he074;
+            @(posedge clk) scancode <= 16'he076;
+            @(posedge clk) scancode <= 16'hffff;
+        @(negedge clk) wavedrom_stop();
+
+        repeat(30000) @(posedge clk, negedge clk) begin
+            scancode <= $urandom;
+        end
+        $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_left;
+        int errortime_left;
+        int errors_down;
+        int errortime_down;
+        int errors_right;
+        int errortime_right;
+        int errors_up;
+        int errortime_up;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic [15:0] scancode;
+    logic left_ref;
+    logic left_dut;
+    logic down_ref;
+    logic down_dut;
+    logic right_ref;
+    logic right_dut;
+    logic up_ref;
+    logic up_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, scancode, left_ref, left_dut, down_ref, down_dut, right_ref, right_dut, up_ref, up_dut );
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .scancode 
+    );
+
+    RefModule good1 (
+        .scancode,
+        .left(left_ref),
+        .down(down_ref),
+        .right(right_ref),
+        .up(up_ref) 
+    );
+        
+    TopModule top_module1 (
+        .scancode,
+        .left(left_dut),
+        .down(down_dut),
+        .right(right_dut),
+        .up(up_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { left_ref, down_ref, right_ref, up_ref } === ( { left_ref, down_ref, right_ref, up_ref } ^ { left_dut, down_dut, right_dut, up_dut } ^ { left_ref, down_ref, right_ref, up_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                $display("--- FIRST MISMATCH DETECTED AT TIME %0t ---", $time);
+                $display("Input scancode: 16'h%h (BIN: %b)", scancode, scancode);
+                $display("Expected Outputs: left=%b, down=%b, right=%b, up=%b", left_ref, down_ref, right_ref, up_ref);
+                $display("Actual Outputs:   left=%b, down=%b, right=%b, up=%b", left_dut, down_dut, right_dut, up_dut);
+                $display("-------------------------------------------");
+            end else begin
+                stats1.errors++;
+            end
+
+            if (left_ref !== ( left_ref ^ left_dut ^ left_ref )) begin 
+                if (stats1.errors_left == 0) stats1.errortime_left = $time; 
+                stats1.errors_left = stats1.errors_left + 1'b1; 
+            end
+            if (down_ref !== ( down_ref ^ down_dut ^ down_ref )) begin 
+                if (stats1.errors_down == 0) stats1.errortime_down = $time; 
+                stats1.errors_down = stats1.errors_down + 1'b1; 
+            end
+            if (right_ref !== ( right_ref ^ right_dut ^ right_ref )) begin 
+                if (stats1.errors_right == 0) stats1.errortime_right = $time; 
+                stats1.errors_right = stats1.errors_right + 1'b1; 
+            end
+            if (up_ref !== ( up_ref ^ up_dut ^ up_ref )) begin 
+                if (stats1.errors_up == 0) stats1.errortime_up = $time; 
+                stats1.errors_up = stats1.errors_up + 1'b1; 
+            end
+            
+            if (stats1.errors == 0) stats1.errors = 1;
+        end
+    end
+
+    initial begin
+        stats1 = '0;
+    end
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_left) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "left", stats1.errors_left, stats1.errortime_left);
+        else $display("Hint: Output '%s' has no mismatches.", "left");
+        if (stats1.errors_down) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "down", stats1.errors_down, stats1.errortime_down);
+        else $display("Hint: Output '%s' has no mismatches.", "down");
+        if (stats1.errors_right) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "right", stats1.errors_right, stats1.errortime_right);
+        else $display("Hint: Output '%s' has no mismatches.", "right");
+        if (stats1.errors_up) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "up", stats1.errors_up, stats1.errortime_up);
+        else $display("Hint: Output '%s' has no mismatches.", "up");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+endmodule

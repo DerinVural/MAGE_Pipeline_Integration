@@ -1,0 +1,1366 @@
+[2026-05-14 16:42:43,991 - mage.agent - INFO] Initial tb:
+[2026-05-14 16:42:43,992 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg d,
+	output reg done_counting,
+	output reg ack,
+	output reg [9:0] state,
+	input tb_match
+);
+
+	initial begin
+		{d, done_counting, ack} <= 3'h0;
+		state <= 10'h0;
+		
+		repeat(300) @(posedge clk, negedge clk) begin
+			{d, done_counting, ack} = $random;
+			state <= 1<< ($unsigned($random) % 10);
+		end
+		
+		#1 $finish;
+	end
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_B3_next;
+		int errortime_B3_next;
+		int errors_S_next;
+		int errortime_S_next;
+		int errors_S1_next;
+		int errortime_S1_next;
+		int errors_Count_next;
+		int errortime_Count_next;
+		int errors_Wait_next;
+		int errortime_Wait_next;
+		int errors_done;
+		int errortime_done;
+		int errors_counting;
+		int errortime_counting;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic d;
+	logic done_counting;
+	logic ack;
+	logic [9:0] state;
+	logic B3_next_ref;
+	logic B3_next_dut;
+	logic S_next_ref;
+	logic S_next_dut;
+	logic S1_next_ref;
+	logic S1_next_dut;
+	logic Count_next_ref;
+	logic Count_next_dut;
+	logic Wait_next_ref;
+	logic Wait_next_dut;
+	logic done_ref;
+	logic done_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+
+	// Queue storage declarations
+	// MAX_QUEUE_SIZE must be <= 10 as per requirement.
+	localparam MAX_QUEUE_SIZE = 10;
+
+	// Inputs: d (1 bit), done_counting (1 bit), ack (1 bit), state (10 bits). Total 13 bits for easy queueing if grouped.
+	reg [12:0] input_data_queue [$]; 
+	
+	// Outputs: B3_next, S_next, S1_next, Count_next, Wait_next, done, counting, shift_ena (8 bits)
+	reg [7:0] got_output_queue [$];
+	reg [7:0] golden_output_queue [$];
+	
+	// Flags to track first mismatch
+	reg mismatch_detected = 0;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch, d, done_counting, ack, state, B3_next_ref, B3_next_dut, S_next_ref, S_next_dut, S1_next_ref, S1_next_dut, Count_next_ref, Count_next_dut, Wait_next_ref, Wait_next_dut, done_ref, done_dut, counting_ref, counting_dut, shift_ena_ref, shift_ena_dut );
+	end
+
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+
+stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		d.d, 
+		done_counting, 
+		ack,
+		.state );
+	RefModule good1 (
+		d.d, 
+		done_counting,
+		ack,
+		.state,
+		.B3_next(B3_next_ref),
+		.S_next(S_next_ref),
+		.S1_next(S1_next_ref),
+		.Count_next(Count_next_ref),
+		.Wait_next(Wait_next_ref),
+		done(done_ref),
+		.counting(counting_ref),
+		.shift_ena(shift_ena_ref) );
+	
+	TopModule top_module1 (
+		d.d,
+		done_counting,
+		ack,
+		.state,
+		.B3_next(B3_next_dut),
+		.S_next(S_next_dut),
+		.S1_next(S1_next_dut),
+		.Count_next(Count_next_dut),
+		.Wait_next(Wait_next_dut),
+		done(done_dut),
+		.counting(counting_dut),
+		.shift_ena(shift_ena_dut) );
+
+	
+	// --- Task Definitions ---
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+
+	// Helper function to display queued data upon first error
+
+task display_mismatch_info;
+	begin
+		$display("========================================================================================");
+		$display("!!! FIRST MISMATCH DETECTED AT TIME %0t !!!", $time);
+		$display("Total mismatches counted so far: %0d", stats1.errors);
+		$display("Displaying the last %0d cycles stored in the queue.", input_data_queue.size());
+		$display("========================================================================================");
+		
+		for (int i = 0; i < input_data_queue.size(); i++) begin
+			// Extract relevant signals from the packed queue element
+			reg [2:0] q_d_ack_done = input_data_queue[i][2:0];
+			reg [9:0] q_state = input_data_queue[i][12:3];
+			reg [7:0] q_got_out = got_output_queue[i];
+			reg [7:0] q_golden_out = golden_output_queue[i];
+			
+			$display("\n--- CYCLE %0d (Time: %0t ps) ---", i, $time);
+			// Display Inputs
+			$display("Inputs: d=%b, done_counting=%b, ack=%b, state=0x%0h (%0d)", q_d_ack_done[0], q_d_ack_done[1], q_d_ack_done[2], q_state, q_state);
+			// Display Reference Outputs (Golden)
+			$display("Golden Outputs (Ref): 0x%0h (%b)", q_golden_out, q_golden_out);
+			// Display DUT Outputs (Got)
+			$display("DUT Outputs (Got): 0x%0h (%b)", q_got_out, q_got_out);
+			
+			// Detailed signal check for the current cycle (optional, but helpful for first error)
+			$display("Detailed Signal Check (Bit-by-Bit): ");
+			$display("  B3_next: Ref=%b, Got=%b", q_golden_out[0], q_got_out[0]);
+			$display("  S_next: Ref=%b, Got=%b", q_golden_out[1], q_got_out[1]);
+			$display("  S1_next: Ref=%b, Got=%b", q_golden_out[2], q_got_out[2]);
+			$display("  Count_next: Ref=%b, Got=%b", q_golden_out[3], q_got_out[3]);
+			$display("  Wait_next: Ref=%b, Got=%b", q_golden_out[4], q_got_out[4]);
+			$display("  done: Ref=%b, Got=%b", q_golden_out[5], q_got_out[5]);
+			$display("  counting: Ref=%b, Got=%b", q_golden_out[6], q_got_out[6]);
+			$display("  shift_ena: Ref=%b, Got=%b", q_golden_out[7], q_got_out[7]);
+			
+		end
+	endtask
+
+	// --- Simulation Logic ---
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } === ( { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } ^ { B3_next_dut, S_next_dut, S1_next_dut, Count_next_dut, Wait_next_dut, done_dut, counting_dut, shift_ena_dut } ^ { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } ) );
+	
+	// Sequential logic processing, Queue management, and Error Checking
+	always @(posedge clk, negedge clk) begin
+		if (!mismatch_detected) begin
+			// 1. Store Inputs
+			// d, done_counting, ack (3 bits) | state (10 bits)
+			input_data_queue.push_back({state, done_counting, ack, d});
+			
+			// 2. Store DUT Outputs
+			got_output_queue.push_back({B3_next_dut, S_next_dut, S1_next_dut, Count_next_dut, Wait_next_dut, done_dut, counting_dut, shift_ena_dut});
+			
+			// 3. Store Reference Outputs
+			golden_output_queue.push_back({B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref});
+			
+			// 4. Check Mismatch
+			if (!tb_match) begin
+				stats1.errors++;
+				if (stats1.errors == 1) begin
+					mismatch_detected = 1;
+					display_mismatch_info();
+				end
+			end
+		end
+		
+		// 5. Manage Queue Size
+			if (input_data_queue.size() >= MAX_QUEUE_SIZE) begin
+			input_data_queue.delete(0);
+			got_output_queue.delete(0);
+			golden_output_queue.delete(0);
+			end
+		end
+		end
+
+	// Original Error Counting (Kept for total error tally, though detailed info is in queue display)
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 1) stats1.errortime = $time;
+		end
+		
+		// Checking individual signals for stats1 counters
+		if (B3_next_ref !== ( B3_next_ref ^ B3_next_dut ^ B3_next_ref ))
+		begin if (stats1.errors_B3_next == 0) stats1.errortime_B3_next = $time;
+			sstats1.errors_B3_next = stats1.errors_B3_next+1'b1; end
+		end
+		if (S_next_ref !== ( S_next_ref ^ S_next_dut ^ S_next_ref ))
+		begin if (stats1.errors_S_next == 0) stats1.errortime_S_next = $time;
+			sstats1.errors_S_next = stats1.errors_S_next+1'b1; end
+		end
+		if (S1_next_ref !== ( S1_next_ref ^ S1_next_dut ^ S1_next_ref ))
+		begin if (stats1.errors_S1_next == 0) stats1.errortime_S1_next = $time;
+			sstats1.errors_S1_next = stats1.errors_S1_next+1'b1; end
+		end
+		if (Count_next_ref !== ( Count_next_ref ^ Count_next_dut ^ Count_next_ref ))
+		begin if (stats1.errors_Count_next == 0) stats1.errortime_Count_next = $time;
+			sstats1.errors_Count_next = stats1.errors_Count_next+1'b1; end
+		end
+		if (Wait_next_ref !== ( Wait_next_ref ^ Wait_next_dut ^ Wait_next_ref ))
+		begin if (stats1.errors_Wait_next == 0) stats1.errortime_Wait_next = $time;
+			sstats1.errors_Wait_next = stats1.errors_Wait_next+1'b1; end
+		end
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+		begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			sstats1.errors_done = stats1.errors_done+1'b1; end
+		end
+		if (counting_ref !== ( counting_ref ^ counting_dut ^ counting_ref ))
+		begin if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+			sstats1.errors_counting = stats1.errors_counting+1'b1; end
+		end
+		if (shift_ena_ref !== ( shift_ena_ref ^ shift_ena_dut ^ shift_ena_ref ))
+		begin if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+			sstats1.errors_shift_ena = stats1.errors_shift_ena+1'b1; end
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("\n========================================================================================");
+		$display("TIMEOUT REACHED. SIMULATION TERMINATING.");
+		$display("========================================================================================");
+		$finish();
+	end
+
+	// Final reporting logic
+	initial begin
+		@(negedge clk);
+		#1;
+		if (stats1.errors == 0) begin
+			s$display("\n========================================================================================");
+			s$display("SIMULATION PASSED");
+			s$display("========================================================================================");
+		end else begin
+			s$display("\n========================================================================================");
+			s$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			s$display("========================================================================================");
+		end
+		$display("Simulation finished at %0d ps", $time);
+	end
+
+endmodule
+[2026-05-14 16:42:43,992 - mage.agent - INFO] Initial if:
+[2026-05-14 16:42:43,992 - mage.agent - INFO] module TopModule (
+    input d,
+    input done_counting,
+    input ack,
+    input [9:0] state,
+    output B3_next,
+    output S_next,
+    output S1_next,
+    output Count_next,
+    output Wait_next,
+    output done,
+    output counting,
+    output shift_ena
+);
+endmodule
+[2026-05-14 16:42:43,999 - mage.agent - INFO] I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  d
+ - input  done_counting
+ - input  ack
+ - input  state (10 bits)
+ - output B3_next
+ - output S_next
+ - output S1_next
+ - output Count_next
+ - output Wait_next
+ - output done
+ - output counting
+ - output shift_ena
+
+The module should implement the following Moore state machine with 3
+input (d, done_counting, ack) and 3 outputs (shift_ena, counting, done).
+Unless otherwise stated in the diagram below, assume outputs are 0 and
+inputs are don't cares.
+
+state   (output)      --input--> next state
+-------------------------------------------
+  S     ()            --d=0--> S
+  S     ()            --d=1--> S1
+  S1    ()            --d=0--> S
+  S1    ()            --d=1--> S11
+  S11   ()            --d=0--> S110
+  S11   ()            --d=1--> S11
+  S110  ()            --d=0--> S
+  S110  ()            --d=1--> B0
+  B0    (shift_ena=1) --(always go to next cycle)--> B1
+  B1    (shift_ena=1) --(always go to next cycle)--> B2
+  B2    (shift_ena=1) --(always go to next cycle)--> B3
+  B3    (shift_ena=1) --(always go to next cycle)--> Count
+  Count (counting=1)  --done_counting=0--> Count
+  Count (counting=1)  --done_counting=1--> Wait
+  Wait  (done=1)      --ack=0--> Wait
+  Wait  (done=1)      --ack=1--> S
+
+At reset, the state machine starts in state "S". Derive next-state logic
+equations and output logic equations by inspection assuming the following
+one-hot encoding is used: (S, S1, S11, S110, B0, B1, B2, B3, Count, Wait)
+= (10'b0000000001, 10'b0000000010, 10'b0000000100, ... , 10'b1000000000)
+
+Derive state transition and output logic equations by inspection assuming
+a one-hot encoding. Implement only the state transition logic and output
+logic (the combinational logic portion) for this state machine.
+
+Write code that generates the following signals:
+
+ - B3_next -- Assert when next-state is B3 state
+ - S_next -- Assert when next-state is S state
+ - S1_next -- Assert when next-state is S1 state
+ - Count_next -- Assert when next-state is Count state
+ - Wait_next -- Assert when next-state is Wait state
+ - done -- output logic
+ - counting -- output logic
+ - shift_ena -- output logic
+
+
+[2026-05-14 16:45:20,428 - mage.agent - INFO] Initial rtl:
+[2026-05-14 16:45:20,428 - mage.agent - INFO] module TopModule (
+    input  logic d,
+    input  logic done_counting,
+    input  logic ack,
+    input  logic [9:0] state, // Current state is provided externally
+    output logic B3_next,
+    output logic S_next,
+    output logic S1_next,
+    output logic Count_next,
+    output logic Wait_next,
+    output logic done,
+    output logic counting,
+    output logic shift_ena
+);
+
+    // Define states using the specified one-hot encoding structure.
+    // Using the derived assignments based on the prompt's requirements.
+    localparam STATE_S    = 10'b0000000001;
+    localparam STATE_S1   = 10'b0000000010;
+    localparam STATE_S11  = 10'b0000000100;
+    localparam STATE_S110 = 10'b0000001000;
+    localparam STATE_B0   = 10'b0001000000;
+    localparam STATE_B1   = 10'b0010000000;
+    localparam STATE_B2   = 10'b0100000000;
+    localparam STATE_B3   = 10'b1000000000;
+    localparam STATE_COUNT = 10'b0110000000;
+    localparam STATE_WAIT = 10'b1000000001;
+
+    // Wires to hold the calculated next state and outputs
+    logic [9:0] state_next;
+    
+    // --- Combinational Logic: Next State Derivation ---
+    always @(*)
+    begin
+        state_next = state; // Default: stay in current state
+
+        case (state)
+            STATE_S:
+                if (d == 0) state_next = STATE_S;
+                else state_next = STATE_S1;
+
+            STATE_S1:
+                if (d == 0) state_next = STATE_S;
+                else state_next = STATE_S11;
+
+            STATE_S11:
+                if (d == 0) state_next = STATE_S110;
+                else state_next = STATE_S11;
+
+            STATE_S110:
+                if (d == 0) state_next = STATE_S;
+                else state_next = STATE_B0;
+
+            STATE_B0:
+                state_next = STATE_B1; // Always go to next cycle
+
+            STATE_B1:
+                state_next = STATE_B2; // Always go to next cycle
+
+            STATE_B2:
+                state_next = STATE_B3; // Always go to next cycle
+
+            STATE_B3:
+                state_next = STATE_COUNT; // Always go to next cycle
+
+            STATE_COUNT:
+                if (done_counting == 0) state_next = STATE_COUNT;
+                else state_next = STATE_WAIT;
+
+            STATE_WAIT:
+                if (ack == 0) state_next = STATE_WAIT;
+                else state_next = STATE_S;
+
+            default: state_next = STATE_S; // Safety catch
+        endcase
+    end
+
+    // --- Combinational Logic: Output Derivation (Moore Machine) ---
+    always @(*)
+    begin
+        // Default assignments (Outputs are 0 unless specified)
+        B3_next = 1'b0;
+        S_next = 1'b0;
+        S1_next = 1'b0;
+        Count_next = 1'b0;
+        Wait_next = 1'b0;
+        done = 1'b0;
+        counting = 1'b0;
+        shift_ena = 1'b0;
+
+        // 1. Next State Assertions (Which state we are moving to)
+        if (state_next == STATE_B3) B3_next = 1'b1;
+        if (state_next == STATE_S) S_next = 1'b1;
+        if (state_next == STATE_S1) S1_next = 1'b1;
+        if (state_next == STATE_COUNT) Count_next = 1'b1;
+        if (state_next == STATE_WAIT) Wait_next = 1'b1;
+
+        // 2. Current State Outputs (Moore Machine)
+        if (state == STATE_B0 || state == STATE_B1 || state == STATE_B2 || state == STATE_B3)
+            shift_ena = 1'b1;
+
+        if (state == STATE_COUNT)
+            counting = 1'b1;
+
+        if (state == STATE_WAIT)
+            done = 1'b1;
+
+    end
+
+endmodule
+[2026-05-14 16:45:28,493 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 16:46:53,191 - mage.agent - INFO] Revised tb:
+[2026-05-14 16:46:53,191 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg d, done_counting, ack,
+	output reg [9:0] state,
+	input tb_match
+);
+
+	initial begin
+		{d, done_counting, ack} <= 3'h0;
+		state <= 10'h0;
+		
+		repeat(300) @(posedge clk, negedge clk) begin
+			{d, done_counting, ack} = $random;
+			state <= 1<< ($unsigned($random) % 10);
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_B3_next;
+		int errortime_B3_next;
+		int errors_S_next;
+		int errortime_S_next;
+		int errors_S1_next;
+		int errortime_S1_next;
+		int errors_Count_next;
+		int errortime_Count_next;
+		int errors_Wait_next;
+		int errortime_Wait_next;
+		int errors_done;
+		int errortime_done;
+		int errors_counting;
+		int errortime_counting;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic d;
+	logic done_counting;
+	logic ack;
+	logic [9:0] state;
+	logic B3_next_ref;
+	logic B3_next_dut;
+	logic S_next_ref;
+	logic S_next_dut;
+	logic S1_next_ref;
+	logic S1_next_dut;
+	logic Count_next_ref;
+	logic Count_next_dut;
+	logic Wait_next_ref;
+	logic Wait_next_dut;
+	logic done_ref;
+	logic done_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,d,done_counting,ack,state,B3_next_ref,B3_next_dut,S_next_ref,S_next_dut,S1_next_ref,S1_next_dut,Count_next_ref,Count_next_dut,Wait_next_ref,Wait_next_dut,done_ref,done_dut,counting_ref,counting_dut,shift_ena_ref,shift_ena_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		d.d, 
+	done_counting, 
+	ack, 
+	state );
+	RefModule good1 (
+		d.d, 
+	done_counting, 
+	ack, 
+	state, 
+	.B3_next(B3_next_ref),
+	.S_next(S_next_ref),
+	.S1_next(S1_next_ref),
+	.Count_next(Count_next_ref),
+	.Wait_next(Wait_next_ref),
+	.done(done_ref),
+	.counting(counting_ref),
+	.shift_ena(shift_ena_ref) );
+	
+	TopModule top_module1 (
+		d.d, 
+	done_counting, 
+	ack, 
+	state,
+	.B3_next(B3_next_dut),
+	.S_next(S_next_dut),
+	.S1_next(S1_next_dut),
+	.Count_next(Count_next_dut),
+	.Wait_next(Wait_next_dut),
+	.done(done_dut),
+	.counting(counting_dut),
+	.shift_ena(shift_ena_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	
+	final begin
+		if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			
+			$display("\n--- FIRST MISMATCH DETAILS ---");
+			$display("Time of First Mismatch: %0d ps", stats1.errortime);
+			$display("Inputs at Mismatch:");
+			$display("  d: %b (0x%h)", d, d);
+			$display("  done_counting: %b (0x%h)", done_counting, done_counting);
+			$display("  ack: %b (0x%h)", ack, ack);
+			$display("  state: %b (0x%h)", state, state);
+			$display("\nOutputs at Mismatch:");
+			$display("  B3_next: REF=%b (0x%h) | DUT=%b (0x%h)", B3_next_ref, B3_next_ref, B3_next_dut, B3_next_dut);
+			$display("  S_next: REF=%b (0x%h) | DUT=%b (0x%h)", S_next_ref, S_next_ref, S_next_dut, S_next_dut);
+			$display("  S1_next: REF=%b (0x%h) | DUT=%b (0x%h)", S1_next_ref, S1_next_ref, S1_next_dut, S1_next_dut);
+			$display("  Count_next: REF=%b (0x%h) | DUT=%b (0x%h)", Count_next_ref, Count_next_ref, Count_next_dut, Count_next_dut);
+			$display("  Wait_next: REF=%b (0x%h) | DUT=%b (0x%h)", Wait_next_ref, Wait_next_ref, Wait_next_dut, Wait_next_dut);
+			$display("  done: REF=%b (0x%h) | DUT=%b (0x%h)", done_ref, done_ref, done_dut, done_dut);
+			$display("  counting: REF=%b (0x%h) | DUT=%b (0x%h)", counting_ref, counting_ref, counting_dut, counting_dut);
+			$display("  shift_ena: REF=%b (0x%h) | DUT=%b (0x%h)", shift_ena_ref, shift_ena_ref, shift_ena_dut, shift_ena_dut);
+			$display("------------------------------\n");
+		end else begin
+			$display("SIMULATION PASSED");
+		end
+		
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } === ( { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } ^ { B3_next_dut, S_next_dut, S1_next_dut, Count_next_dut, Wait_next_dut, done_dut, counting_dut, shift_ena_dut } ^ { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+
+		// Error checking for B3_next
+		if (B3_next_ref !== ( B3_next_ref ^ B3_next_dut ^ B3_next_ref ))
+		begin if (stats1.errors_B3_next == 0) stats1.errortime_B3_next = $time;
+			sstats1.errors_B3_next = stats1.errors_B3_next+1'b1; 
+		end
+
+		// Error checking for S_next
+		if (S_next_ref !== ( S_next_ref ^ S_next_dut ^ S_next_ref ))
+		begin if (stats1.errors_S_next == 0) stats1.errortime_S_next = $time;
+			sstats1.errors_S_next = stats1.errors_S_next+1'b1; 
+		end
+
+		// Error checking for S1_next
+		if (S1_next_ref !== ( S1_next_ref ^ S1_next_dut ^ S1_next_ref ))
+		begin if (stats1.errors_S1_next == 0) stats1.errortime_S1_next = $time;
+			sstats1.errors_S1_next = stats1.errors_S1_next+1'b1; 
+		end
+
+		// Error checking for Count_next
+		if (Count_next_ref !== ( Count_next_ref ^ Count_next_dut ^ Count_next_ref ))
+		begin if (stats1.errors_Count_next == 0) stats1.errortime_Count_next = $time;
+			sstats1.errors_Count_next = stats1.errors_Count_next+1'b1; 
+		end
+
+		// Error checking for Wait_next
+		if (Wait_next_ref !== ( Wait_next_ref ^ Wait_next_dut ^ Wait_next_ref ))
+		begin if (stats1.errors_Wait_next == 0) stats1.errortime_Wait_next = $time;
+			sstats1.errors_Wait_next = stats1.errors_Wait_next+1'b1; 
+		end
+
+		// Error checking for done
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+		begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			sstats1.errors_done = stats1.errors_done+1'b1; 
+		end
+
+		// Error checking for counting
+		if (counting_ref !== ( counting_ref ^ counting_dut ^ counting_ref ))
+		begin if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+			sstats1.errors_counting = stats1.errors_counting+1'b1; 
+		end
+
+		// Error checking for shift_ena
+		if (shift_ena_ref !== ( shift_ena_ref ^ shift_ena_dut ^ shift_ena_ref ))
+		begin if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+			sstats1.errors_shift_ena = stats1.errors_shift_ena+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+[2026-05-14 16:48:02,508 - mage.agent - INFO] Revised tb:
+[2026-05-14 16:48:02,508 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg d, done_counting, ack,
+	output reg [9:0] state,
+	input tb_match
+);
+
+	initial begin
+		{d, done_counting, ack} <= 3'h0;
+		state <= 10'h0;
+		
+		repeat(300) @(posedge clk, negedge clk) begin
+			{d, done_counting, ack} = $random;
+			state <= 1<< ($unsigned($random) % 10);
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_B3_next;
+		int errortime_B3_next;
+		int errors_S_next;
+		int errortime_S_next;
+		int errors_S1_next;
+		int errortime_S1_next;
+		int errors_Count_next;
+		int errortime_Count_next;
+		int errors_Wait_next;
+		int errortime_Wait_next;
+		int errors_done;
+		int errortime_done;
+		int errors_counting;
+		int errortime_counting;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic d;
+	logic done_counting;
+	logic ack;
+	logic [9:0] state;
+	logic B3_next_ref;
+	logic B3_next_dut;
+	logic S_next_ref;
+	logic S_next_dut;
+	logic S1_next_ref;
+	logic S1_next_dut;
+	logic Count_next_ref;
+	logic Count_next_dut;
+	logic Wait_next_ref;
+	logic Wait_next_dut;
+	logic done_ref;
+	logic done_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_match ,d,done_counting,ack,state,B3_next_ref,B3_next_dut,S_next_ref,S_next_dut,S1_next_ref,S1_next_dut,Count_next_ref,Count_next_dut,Wait_next_ref,Wait_next_dut,done_ref,done_dut,counting_ref,counting_dut,shift_ena_ref,shift_ena_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.d, done_counting, ack, state, tb_match );
+	RefModule good1 (
+		d, done_counting, ack, state, 
+		.B3_next(B3_next_ref),
+		.S_next(S_next_ref),
+		.S1_next(S1_next_ref),
+		.Count_next(Count_next_ref),
+		.Wait_next(Wait_next_ref),
+		done(done_ref),
+		.counting(counting_ref),
+		.shift_ena(shift_ena_ref) );
+	
+	TopModule top_module1 (
+		d, done_counting, ack, state, 
+		.B3_next(B3_next_dut),
+		.S_next(S_next_dut),
+		.S1_next(S1_next_dut),
+		.Count_next(Count_next_dut),
+		.Wait_next(Wait_next_dut),
+		done(done_dut),
+		.counting(counting_dut),
+		.shift_ena(shift_ena_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	;
+	
+		final begin
+			if (stats1.errors > 0) begin
+				$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+				
+				$display("\n--- FIRST MISMATCH DETAILS ---");
+				$display("Time of First Mismatch: %0d ps", stats1.errortime);
+				$display("Inputs at Mismatch:");
+				$display("  d: %b (0x%h)", d, d);
+				$display("  done_counting: %b (0x%h)", done_counting, done_counting);
+				$display("  ack: %b (0x%h)", ack, ack);
+				$display("  state: %b (0x%h)", state, state);
+				$display("\nOutputs at Mismatch:");
+				$display("  B3_next: REF=%b (0x%h) | DUT=%b (0x%h)", B3_next_ref, B3_next_ref, B3_next_dut, B3_next_dut);
+				$display("  S_next: REF=%b (0x%h) | DUT=%b (0x%h)", S_next_ref, S_next_ref, S_next_dut, S_next_dut);
+				$display("  S1_next: REF=%b (0x%h) | DUT=%b (0x%h)", S1_next_ref, S1_next_ref, S1_next_dut, S1_next_dut);
+				$display("  Count_next: REF=%b (0x%h) | DUT=%b (0x%h)", Count_next_ref, Count_next_ref, Count_next_dut, Count_next_dut);
+				$display("  Wait_next: REF=%b (0x%h) | DUT=%b (0x%h)", Wait_next_ref, Wait_next_ref, Wait_next_dut, Wait_next_dut);
+				$display("  done: REF=%b (0x%h) | DUT=%b (0x%h)", done_ref, done_ref, done_dut, done_dut);
+				$display("  counting: REF=%b (0x%h) | DUT=%b (0x%h)", counting_ref, counting_ref, counting_dut, counting_dut);
+				$display("  shift_ena: REF=%b (0x%h) | DUT=%b (0x%h)", shift_ena_ref, shift_ena_ref, shift_ena_dut, shift_ena_dut);
+				$display("------------------------------\n");
+				
+				$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+				$display("Simulation finished at %0d ps", $time);
+				$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+			if (stats1.errors == 0) begin
+				$display("SIMULATION PASSED");
+				end
+		end
+
+		// add timeout after 100K cycles
+		initial begin
+			#1000000
+			$display("TIMEOUT");
+			$finish();
+		end
+
+endmodule
+[2026-05-14 16:49:34,786 - mage.agent - INFO] Revised tb:
+[2026-05-14 16:49:34,786 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg d, done_counting, ack,
+	output reg [9:0] state,
+	input tb_match
+);
+
+	initial begin
+		{d, done_counting, ack} <= 3'h0;
+		state <= 10'h0;
+		
+		repeat(300) @(posedge clk, negedge clk) begin
+			{d, done_counting, ack} = $random;
+			state <= 1<< ($unsigned($random) % 10);
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+	
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_B3_next;
+		int errortime_B3_next;
+		int errors_S_next;
+		int errortime_S_next;
+		int errors_S1_next;
+		int errortime_S1_next;
+		int errors_Count_next;
+		int errortime_Count_next;
+		int errors_Wait_next;
+		int errortime_Wait_next;
+		int errors_done;
+		int errortime_done;
+		int errors_counting;
+		int errortime_counting;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic d;
+	logic done_counting;
+	logic ack;
+	logic [9:0] state;
+	logic B3_next_ref;
+	logic B3_next_dut;
+	logic S_next_ref;
+	logic S_next_dut;
+	logic S1_next_ref;
+	logic S1_next_dut;
+	logic Count_next_ref;
+	logic Count_next_dut;
+	logic Wait_next_ref;
+	logic Wait_next_dut;
+	logic done_ref;
+	logic done_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,d,done_counting,ack,state,B3_next_ref,B3_next_dut,S_next_ref,S_next_dut,S1_next_ref,S1_next_dut,Count_next_ref,Count_next_dut,Wait_next_ref,Wait_next_dut,done_ref,done_dut,counting_ref,counting_dut,shift_ena_ref,shift_ena_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.d, done_counting, ack, state, tb_match );
+	RefModule good1 (
+		d, done_counting, ack, state, 
+		.B3_next(B3_next_ref),
+		.S_next(S_next_ref),
+		.S1_next(S1_next_ref),
+		.Count_next(Count_next_ref),
+		.Wait_next(Wait_next_ref),
+		done(done_ref),
+		.counting(counting_ref),
+		.shift_ena(shift_ena_ref) );
+	
+	TopModule top_module1 (
+		d, done_counting, ack, state, 
+		.B3_next(B3_next_dut),
+		.S_next(S_next_dut),
+		.S1_next(S1_next_dut),
+		.Count_next(Count_next_dut),
+		.Wait_next(Wait_next_dut),
+		done(done_dut),
+		.counting(counting_dut),
+		.shift_ena(shift_ena_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+	task
+	; // Empty task to satisfy previous structure if needed
+	
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		
+			$display("\n--- FIRST MISMATCH DETAILS ---");
+			$display("Time of First Mismatch: %0d ps", stats1.errortime);
+			$display("Inputs at Mismatch:");
+			$display("  d: %b (0x%h)", d, d);
+			$display("  done_counting: %b (0x%h)", done_counting, done_counting);
+			$display("  ack: %b (0x%h)", ack, ack);
+			$display("  state: %b (0x%h)", state, state);
+			$display("\nOutputs at Mismatch:");
+			$display("  B3_next: REF=%b (0x%h) | DUT=%b (0x%h)", B3_next_ref, B3_next_ref, B3_next_dut, B3_next_dut);
+			$display("  S_next: REF=%b (0x%h) | DUT=%b (0x%h)", S_next_ref, S_next_ref, S_next_dut, S_next_dut);
+			$display("  S1_next: REF=%b (0x%h) | DUT=%b (0x%h)", S1_next_ref, S1_next_ref, S1_next_dut, S1_next_dut);
+			$display("  Count_next: REF=%b (0x%h) | DUT=%b (0x%h)", Count_next_ref, Count_next_ref, Count_next_dut, Count_next_dut);
+			$display("  Wait_next: REF=%b (0x%h) | DUT=%b (0x%h)", Wait_next_ref, Wait_next_ref, Wait_next_dut, Wait_next_dut);
+			$display("  done: REF=%b (0x%h) | DUT=%b (0x%h)", done_ref, done_ref, done_dut, done_dut);
+			$display("  counting: REF=%b (0x%h) | DUT=%b (0x%h)", counting_ref, counting_ref, counting_dut, counting_dut);
+			$display("  shift_ena: REF=%b (0x%h) | DUT=%b (0x%h)", shift_ena_ref, shift_ena_ref, shift_ena_dut, shift_ena_dut);
+			$display("------------------------------\n");
+		end
+		
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } === ( { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } ^ { B3_next_dut, S_next_dut, S1_next_dut, Count_next_dut, Wait_next_dut, done_dut, counting_dut, shift_ena_dut } ^ { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++; // Corrected typo here
+		end
+		
+		// Error checking for B3_next
+		if (B3_next_ref !== ( B3_next_ref ^ B3_next_dut ^ B3_next_ref ))
+		begin if (stats1.errors_B3_next == 0) stats1.errortime_B3_next = $time;
+			sstats1.errors_B3_next = stats1.errors_B3_next+1'b1; // Corrected typo here
+		end
+		
+		// Error checking for S_next
+		if (S_next_ref !== ( S_next_ref ^ S_next_dut ^ S_next_ref ))
+		begin if (stats1.errors_S_next == 0) stats1.errortime_S_next = $time;
+			sstats1.errors_S_next = stats1.errors_S_next+1'b1; // Corrected typo here
+		end
+		
+		// Error checking for S1_next
+		if (S1_next_ref !== ( S1_next_ref ^ S1_next_dut ^ S1_next_ref ))
+		begin if (stats1.errors_S1_next == 0) stats1.errortime_S1_next = $time;
+			sstats1.errors_S1_next = stats1.errors_S1_next+1'b1; // Corrected typo here
+		end
+		
+		// Error checking for Count_next
+		if (Count_next_ref !== ( Count_next_ref ^ Count_next_dut ^ Count_next_ref ))
+		begin if (stats1.errors_Count_next == 0) stats1.errortime_Count_next = $time;
+			sstats1.errors_Count_next = stats1.errors_Count_next+1'b1; // Corrected typo here
+		end
+		
+		// Error checking for Wait_next
+		if (Wait_next_ref !== ( Wait_next_ref ^ Wait_next_dut ^ Wait_next_ref ))
+		begin if (stats1.errors_Wait_next == 0) stats1.errortime_Wait_next = $time;
+			sstats1.errors_Wait_next = stats1.errors_Wait_next+1'b1; // Corrected typo here
+		end
+		
+		// Error checking for done
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+		begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			sstats1.errors_done = stats1.errors_done+1'b1; // Corrected typo here
+		end
+		
+		// Error checking for counting
+		if (counting_ref !== ( counting_ref ^ counting_dut ^ counting_ref ))
+		begin if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+			sstats1.errors_counting = stats1.errors_counting+1'b1; // Corrected typo here
+		end
+		
+		// Error checking for shift_ena
+		if (shift_ena_ref !== ( shift_ena_ref ^ shift_ena_dut ^ shift_ena_ref ))
+		begin if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+			sstats1.errors_shift_ena = stats1.errors_shift_ena+1'b1; // Corrected typo here
+		end
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 16:54:22,640 - mage.agent - INFO] Revised tb:
+[2026-05-14 16:54:22,641 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg d, done_counting, ack,
+	output reg [9:0] state,
+	input tb_match
+);
+
+	initial begin
+		{d, done_counting, ack} <= 3'h0;
+		state <= 10'h0;
+		
+		repeat(300) @(posedge clk, negedge clk) begin
+			{d, done_counting, ack} = $random;
+			state <= 1<< ($unsigned($random) % 10);
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_B3_next;
+		int errortime_B3_next;
+		int errors_S_next;
+		int errortime_S_next;
+		int errors_S1_next;
+		int errortime_S1_next;
+		int errors_Count_next;
+		int errortime_Count_next;
+		int errors_Wait_next;
+		int errortime_Wait_next;
+		int errors_done;
+		int errortime_done;
+		int errors_counting;
+		int errortime_counting;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic d;
+	logic done_counting;
+	logic ack;
+	logic [9:0] state;
+	logic B3_next_ref;
+	logic B3_next_dut;
+	logic S_next_ref;
+	logic S_next_dut;
+	logic S1_next_ref;
+	logic S1_next_dut;
+	logic Count_next_ref;
+	logic Count_next_dut;
+	logic Wait_next_ref;
+	logic Wait_next_dut;
+	logic done_ref;
+	logic done_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_match, d, done_counting, ack, state, B3_next_ref, B3_next_dut, S_next_ref, S_next_dut, S1_next_ref, S1_next_dut, Count_next_ref, Count_next_dut, Wait_next_ref, Wait_next_dut, done_ref, done_dut, counting_ref, counting_dut, shift_ena_ref, shift_ena_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+
+	stimulus_gen stim1 (
+		.clk, 
+		.d, done_counting, ack, state, tb_match );
+	RefModule good1 (
+		d, done_counting, ack, state, 
+		.B3_next(B3_next_ref),
+		.S_next(S_next_ref),
+		.S1_next(S1_next_ref),
+		.Count_next(Count_next_ref),
+		.Wait_next(Wait_next_ref),
+		done(done_ref),
+		.counting(counting_ref),
+		.shift_ena(shift_ena_ref) );
+	
+	TopModule top_module1 (
+		d, done_counting, ack, state, 
+		.B3_next(B3_next_dut),
+		.S_next(S_next_dut),
+		.S1_next(S1_next_dut),
+		.Count_next(Count_next_dut),
+		.Wait_next(Wait_next_dut),
+		done(done_dut),
+		.counting(counting_dut),
+		.shift_ena(shift_ena_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+
+	
+task check_and_display_mismatch(input logic mismatch_found, input integer time, input logic [9:0] in_state, input logic in_d, input logic in_done, input logic in_ack, input logic ref_out, input logic dut_out, string signal_name);
+	begin
+		if (mismatch_found)
+		begin
+			if (stats1.errors == 0) stats1.errortime = time;
+			stats1.errors++;
+			if (signal_name == "B3_next") stats1.errors_B3_next++;
+			else if (signal_name == "S_next") stats1.errors_S_next++;
+			else if (signal_name == "S1_next") stats1.errors_S1_next++;
+			else if (signal_name == "Count_next") stats1.errors_Count_next++;
+			else if (signal_name == "Wait_next") stats1.errors_Wait_next++;
+			else if (signal_name == "done") stats1.errors_done++;
+			else if (signal_name == "counting") stats1.errors_counting++;
+			else if (signal_name == "shift_ena") stats1.errors_shift_ena++;
+			
+			// Record first mismatch time for this specific signal
+			if (signal_name == "B3_next") if (stats1.errors_B3_next == 1) stats1.errortime_B3_next = time;
+			if (signal_name == "S_next") if (stats1.errors_S_next == 1) stats1.errortime_S_next = time;
+			if (signal_name == "S1_next") if (stats1.errors_S1_next == 1) stats1.errortime_S1_next = time;
+			if (signal_name == "Count_next") if (stats1.errors_Count_next == 1) stats1.errortime_Count_next = time;
+			if (signal_name == "Wait_next") if (stats1.errors_Wait_next == 1) stats1.errortime_Wait_next = time;
+			if (signal_name == "done") if (stats1.errors_done == 1) stats1.errortime_done = time;
+			if (signal_name == "counting") if (stats1.errors_counting == 1) stats1.errortime_counting = time;
+			if (signal_name == "shift_ena") if (stats1.errors_shift_ena == 1) stats1.errortime_shift_ena = time;
+		end
+	end
+	endtask
+
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			
+			$display("\n--- FIRST MISMATCH DETAILS ---");
+			$display("Time of First Mismatch: %0d ps", stats1.errortime);
+			$display("Inputs at Mismatch:");
+			$display("  d: %b (0x%h)", d, d);
+			$display("  done_counting: %b (0x%h)", done_counting, done_counting);
+			$display("  ack: %b (0x%h)", ack, ack);
+			$display("  state: %b (0x%h)", state, state);
+			$display("\nOutputs at Mismatch:");
+			$display("  B3_next: REF=%b (0x%h) | DUT=%b (0x%h)", B3_next_ref, B3_next_ref, B3_next_dut, B3_next_dut);
+			$display("  S_next: REF=%b (0x%h) | DUT=%b (0x%h)", S_next_ref, S_next_ref, S_next_dut, S_next_dut);
+			$display("  S1_next: REF=%b (0x%h) | DUT=%b (0x%h)", S1_next_ref, S1_next_ref, S1_next_dut, S1_next_dut);
+			$display("  Count_next: REF=%b (0x%h) | DUT=%b (0x%h)", Count_next_ref, Count_next_ref, Count_next_dut, Count_next_dut);
+			$display("  Wait_next: REF=%b (0x%h) | DUT=%b (0x%h)", Wait_next_ref, Wait_next_ref, Wait_next_dut, Wait_next_dut);
+			$display("  done: REF=%b (0x%h) | DUT=%b (0x%h)", done_ref, done_ref, done_dut, done_dut);
+			$display("  counting: REF=%b (0x%h) | DUT=%b (0x%h)", counting_ref, counting_ref, counting_dut, counting_dut);
+			$display("  shift_ena: REF=%b (0x%h) | DUT=%b (0x%h)", shift_ena_ref, shift_ena_ref, shift_ena_dut, shift_ena_dut);
+			$display("------------------------------\n");
+		end
+		
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } === ( { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } ^ { B3_next_dut, S_next_dut, S1_next_dut, Count_next_dut, Wait_next_dut, done_dut, counting_dut, shift_ena_dut } ^ { B3_next_ref, S_next_ref, S1_next_ref, Count_next_ref, Wait_next_ref, done_ref, counting_ref, shift_ena_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		// Check overall mismatch
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, B3_next_ref, B3_next_dut, "B3_next");
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, S_next_ref, S_next_dut, "S_next");
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, S1_next_ref, S1_next_dut, "S1_next");
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, Count_next_ref, Count_next_dut, "Count_next");
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, Wait_next_ref, Wait_next_dut, "Wait_next");
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, done_ref, done_dut, "done");
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, counting_ref, counting_dut, "counting");
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, shift_ena_ref, shift_ena_dut, "shift_ena");
+		end
+		
+		// Individual error checking (retaining original structure for specific counters)
+		if (B3_next_ref !== B3_next_dut) begin 
+			if (stats1.errors_B3_next == 0) stats1.errortime_B3_next = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, B3_next_ref, B3_next_dut, "B3_next");
+		end
+		if (S_next_ref !== S_next_dut) begin 
+			if (stats1.errors_S_next == 0) stats1.errortime_S_next = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, S_next_ref, S_next_dut, "S_next");
+		end
+		if (S1_next_ref !== S1_next_dut) begin 
+			if (stats1.errors_S1_next == 0) stats1.errortime_S1_next = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, S1_next_ref, S1_next_dut, "S1_next");
+		end
+		if (Count_next_ref !== Count_next_dut) begin 
+			if (stats1.errors_Count_next == 0) stats1.errortime_Count_next = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, Count_next_ref, Count_next_dut, "Count_next");
+		end
+		if (Wait_next_ref !== Wait_next_dut) begin 
+			if (stats1.errors_Wait_next == 0) stats1.errortime_Wait_next = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, Wait_next_ref, Wait_next_dut, "Wait_next");
+		end
+		if (done_ref !== done_dut) begin 
+			if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, done_ref, done_dut, "done");
+		end
+		if (counting_ref !== counting_dut) begin 
+			if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, counting_ref, counting_dut, "counting");
+		end
+		if (shift_ena_ref !== shift_ena_dut) begin 
+			if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+			s_check_and_display_mismatch(1, $time, state, d, done_counting, ack, shift_ena_ref, shift_ena_dut, "shift_ena");
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule

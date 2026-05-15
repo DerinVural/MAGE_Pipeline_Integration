@@ -1,0 +1,1 @@
+module TopModule (clk, a, b, out_assign, out_always_comb, out_always_ff); input clk; input a; input b; output out_assign; output out_always_comb; output out_always_ff; endmodule

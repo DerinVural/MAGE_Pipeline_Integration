@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output logic do_sub, output logic [7:0] a, b); // Additional ports as per golden testbench's module

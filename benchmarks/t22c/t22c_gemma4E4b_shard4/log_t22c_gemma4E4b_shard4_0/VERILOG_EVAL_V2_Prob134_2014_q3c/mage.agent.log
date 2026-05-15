@@ -1,0 +1,1150 @@
+[2026-05-14 14:17:01,512 - mage.agent - INFO] Initial tb:
+[2026-05-14 14:17:01,513 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generation Module (Copied from Golden TB)
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic [2:0] y
+);
+	initial begin
+		repeat(200) @(posedge clk, negedge clk) begin
+			y <= $random;
+			x <= $random;
+		end
+		
+		#1 $finish;
+	end
+	endmodule
+
+// Reference Model (Placeholder, Copied from Golden TB)
+module RefModule (
+	input clk,
+	input x,
+	input [2:0] y,
+	output Y0,
+	output z
+);
+	// Placeholder for the reference model
+endmodule
+
+// Testbench
+module tb();
+
+
+// --- Queue Definitions for Mismatch Tracking ---
+
+// State space size is 3 bits, max queue size set to 10.
+localparam MAX_QUEUE_SIZE = 10;
+
+// Inputs Queue: clk (1-bit), x (1-bit), y (3-bits)
+reg input_clk_queue [$];
+reg input_x_queue [$];
+reg input_y_queue [$];
+
+// Outputs Queue: Y0_dut (1-bit), z_dut (1-bit)
+reg got_Y0_queue [$];
+reg got_z_queue [$];
+
+// Golden/Reference Queue: Y0_ref (1-bit), z_ref (1-bit)
+reg golden_Y0_queue [$];
+reg golden_z_queue [$];
+
+// Reset Queue (Placeholder)
+reg reset_queue [$];
+
+// Error Counters and Timestamps (Maintained functionality)
+int errors = 0;
+int errortime = 0;
+int errors_Y0 = 0;
+int errortime_Y0 = 0;
+int errors_z = 0;
+int errortime_z = 0;
+int clocks = 0;
+
+
+// --- Signals ---
+
+reg clk=0;
+initial forever
+	#5 clk = ~clk;
+
+logic x_sig;
+logic [2:0] y_sig;
+logic Y0_ref_sig;
+logic Y0_dut_sig;
+logic z_ref_sig;
+logic z_dut_sig;
+
+// Verification logic (Simplified from redundant XOR structure in original TB)
+wire tb_match = ( { Y0_ref_sig, z_ref_sig } === { Y0_dut_sig, z_dut_sig } );
+
+// --- Instantiations ---
+
+stimulus_gen stim1 (
+	.clk, 
+	.x, 
+	.y
+);
+
+RefModule good1 (
+	.clk, 
+	x_sig, 
+	y_sig, 
+	.Y0(Y0_ref_sig), 
+	.z(z_ref_sig));
+
+TopModule top_module1 (
+	.clk, 
+	x_sig, 
+	y_sig, 
+	.Y0(Y0_dut_sig), 
+	.z(z_dut_sig));
+
+
+// --- Task for Delaying Timestep (Copied from Golden TB) ---
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	end
+task
+
+
+// --- Waveform Dumping ---
+
+initial begin 
+	$dumpfile("wave.vcd");
+	// Note: Updated dumping to include all relevant signals for debugging
+	$dumpvars(0, tb, top_module1, stim1, good1);
+end
+
+
+// --- Mismatch Detection and Queue Management ---
+
+// Flag to track if the first mismatch has already been logged
+reg mismatch_logged = 0;
+
+always @(posedge clk, negedge clk) begin
+	// 1. Queue Management: Shift/Delete old samples if queue is full
+	if (input_clk_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+		input_clk_queue.delete(0);
+		input_x_queue.delete(0);
+		input_y_queue.delete(0);
+		got_Y0_queue.delete(0);
+		got_z_queue.delete(0);
+		golden_Y0_queue.delete(0);
+		golden_z_queue.delete(0);
+		reset_queue.delete(0);
+	end
+
+	// 2. Data Pushing (Current Cycle Data)
+	input_clk_queue.push_back(clk);
+	input_x_queue.push_back(x_sig);
+	input_y_queue.push_back(y_sig);
+	
+	got_Y0_queue.push_back(Y0_dut_sig);
+	got_z_queue.push_back(z_dut_sig);
+	
+	golden_Y0_queue.push_back(Y0_ref_sig);
+	golden_z_queue.push_back(z_ref_sig);
+	
+	// Reset tracking (No change from original TB)
+	reset_queue.push_back(1'b0); 
+
+	// 3. Error Checking (Based on original TB's logic)
+	
+	// Total Mismatch Check
+	if (!tb_match) begin
+		if (errors == 0) errortime = $time;
+		errors++;
+		end
+	
+	// Y0 Mismatch Check (Original logic simplified: Y0_ref !== Y0_dut)
+	if (Y0_ref_sig !== Y0_dut_sig) begin
+		if (errors_Y0 == 0) errortime_Y0 = $time;
+		errors_Y0 = errors_Y0 + 1'b1;
+	end
+
+	// z Mismatch Check (Original logic simplified: z_ref !== z_dut)
+	if (z_ref_sig !== z_dut_sig) begin
+		if (errors_z == 0) errortime_z = $time;
+		errors_z = errors_z + 1'b1;
+	end
+
+	// 4. First Mismatch Logging (If not already logged)
+	if (errors > 0 && !mismatch_logged) begin
+		mismatch_logged = 1;
+		$display("========================================================");
+		$display("!!! FIRST MISMATCH DETECTED AT TIME %0d !!!", $time);
+		$display("Logging last %0d cycles of simulation:", input_clk_queue.size());
+		$display("========================================================");
+
+		// Iterate through the current contents of the queue
+		for (int i = 0; i < input_clk_queue.size(); i++) begin
+			// Check overall match status for this historical point
+			if (got_Y0_queue[i] === golden_Y0_queue[i] && got_z_queue[i] === golden_z_queue[i]) 
+				$display("Cycle %0d: MATCH", i);
+			else 
+				$display("Cycle %0d: MISMATCH", i);
+
+			// Display formatted data
+			$display("  [Cycle %0d] Clk: %b, X: %b, Y: %h (%b) | Got Y0: %b, Got z: %b | Exp Y0: %b, Exp z: %b",
+					 i,
+					 input_clk_queue[i], 
+					 input_x_queue[i], 
+					 input_y_queue[i], input_y_queue[i], 
+					 got_Y0_queue[i], got_z_queue[i], 
+					 golden_Y0_queue[i], golden_z_queue[i]);
+			end
+		end
+
+end
+
+
+// --- Finalization ---
+final begin
+	// Print hints from original TB
+	if (errors_Y0) $display("Hint: Output 'Y0' has %0d mismatches. First mismatch occurred at time %0d.", errors_Y0, errortime_Y0);
+	else $display("Hint: Output 'Y0' has no mismatches.");
+	if (errors_z) $display("Hint: Output 'z' has %0d mismatches. First mismatch occurred at time %0d.", errors_z, errortime_z);
+	else $display("Hint: Output 'z' has no mismatches.");
+
+	$display("Hint: Total mismatched samples is %0d out of %0d samples\n", errors, clocks);
+	$display("Simulation finished at %0d ps", $time);
+
+	// FINAL REQUIRED OUTPUT CHECK
+	if (errors == 0) begin
+		$display("SIMULATION PASSED");
+		// Print original final summary for completeness
+		$display("Mismatches: %0d in %0d samples", errors, clocks);
+		$finish();
+	end else begin
+		$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", errortime);
+		// Print original final summary for completeness
+		$display("Mismatches: %0d in %0d samples", errors, clocks);
+		$finish();
+	end
+end
+
+// add timeout after 100K cycles (Copied from Golden TB)
+initial begin
+	#1000000
+	$display("TIMEOUT");
+	$finish();
+end
+
+endmodule
+[2026-05-14 14:17:01,513 - mage.agent - INFO] Initial if:
+[2026-05-14 14:17:01,513 - mage.agent - INFO] module TopModule (
+    input clk,
+    input x,
+    input [2:0] y,
+    output Y0,
+    output z
+);
+[2026-05-14 14:17:01,518 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  x
+ - input  y (3 bits)
+ - output Y0
+ - output z
+
+The module should implement the output logic and next state logic for an
+FSM using the table shown below. Note that the output Y0 is Y[0] of the
+next state signal.
+
+   Present state input y[2:0] | Next state Y[2:0] when x=0, Next state Y[2:0] when x=1 | Output z
+   000 | 000, 001 | 0
+   001 | 001, 100 | 0
+   010 | 010, 001 | 0
+   011 | 001, 010 | 1
+   100 | 011, 100 | 1
+
+
+[2026-05-14 14:17:53,672 - mage.agent - INFO] Initial rtl:
+[2026-05-14 14:17:53,672 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic x,
+    input  logic [2:0] y,
+    output logic Y0,
+    output logic z
+);
+
+    // State variables
+    logic [2:0] current_state;
+    logic [2:0] next_state;
+
+    // Internal wires for next state logic
+    logic next_Y0_wire;
+
+    // Initialization: Initialize state to 000 (as no reset is specified)
+    initial begin
+        current_state = 3'b000;
+    end
+
+    // 1. Next State Logic and Output Z Logic (Combinational)
+    always @(*)
+    begin
+        next_state = current_state;
+        z = 1'b0;
+        next_Y0_wire = current_state[0]; // Default Y0 to current state's LSB if not specified
+
+        case (current_state) 
+            3'b000: begin
+                if (x == 0) next_state = 3'b000; else next_state = 3'b001;
+                z = 1'b0;
+            end
+            3'b001: begin
+                if (x == 0) next_state = 3'b001; else next_state = 3'b100;
+                z = 1'b0;
+            end
+            3'b010: begin
+                if (x == 0) next_state = 3'b010; else next_state = 3'b001;
+                z = 1'b0;
+            end
+            3'b011: begin
+                if (x == 0) next_state = 3'b001; else next_state = 3'b010;
+                z = 1'b1;
+            end
+            3'b100: begin
+                if (x == 0) next_state = 3'b011; else next_state = 3'b100;
+                z = 1'b1;
+            end
+            // Default/Unspecified states: Hold state (safe default for synthesis)
+            default: begin
+                next_state = current_state; 
+                z = 1'b0; // Default Z for undefined states
+            end
+        endcase
+    end
+
+    // 2. State Register Update (Sequential)
+    always @(posedge clk)
+    begin
+        current_state <= next_state;
+    end
+
+    // 3. Output Assignments
+    // Y0 is the LSB of the next state signal Y[2:0]
+    assign Y0 = next_state[0];
+    
+endmodule
+[2026-05-14 14:18:03,381 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 14:19:01,775 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:19:01,775 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Assuming stimulus_gen and RefModule are defined elsewhere or are part of the environment
+// For completeness, we only modify tb module based on golden_testbench structure.
+
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic [2:0] y
+);
+	initial begin
+		repeat(200) @(posedge clk, negedge clk) begin
+		y <= $random;
+		x <= $random;
+		end
+		#1 $finish;
+	end
+	endmodule
+
+// Placeholder for RefModule, as it is necessary for instantiation but not provided
+module RefModule (
+    input logic clk,
+    input logic x,
+    input logic [2:0] y,
+    output logic Y0,
+    output logic z
+);
+    // Minimal placeholder implementation to allow simulation to proceed
+    assign Y0 = y[0];
+    assign z = (y[2] && y[1]);
+endmodule
+
+// The DUT module must be defined for the testbench to compile
+module TopModule (
+    input  logic clk,
+    input  logic x,
+    input  logic [2:0] y,
+    output logic Y0,
+    output logic z
+);
+    // Placeholder implementation matching the logic described in input_spec for structural completeness
+    // Actual implementation based on FSM table would go here.
+    // For testing purposes, we ensure ports are connected.
+    assign Y0 = y[0]; // Simplification
+    assign z = 1'b0;  // Simplification
+endmodule
+
+module tb();
+	
+typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_Y0;
+		int errortime_Y0;
+		int errors_z;
+		int errortime_z;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic x;
+	logic [2:0] y;
+	logic Y0_ref;
+	logic Y0_dut;
+	logic z_ref;
+	logic z_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,x,y,Y0_ref,Y0_dut,z_ref,z_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		x, 
+		y );
+	RefModule good1 (
+		.clk, 
+		x, 
+		y, 
+		.Y0(Y0_ref),
+		z(z_ref) );
+	
+	TopModule top_module1 (
+		.clk, 
+		x, 
+		y, 
+		.Y0(Y0_dut),
+		z(z_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	// --- Verification Logic ---
+	assign tb_match = ( { Y0_ref, z_ref } === ( { Y0_ref, z_ref } ^ { Y0_dut, z_dut } ^ { Y0_ref, z_ref } ) );
+	
+always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		
+		if (Y0_ref !== ( Y0_ref ^ Y0_dut ^ Y0_ref ))
+		begin if (stats1.errors_Y0 == 0) stats1.errortime_Y0 = $time;
+			sstats1.errors_Y0 = stats1.errors_Y0+1'b1; end
+		if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+		begin if (stats1.errors_z == 0) stats1.errortime_z = $time;
+			sstats1.errors_z = stats1.errors_z+1'b1; end
+		end
+
+	// --- Final Reporting Block --- 
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+			$display("\n--- Mismatch Details at Time %0d ps ---\n", stats1.errortime);
+			
+			// Display Inputs
+			$display("Input Signals:");
+			$display("  clk: %b", clk);
+			$display("  x: %b", x);
+			$display("  y: %h (%b)", y, y);
+			
+			// Display Outputs
+			$display("Output Signals:");
+			$display("  DUT Y0: %h (%b)", Y0_dut, Y0_dut);
+			$display("  DUT z:  %h (%b)", z_dut, z_dut);
+			$display("  REF Y0: %h (%b)", Y0_ref, Y0_ref);
+			$display("  REF z:  %h (%b)", z_ref, z_ref);
+			$display("----------------------------------------");
+		end
+	
+		// Original Hint Reporting (kept for functional similarity, but the primary failure message is above)
+		if (stats1.errors_Y0) $display("Hint: Output 'Y0' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_Y0, stats1.errortime_Y0);
+		else $display("Hint: Output 'Y0' has no mismatches.");
+		if (stats1.errors_z) $display("Hint: Output 'z' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_z, stats1.errortime_z);
+		else $display("Hint: Output 'z' has no mismatches.");
+		
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 14:20:17,905 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:20:17,905 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// Assuming stimulus_gen and RefModule are defined elsewhere or are part of the environment
+
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic [2:0] y
+);
+	initial begin
+		repeat(200) @(posedge clk, negedge clk) begin
+		y <= $random;
+		x <= $random;
+		end
+		#1 $finish;
+	end
+	endmodule
+
+module RefModule (
+    input logic clk,
+    input logic x,
+    input logic [2:0] y,
+    output logic Y0,
+    output logic z
+);
+    // Minimal placeholder implementation to allow simulation to proceed
+    assign Y0 = y[0];
+    assign z = (y[2] && y[1]);
+endmodule
+
+// The DUT module must be defined for the testbench to compile
+module TopModule (
+    input  logic clk,
+    input  logic x,
+    input  logic [2:0] y,
+    output logic Y0,
+    output logic z
+);
+    // Placeholder implementation matching the logic described in input_spec for structural completeness
+    assign Y0 = y[0]; // Simplification
+    assign z = 1'b0;  // Simplification
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_Y0;
+		int errortime_Y0;
+		int errors_z;
+		int errortime_z;
+		int clocks;
+		// Fields to capture first mismatch details
+		int first_mismatch_time;
+		logic first_mismatch_x;
+		logic [2:0] first_mismatch_y;
+		logic first_mismatch_Y0_dut;
+		logic first_mismatch_z_dut;
+		logic first_mismatch_Y0_ref;
+		logic first_mismatch_z_ref;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic x;
+	logic [2:0] y;
+	logic Y0_ref;
+	logic Y0_dut;
+	logic z_ref;
+	logic z_dut;
+
+	// State tracking for first mismatch event
+	reg mismatch_captured = 0;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,x,y,Y0_ref,Y0_dut,z_ref,z_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		x, 
+		y );
+	RefModule good1 (
+		.clk, 
+		x, 
+		y, 
+		.Y0(Y0_ref), 
+		z(z_ref) );
+	
+	TopModule top_module1 (
+		.clk, 
+		x, 
+		y, 
+		.Y0(Y0_dut), 
+		z(z_dut) );
+
+	
+	// Task removed as it was not used in the original verification logic flow
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+			$display("\n--- Mismatch Details at Time %0d ps ---\n", stats1.errortime);
+			
+			// Display Inputs
+			$display("Input Signals:");
+			$display("  clk: %b", clk);
+			$display("  x: %b", x);
+			$display("  y: %h (%b)", y, y);
+			
+			// Display Outputs
+			$display("Output Signals:");
+			$display("  DUT Y0: %h (%b)", Y0_dut, Y0_dut);
+			$display("  DUT z:  %h (%b)", z_dut, z_dut);
+			$display("  REF Y0: %h (%b)", Y0_ref, Y0_ref);
+			$display("  REF z:  %h (%b)", z_ref, z_ref);
+			$display("----------------------------------------");
+		end
+
+		// Original Hint Reporting (kept for functional similarity)
+		if (stats1.errors_Y0) $display("Hint: Output 'Y0' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_Y0, stats1.errortime_Y0);
+		else $display("Hint: Output 'Y0' has no mismatches.");
+		if (stats1.errors_z) $display("Hint: Output 'z' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_z, stats1.errortime_z);
+		else $display("Hint: Output 'z' has no mismatches.");
+		
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	// Simplified comparison to standard inequality check for correctness.
+	assign tb_match = ( { Y0_ref, z_ref } === { Y0_dut, z_dut } );
+
+always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			
+			// Capture first mismatch details
+			if (stats1.errors == 1) begin
+				sstats1.first_mismatch_time = $time;
+				sstats1.first_mismatch_x = x;
+				sstats1.first_mismatch_y = y;
+				sstats1.first_mismatch_Y0_dut = Y0_dut;
+				sstats1.first_mismatch_z_dut = z_dut;
+				sstats1.first_mismatch_Y0_ref = Y0_ref;
+				sstats1.first_mismatch_z_ref = z_ref;
+				// Since we captured it, we stop tracking the first mismatch for future checks
+				mismatch_captured = 1;
+				end
+			
+			end
+		
+		// Check Y0 mismatch
+		if (Y0_ref !== Y0_dut)
+		begin 
+			if (stats1.errors_Y0 == 0) stats1.errortime_Y0 = $time;
+			sstats1.errors_Y0 = stats1.errors_Y0+1'b1; 
+		end
+		
+		// Check z mismatch
+		if (z_ref !== z_dut)
+		begin 
+			if (stats1.errors_z == 0) stats1.errortime_z = $time;
+			sstats1.errors_z = stats1.errors_z+1'b1; 
+		end
+	end
+
+   // Display first mismatch details in the final block using captured stats
+   initial begin
+        @(negedge clk);
+        if (stats1.errors > 0 && mismatch_captured == 1) begin
+            $display("\n--- FIRST MISMATCH DETAILS (Captured at Time %0d ps) ---", stats1.first_mismatch_time);
+            $display("Input Signals:");
+            $display("  clk: %b", clk);
+            $display("  x: %b", stats1.first_mismatch_x);
+            $display("  y: %h (%b)", stats1.first_mismatch_y, stats1.first_mismatch_y);
+            $display("Output Signals:");
+            $display("  DUT Y0: %h (%b)", stats1.first_mismatch_Y0_dut, stats1.first_mismatch_Y0_dut);
+            $display("  DUT z:  %h (%b)", stats1.first_mismatch_z_dut, stats1.first_mismatch_z_dut);
+            $display("  REF Y0: %h (%b)", stats1.first_mismatch_Y0_ref, stats1.first_mismatch_Y0_ref);
+            $display("  REF z:  %h (%b)", stats1.first_mismatch_z_ref, stats1.first_mismatch_z_ref);
+            $display("----------------------------------------");
+        end
+   end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-14 14:21:37,851 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:21:37,852 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Module to generate stimulus (Kept as per golden testbench)
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic [2:0] y
+);
+	initial begin
+		repeat(200) @(posedge clk, negedge clk) begin
+		y <= $random;
+		x <= $random;
+		end
+		#1 $finish;
+	end
+	endmodule
+
+// Reference Module (Placeholder, kept as per golden testbench structure)
+module RefModule (
+	input logic clk,
+	input logic x,
+	input logic [2:0] y,
+	output logic Y0,
+	output logic z
+);
+	// Minimal placeholder implementation to allow simulation to proceed
+	assign Y0 = y[0];
+	assign z = (y[2] & y[1]);
+endmodule
+
+// The DUT Module (TopModule, which we are testing)
+module TopModule (
+    input  logic clk,
+    input  logic x,
+    input  logic [2:0] y,
+    output logic Y0,
+    output logic z
+);
+    // Actual FSM implementation derived from input_spec should go here.
+    // For structural completeness based on golden testbench structure,
+    // we leave it as a placeholder that matches the required interface.
+    // The simulation relies on the DUT having the correct logic.
+    
+    // Placeholder assignments to prevent compilation errors in the testbench
+    // Actual logic must be implemented in the real TopModule file.
+    assign Y0 = y[0]; 
+    assign z = 1'b0;
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_Y0;
+		int errortime_Y0;
+		int errors_z;
+		int errortime_z;
+		int clocks;
+		// Fields to capture first mismatch details
+		int first_mismatch_time;
+		logic first_mismatch_x;
+		logic [2:0] first_mismatch_y;
+		logic first_mismatch_Y0_dut;
+		logic first_mismatch_z_dut;
+		logic first_mismatch_Y0_ref;
+		logic first_mismatch_z_ref;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic x;
+	logic [2:0] y;
+	logic Y0_ref;
+	logic Y0_dut;
+	logic z_ref;
+	logic z_dut;
+
+	// State tracking for first mismatch event
+	reg mismatch_captured = 0;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,x,y,Y0_ref,Y0_dut,z_ref,z_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		x, 
+		y );
+	RefModule good1 (
+		.clk, 
+		x, 
+		y, 
+		.Y0(Y0_ref),
+		z(z_ref) );
+	
+	TopModule top_module1 (
+		.clk, 
+		x, 
+		y, 
+		.Y0(Y0_dut),
+		z(z_dut) );
+
+	
+	// Task wait_for_end_of_timestep removed as it was unused/problematic in previous structure
+
+	// Verification: Simple equality check for matching expected behavior
+	assign tb_match = ( { Y0_ref, z_ref } === { Y0_dut, z_dut } );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		
+		// Capture first mismatch details
+		if (stats1.errors == 1) begin
+			sstats1.first_mismatch_time = $time;
+			sstats1.first_mismatch_x = x;
+			sstats1.first_mismatch_y = y;
+			sstats1.first_mismatch_Y0_dut = Y0_dut;
+			sstats1.first_mismatch_z_dut = z_dut;
+			sstats1.first_mismatch_Y0_ref = Y0_ref;
+			sstats1.first_mismatch_z_ref = z_ref;
+			mismatch_captured = 1;
+			end
+		
+		// Check Y0 mismatch
+		if (Y0_ref !== Y0_dut)
+		begin 
+			if (stats1.errors_Y0 == 0) stats1.errortime_Y0 = $time;
+			sstats1.errors_Y0 = stats1.errors_Y0+1'b1;
+		end
+		
+		// Check z mismatch
+		if (z_ref !== z_dut)
+		begin 
+			if (stats1.errors_z == 0) stats1.errortime_z = $time;
+			sstats1.errors_z = stats1.errors_z+1'b1;
+		end
+	end
+
+	// Final Reporting Block
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+		
+		
+		// Display First Mismatch Details (Required detailed display upon failure)
+		if (mismatch_captured == 1) begin
+			$display("\n--- Mismatch Details at Time %0d ps ---", stats1.first_mismatch_time);
+			
+			// Display Inputs
+			$display("Input Signals:");
+			$display("  clk: %b", clk);
+			$display("  x: %b", stats1.first_mismatch_x);
+			$display("  y: %h (%b)", stats1.first_mismatch_y, stats1.first_mismatch_y);
+			
+			// Display Outputs
+			$display("Output Signals:");
+			$display("  DUT Y0: %h (%b)", stats1.first_mismatch_Y0_dut, stats1.first_mismatch_Y0_dut);
+			$display("  DUT z:  %h (%b)", stats1.first_mismatch_z_dut, stats1.first_mismatch_z_dut);
+			$display("  REF Y0: %h (%b)", stats1.first_mismatch_Y0_ref, stats1.first_mismatch_Y0_ref);
+			$display("  REF z:  %h (%b)", stats1.first_mismatch_z_ref, stats1.first_mismatch_z_ref);
+			$display("----------------------------------------");
+		end
+		
+		// Original Hint Reporting (Kept for functional similarity)
+		if (stats1.errors_Y0) $display("Hint: Output 'Y0' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_Y0, stats1.errortime_Y0);
+		else $display("Hint: Output 'Y0' has no mismatches.");
+		if (stats1.errors_z) $display("Hint: Output 'z' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_z, stats1.errortime_z);
+		else $display("Hint: Output 'z' has no mismatches.");
+		
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		end
+	
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 14:22:51,979 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:22:51,979 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Module to generate stimulus (Kept as per golden testbench)
+module stimulus_gen (
+	input clk,
+	output logic x,
+	output logic [2:0] y
+);
+	initial begin
+		repeat(200) @(posedge clk, negedge clk) begin
+		y <= $random;
+		x <= $random;
+		end
+		#1 $finish;
+	end
+endmodule
+
+// Reference Module (Placeholder, kept as per golden testbench structure)
+module RefModule (
+    input logic clk,
+    input logic x,
+    input logic [2:0] y,
+    output logic Y0,
+    output logic z
+);
+    // Minimal placeholder implementation to allow simulation to proceed
+    assign Y0 = y[0];
+    assign z = (y[2] & y[1]);
+endmodule
+
+// The DUT Module (TopModule, which we are testing) - Defined here for compilation context
+module TopModule (
+    input  logic clk,
+    input  logic x,
+    input  logic [2:0] y,
+    output logic Y0,
+    output logic z
+);
+    // Placeholder implementation matching the required interface
+    // Actual logic should be implemented in the module under test.
+    assign Y0 = y[0]; 
+    assign z = 1'b0;
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_Y0;
+        int errortime_Y0;
+        int errors_z;
+        int errortime_z;
+        int clocks;
+        // Fields to capture first mismatch details
+        int first_mismatch_time;
+        logic first_mismatch_x;
+        logic [2:0] first_mismatch_y;
+        logic first_mismatch_Y0_dut;
+        logic first_mismatch_z_dut;
+        logic first_mismatch_Y0_ref;
+        logic first_mismatch_z_ref;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic x;
+    logic [2:0] y;
+    logic Y0_ref;
+    logic Y0_dut;
+    logic z_ref;
+    logic z_dut;
+
+    // State tracking for first mismatch event
+    reg mismatch_captured = 0;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,clk,x,y,Y0_ref,Y0_dut,z_ref,z_dut );
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    // Instantiate stimulus generator
+    stimulus_gen stim1 (
+        .clk(clk),
+        .x(x),
+        .y(y) // Using positional mapping based on golden testbench structure
+    );
+
+    // Instantiate Reference Module
+    RefModule good1 (
+        .clk(clk),
+        .x(x),
+        .y(y),
+        .Y0(Y0_ref),
+        .z(z_ref) 
+    );
+        
+    // Instantiate DUT
+    TopModule top_module1 (
+        .clk(clk),
+        .x(x),
+        .y(y),
+        .Y0(Y0_dut),
+        .z(z_dut) 
+    );
+
+    // Verification: Simple equality check
+    assign tb_match = ( { Y0_ref, z_ref } === { Y0_dut, z_dut } );
+
+    always @(posedge clk, negedge clk) begin
+
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+            
+            // Capture first mismatch details
+            if (stats1.errors == 1) begin
+                stats1.first_mismatch_time = $time;
+                stats1.first_mismatch_x = x;
+                stats1.first_mismatch_y = y;
+                stats1.first_mismatch_Y0_dut = Y0_dut;
+                stats1.first_mismatch_z_dut = z_dut;
+                stats1.first_mismatch_Y0_ref = Y0_ref;
+                stats1.first_mismatch_z_ref = z_ref;
+                mismatch_captured = 1;
+            end
+        end
+        
+        // Check Y0 mismatch
+        if (Y0_ref !== Y0_dut)
+        begin 
+            if (stats1.errors_Y0 == 0) stats1.errortime_Y0 = $time;
+            stats1.errors_Y0 = stats1.errors_Y0+1'b1;
+        end
+        
+        // Check z mismatch
+        if (z_ref !== z_dut)
+        begin 
+            if (stats1.errors_z == 0) stats1.errortime_z = $time;
+            stats1.errors_z = stats1.errors_z+1'b1;
+        end
+
+    end
+
+    // Final Reporting Block
+    final begin
+        // 1. Required Success/Failure Display
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+            $display("
+--- Mismatch Details at Time %0d ps ---", stats1.first_mismatch_time);
+            
+            // 2. Detailed Display of First Mismatch (Required format)
+            // Display Inputs
+            $display("Input Signals:");
+            $display("  clk: %b", clk);
+            $display("  x: %b", stats1.first_mismatch_x);
+            $display("  y: %h (%b)", stats1.first_mismatch_y, stats1.first_mismatch_y); // Width <= 64, so binary is fine
+            
+            // Display Outputs
+            $display("Output Signals:");
+            $display("  DUT Y0: %h (%b)", stats1.first_mismatch_Y0_dut, stats1.first_mismatch_Y0_dut);
+            $display("  DUT z:  %h (%b)", stats1.first_mismatch_z_dut, stats1.first_mismatch_z_dut);
+            $display("  REF Y0: %h (%b)", stats1.first_mismatch_Y0_ref, stats1.first_mismatch_Y0_ref);
+            $display("  REF z:  %h (%b)", stats1.first_mismatch_z_ref, stats1.first_mismatch_z_ref);
+            $display("----------------------------------------");
+        end
+        
+        // Original Hint Reporting (Kept for functional similarity)
+        if (stats1.errors_Y0) $display("Hint: Output 'Y0' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_Y0, stats1.errortime_Y0);
+        else $display("Hint: Output 'Y0' has no mismatches.");
+        if (stats1.errors_z) $display("Hint: Output 'z' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_z, stats1.errortime_z);
+        else $display("Hint: Output 'z' has no mismatches.");
+        
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+    
+    // add timeout after 100K cycles
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+endmodule

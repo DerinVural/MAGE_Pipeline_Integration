@@ -1,0 +1,72 @@
+module tb();
+typedef struct packed {
+	int errors;
+	int errortime;
+	int errors_z;
+	int errortime_z;
+	int clocks;
+}
+stats;
+stats stats1;
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+reg clk=0;
+initial forever
+	#5 clk = ~clk;
+logic aresetn;
+logic x;
+logic z_ref;
+logic z_dut;
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,clk,aresetn,x,z_ref,z_dut );
+end
+wire tb_match;  	// Verification
+wire tb_mismatch = ~tb_match;
+stimulus_gen stim1 (
+	.clk,
+	.* ,
+	.aresetn,
+	.x );
+RefModule good1 (
+	.clk,
+	.aresetn,
+	.x,
+	.z(z_ref) );
+TopModule top_module1 (
+	.clk,
+	.aresetn,
+	.x,
+	.z(z_dut) );
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	end
+endtask
+final begin
+	if (stats1.errors_z) $display("Hint: Output 'z' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_z, stats1.errortime_z);
+	else $display("Simulation PASSED");
+	$display("Total mismatched samples is %1d out of %1d samples", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+end
+assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+always @(posedge clk, negedge clk) begin
+	stats1.clocks++;
+	if (!tb_match) begin
+		if (stats1.errors == 0) stats1.errortime = $time;
+		stats1.errors++;
+	end
+	if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+	begin if (stats1.errors_z == 0) stats1.errortime_z = $time;
+		stats1.errors_z = stats1.errors_z+1'b1; end
+end
+initial begin
+  #1000000
+  $display("TIMEOUT");
+  $finish();
+end
+endmodule;

@@ -1,0 +1,331 @@
+[2026-05-12 20:21:46,436 - mage.agent - INFO] TB Gen BYPASSED — loaded golden testbench from ./verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv
+[2026-05-12 20:21:46,437 - mage.agent - INFO] Initial tb:
+[2026-05-12 20:21:46,438 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen
+(
+	input clk,
+	output logic areset,
+	
+	output logic predict_valid,
+	output predict_taken,
+	
+	output logic train_mispredicted,
+	output train_taken,
+	output [31:0] train_history,
+
+	input tb_match,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	output int wavedrom_hide_after_time	
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+
+	reg reset;
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+	
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+	
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			reset <= 0;
+		end
+		if (srfail)
+			$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+		// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+		// a functionality error than the reset being implemented asynchronously.
+	
+	endtask
+
+	
+	assign areset = reset;
+	logic predict_taken_r;
+	assign predict_taken = predict_valid ? predict_taken_r : 1'bx;
+	
+	logic train_taken_r;
+	logic [31:0] train_history_r;
+	assign train_taken = train_mispredicted ? train_taken_r : 1'bx;
+	assign train_history = train_mispredicted ? train_history_r : 32'hx;
+	
+	
+	initial begin
+		@(posedge clk) reset <= 1;
+		@(posedge clk) reset <= 0;
+		predict_taken_r <= 1;
+		predict_valid <= 1;
+		train_mispredicted <= 0;
+		train_history_r <= 32'h5;
+		train_taken_r <= 1;
+	
+		wavedrom_start("Asynchronous reset");
+			reset_test(1); // Test for asynchronous reset
+		wavedrom_stop();
+		@(posedge clk) reset <= 1;
+		predict_valid <= 0;
+
+		wavedrom_start("Predictions: Shift in");
+		repeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};
+		reset <= 0;
+		predict_valid <= 1;
+		repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+		predict_valid <= 0;
+		repeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};
+		predict_valid <= 1;
+		train_mispredicted <= 1;
+		@(posedge clk) train_mispredicted <= 0;
+		repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+		wavedrom_stop();
+
+		repeat(2000) @(posedge clk,negedge clk) begin
+			{predict_valid, predict_taken_r, train_taken_r} <= {$urandom};
+			train_history_r <= $urandom;
+			train_mispredicted <= !($urandom_range(0,31));
+		end
+
+		#1 $finish;
+	end
+	
+	
+endmodule
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_predict_history;
+		int errortime_predict_history;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic areset;
+	logic predict_valid;
+	logic predict_taken;
+	logic train_mispredicted;
+	logic train_taken;
+	logic [31:0] train_history;
+	logic [31:0] predict_history_ref;
+	logic [31:0] predict_history_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,predict_valid,predict_taken,train_mispredicted,train_taken,train_history,predict_history_ref,predict_history_dut );
+	end
+
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.areset,
+		.predict_valid,
+		.predict_taken,
+		.train_mispredicted,
+		.train_taken,
+		.train_history );
+	RefModule good1 (
+		.clk,
+		.areset,
+		.predict_valid,
+		.predict_taken,
+		.train_mispredicted,
+		.train_taken,
+		.train_history,
+		.predict_history(predict_history_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.areset,
+		.predict_valid,
+		.predict_taken,
+		.train_mispredicted,
+		.train_taken,
+		.train_history,
+		.predict_history(predict_history_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors_predict_history) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "predict_history", stats1.errors_predict_history, stats1.errortime_predict_history);
+		else $display("Hint: Output '%s' has no mismatches.", "predict_history");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { predict_history_ref } === ( { predict_history_ref } ^ { predict_history_dut } ^ { predict_history_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (predict_history_ref !== ( predict_history_ref ^ predict_history_dut ^ predict_history_ref ))
+		begin if (stats1.errors_predict_history == 0) stats1.errortime_predict_history = $time;
+			stats1.errors_predict_history = stats1.errors_predict_history+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+
+[2026-05-12 20:21:46,438 - mage.agent - INFO] Initial if:
+[2026-05-12 20:21:46,438 - mage.agent - INFO] 
+[2026-05-12 20:21:46,441 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+ - input  predict_valid
+ - input  predict_taken
+ - input  train_mispredicted
+ - input  train_taken
+ - input  train_history   (32 bits)
+ - output predict_history (32 bits)
+
+The module should implement a 32-bit global history shift register,
+including support for rolling back state in response to a pipeline flush
+caused by a branch misprediction. When a branch prediction is made
+(predict_valid = 1), shift in predict_taken from the LSB side to update
+the branch history for the predicted branch. (predict_history[0] is the
+direction of the youngest branch.) When a branch misprediction occurs
+(train_mispredicted = 1), load the branch history register with the
+history after the completion of the mispredicted branch. This is the
+history before the mispredicted branch (train_history) concatenated with
+the actual result of the branch (train_taken). If both a prediction and
+misprediction occur at the same time, the misprediction takes precedence,
+because the pipeline flush will also flush out the branch that is
+currently making a prediction. predict_history is the value of the branch
+history register. areset is a positive edge triggered asynchronous reset
+that resets the history counter to zero. Assume all sequential logic is
+triggered on the positive edge of the clock.
+
+
+[2026-05-12 20:21:46,442 - mage.rtl_generator - INFO] RTL generator input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in RTL design. You can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nPlease write a module in SystemVerilog RTL language regarding to the given natural language specification.\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\nIn addition, try to give advice to avoid syntax error.\nAn SystemVerilog RTL module always starts with a line starting with the keyword \'module\' followed by the module name.\nIt ends with the keyword \'endmodule\'.\n\n[Hints]:\nFor implementing kmap (Karnaugh map), you need to think step by step.\nCarefully example how the kmap in input_spec specifies the order of the inputs.\nNote that x[i] in x[N:1] means x[i-1] in x[N-1:0].\nThen find the inputs corresponding to output=1, 0, and don\'t-care for each case.\n\nNote in Verilog, for a signal "logic x[M:N]" where M > N, you CANNOT reversely select bits from it like x[1:2];\nInstead, you should use concatations like {x[1], x[2]}.\n\nThe module interface should EXACTLY MATCH module_interface if given.\nOtherwise, should EXACTLY MATCH with the description in input_spec.\n(Including the module name, input/output ports names, and their types)\n\n\n\nHere are some examples of RTL SystemVerilog code:\nExample 1:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement a XOR gate.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic in0,\n            input  logic in1,\n            output logic out\n        );\n\n            assign out = in0 ^ in1;\n\n        endmodule\n    </module>\n</example>\nExample 2:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement an 8-bit registered incrementer.\n        The 8-bit input is first registered and then incremented by one on the next cycle.\n        The reset input is active high synchronous and should reset the output to zero.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic       clk,\n            input  logic       reset,\n            input  logic [7:0] in_,\n            output logic [7:0] out\n        );\n\n            // Sequential logic\n            logic [7:0] reg_out;\n            always @( posedge clk ) begin\n                if ( reset )\n                reg_out <= 0;\n                else\n                reg_out <= in_;\n            end\n\n            // Combinational logic\n            logic [7:0] temp_wire;\n            always @(*) begin\n                temp_wire = reg_out + 1;\n            end\n\n            // Structural connections\n            assign out = temp_wire;\n\n        endmodule\n    </module>\n</example>\nExample 3:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement an n-bit registered incrementer where the bitwidth is specified by the parameter nbits.\n        The n-bit input is first registered and then incremented by one on the next cycle.\n        The reset input is active high synchronous and should reset the output to zero.\n    </input_spec>\n    <module>\n        module TopModule #(\n            parameter nbits\n        )(\n            input  logic             clk,\n            input  logic             reset,\n            input  logic [nbits-1:0] in_,\n            output logic [nbits-1:0] out\n        );\n\n            // Sequential logic\n            logic [nbits-1:0] reg_out;\n            always @( posedge clk ) begin\n                if ( reset )\n                reg_out <= 0;\n                else\n                reg_out <= in_;\n            end\n\n            // Combinational logic\n            logic [nbits-1:0] temp_wire;\n            always @(*) begin\n                temp_wire = reg_out + 1;\n            end\n\n            // Structural connections\n            assign out = temp_wire;\n\n        endmodule\n    </module>\n</example>\nExample 4:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        Build a finite-state machine that takes as input a serial bit stream,\n            and outputs a one whenever the bit stream contains two consecutive one\'s.\n        The output is one on the cycle _after_ there are two consecutive one\'s.\n        The reset input is active high synchronous,\n            and should reset the finite-state machine to an appropriate initial state.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic clk,\n            input  logic reset,\n            input  logic in_,\n            output logic out\n        );\n\n            // State enum\n            localparam STATE_A = 2\'b00;\n            localparam STATE_B = 2\'b01;\n            localparam STATE_C = 2\'b10;\n\n            // State register\n            logic [1:0] state;\n            logic [1:0] state_next;\n            always @(posedge clk) begin\n                if ( reset )\n                state <= STATE_A;\n                else\n                state <= state_next;\n            end\n\n            // Next state combinational logic\n            always @(*) begin\n                state_next = state;\n                case ( state )\n                STATE_A: state_next = ( in_ ) ? STATE_B : STATE_A;\n                STATE_B: state_next = ( in_ ) ? STATE_C : STATE_A;\n                STATE_C: state_next = ( in_ ) ? STATE_C : STATE_A;\n                endcase\n            end\n\n            // Output combinational logic\n            always @(*) begin\n                out = 1\'b0;\n                case ( state )\n                STATE_A: out = 1\'b0;\n                STATE_B: out = 1\'b0;\n                STATE_C: out = 1\'b1;\n                endcase\n            end\n\n        endmodule\n    </module>\n</example>\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  clk\n - input  areset\n - input  predict_valid\n - input  predict_taken\n - input  train_mispredicted\n - input  train_taken\n - input  train_history   (32 bits)\n - output predict_history (32 bits)\n\nThe module should implement a 32-bit global history shift register,\nincluding support for rolling back state in response to a pipeline flush\ncaused by a branch misprediction. When a branch prediction is made\n(predict_valid = 1), shift in predict_taken from the LSB side to update\nthe branch history for the predicted branch. (predict_history[0] is the\ndirection of the youngest branch.) When a branch misprediction occurs\n(train_mispredicted = 1), load the branch history register with the\nhistory after the completion of the mispredicted branch. This is the\nhistory before the mispredicted branch (train_history) concatenated with\nthe actual result of the branch (train_taken). If both a prediction and\nmisprediction occur at the same time, the misprediction takes precedence,\nbecause the pipeline flush will also flush out the branch that is\ncurrently making a prediction. predict_history is the value of the branch\nhistory register. areset is a positive edge triggered asynchronous reset\nthat resets the history counter to zero. Assume all sequential logic is\ntriggered on the positive edge of the clock.\n\n\n</input_spec>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nAnother agent has generated a testbench regarding the given input_spec:\n<testbench>\n`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\nmodule stimulus_gen\n(\n\tinput clk,\n\toutput logic areset,\n\t\n\toutput logic predict_valid,\n\toutput predict_taken,\n\t\n\toutput logic train_mispredicted,\n\toutput train_taken,\n\toutput [31:0] train_history,\n\n\tinput tb_match,\n\toutput reg[511:0] wavedrom_title,\n\toutput reg wavedrom_enable,\n\toutput int wavedrom_hide_after_time\t\n);\n\n\n// Add two ports to module stimulus_gen:\n//    output [511:0] wavedrom_title\n//    output reg wavedrom_enable\n\n\ttask wavedrom_start(input[511:0] title = "");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\n\treg reset;\n\ttask reset_test(input async=0);\n\t\tbit arfail, srfail, datafail;\n\t\n\t\t@(posedge clk);\n\t\t@(posedge clk) reset <= 0;\n\t\trepeat(3) @(posedge clk);\n\t\n\t\t@(negedge clk) begin datafail = !tb_match ; reset <= 1; end\n\t\t@(posedge clk) arfail = !tb_match;\n\t\t@(posedge clk) begin\n\t\t\tsrfail = !tb_match;\n\t\t\treset <= 0;\n\t\tend\n\t\tif (srfail)\n\t\t\t$display("Hint: Your reset doesn\'t seem to be working.");\n\t\telse if (arfail && (async || !datafail))\n\t\t\t$display("Hint: Your reset should be %0s, but doesn\'t appear to be.", async ? "asynchronous" : "synchronous");\n\t\t// Don\'t warn about synchronous reset if the half-cycle before is already wrong. It\'s more likely\n\t\t// a functionality error than the reset being implemented asynchronously.\n\t\n\tendtask\n\n\t\n\tassign areset = reset;\n\tlogic predict_taken_r;\n\tassign predict_taken = predict_valid ? predict_taken_r : 1\'bx;\n\t\n\tlogic train_taken_r;\n\tlogic [31:0] train_history_r;\n\tassign train_taken = train_mispredicted ? train_taken_r : 1\'bx;\n\tassign train_history = train_mispredicted ? train_history_r : 32\'hx;\n\t\n\t\n\tinitial begin\n\t\t@(posedge clk) reset <= 1;\n\t\t@(posedge clk) reset <= 0;\n\t\tpredict_taken_r <= 1;\n\t\tpredict_valid <= 1;\n\t\ttrain_mispredicted <= 0;\n\t\ttrain_history_r <= 32\'h5;\n\t\ttrain_taken_r <= 1;\n\t\n\t\twavedrom_start("Asynchronous reset");\n\t\t\treset_test(1); // Test for asynchronous reset\n\t\twavedrom_stop();\n\t\t@(posedge clk) reset <= 1;\n\t\tpredict_valid <= 0;\n\n\t\twavedrom_start("Predictions: Shift in");\n\t\trepeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};\n\t\treset <= 0;\n\t\tpredict_valid <= 1;\n\t\trepeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};\n\t\tpredict_valid <= 0;\n\t\trepeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};\n\t\tpredict_valid <= 1;\n\t\ttrain_mispredicted <= 1;\n\t\t@(posedge clk) train_mispredicted <= 0;\n\t\trepeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};\n\t\twavedrom_stop();\n\n\t\trepeat(2000) @(posedge clk,negedge clk) begin\n\t\t\t{predict_valid, predict_taken_r, train_taken_r} <= {$urandom};\n\t\t\ttrain_history_r <= $urandom;\n\t\t\ttrain_mispredicted <= !($urandom_range(0,31));\n\t\tend\n\n\t\t#1 $finish;\n\tend\n\t\n\t\nendmodule\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_predict_history;\n\t\tint errortime_predict_history;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic areset;\n\tlogic predict_valid;\n\tlogic predict_taken;\n\tlogic train_mispredicted;\n\tlogic train_taken;\n\tlogic [31:0] train_history;\n\tlogic [31:0] predict_history_ref;\n\tlogic [31:0] predict_history_dut;\n\n\tinitial begin \n\t\t$dumpfile("wave.vcd");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,predict_valid,predict_taken,train_mispredicted,train_taken,train_history,predict_history_ref,predict_history_dut );\n\tend\n\n\n\twire tb_match;\t\t// Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.areset,\n\t\t.predict_valid,\n\t\t.predict_taken,\n\t\t.train_mispredicted,\n\t\t.train_taken,\n\t\t.train_history );\n\tRefModule good1 (\n\t\t.clk,\n\t\t.areset,\n\t\t.predict_valid,\n\t\t.predict_taken,\n\t\t.train_mispredicted,\n\t\t.train_taken,\n\t\t.train_history,\n\t\t.predict_history(predict_history_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.clk,\n\t\t.areset,\n\t\t.predict_valid,\n\t\t.predict_taken,\n\t\t.train_mispredicted,\n\t\t.train_taken,\n\t\t.train_history,\n\t\t.predict_history(predict_history_dut) );\n\n\t\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors_predict_history) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "predict_history", stats1.errors_predict_history, stats1.errortime_predict_history);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "predict_history");\n\n\t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n\t\t$display("Simulation finished at %0d ps", $time);\n\t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { predict_history_ref } === ( { predict_history_ref } ^ { predict_history_dut } ^ { predict_history_ref } ) );\n\t// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute\n\t// the sensitivity list of the @(strobe) process, which isn\'t implemented.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (predict_history_ref !== ( predict_history_ref ^ predict_history_dut ^ predict_history_ref ))\n\t\tbegin if (stats1.errors_predict_history == 0) stats1.errortime_predict_history = $time;\n\t\t\tstats1.errors_predict_history = stats1.errors_predict_history+1\'b1; end\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display("TIMEOUT");\n     $finish();\n   end\n\nendmodule\n\n\n</testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps and advices to avoid syntax error",\n    "module": "Pure SystemVerilog code, a complete module"\n}\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n\nOther requirements:\n1. Don\'t use state_t to define the parameter. Use `localparam` or Use \'reg\' or \'logic\' for signals as registers or Flip-Flops.\n2. Declare all ports and signals as logic.\n3. Not all the sequential logic need to be reset to 0 when reset is asserted,\n    but these without-reset logic should be initialized to a known value with an initial block instead of being X.\n4. For combinational logic with an always block do not explicitly specify the sensitivity list; instead use always @(*).\n5. NEVER USE \'inside\' operator in RTL code. Code like \'state inside {STATE_B, STATE_C, STATE_D}\' should NOT be used.\n6. Never USE \'unique\' or \'unique0\' keywords in RTL code. Code like \'unique case\' should NOT be used.\n')])]
+[2026-05-12 20:21:46,444 - mage.token_counter - INFO] TokenCounter count_chat [agent=RTLGenerator] at temp: 0.85, top_p: 0.95
+[2026-05-12 20:22:39,301 - mage.rtl_generator - INFO] Token count: in        0 tokens, out        0 tokens
+[2026-05-12 20:22:39,302 - mage.rtl_generator - INFO] {
+    "reasoning": "1. **Identify the core functionality**: The module implements a 32-bit global history shift register with two main update modes: prediction update and misprediction rollback. \n2. **Analyze Update Modes**:\n    - **Prediction Update**: When `predict_valid` is high, we shift in `predict_taken` as the LSB. This means the existing bits shift left (towards MSB), and the new bit becomes `predict_history[0]`. In SystemVerilog, this is `history <= {history[30:0], predict_taken}`.\n    - **Misprediction Rollback**: When `train_mispredicted` is high, the history is reset to a specific state. The specification says: 'the history before the mispredicted branch (`train_history`) concatenated with the actual result of the branch (`train_taken`)'. This means `history <= {train_history[30:0], train_taken}` or `history <= {train_history, train_taken}`? Wait, let's re-read: 'the history before the mispredicted branch (train_history) concatenated with the actual result of the branch (train_taken)'. Since the history is 32 bits and `train_history` is 32 bits, and we need a 32-bit result, the 'history before' should be the previous 31 bits. However, usually, in these specs, `train_history` represents the state *at the time* of the branch. If `train_history` is the 32-bit history that was used to make the prediction, then the history *after* the branch is actually `train_history` shifted left by 1 and adding `train_taken`. But the spec says: 'load the branch history register with the history after the completion of the mispredicted branch. This is the history before the mispredicted branch (train_history) concatenated with the actual result of the branch (train_taken)'. This phrasing is slightly ambiguous regarding bit-width. Looking at standard branch predictor logic: if `train_history` is the history used for prediction, the new history is `(train_history << 1) | train_taken`. But the spec explicitly says 'train_history concatenated with train_taken'. Given `train_history` is 32 bits, and we need a 32-bit output, it likely means the new history is `train_history[30:0]` concatenated with `train_taken`. Actually, looking at the requirement again: 'the history before the mispredicted branch (train_history) concatenated with the actual result of the branch (train_taken)'. This implies the new state is `[train_history[30:0], train_taken]`. \n3. **Priority Logic**: The spec states 'If both a prediction and misprediction occur at the same time, the misprediction takes precedence'. This means we use an `if-else` structure where `train_mispredicted` is checked first.\n4. **Reset Logic**: `areset` is asynchronous and positive-edge triggered. It should reset the history to 0.\n5. **Implementation details**: Use an `always @(posedge clk or posedge areset)` block. \n6. **Advice to avoid syntax errors**: Always ensure port directions (input/output) are correct. For bit-width concatenation, ensure the total number of bits matches the target width. Use `logic` for all signals. Ensure `areset` is included in the sensitivity list for asynchronous reset.",
+    "module": "module TopModule(\n    input  logic        clk,\n    input  logic        areset,\n    input  logic        predict_valid,\n    input  logic        predict_taken,\n    input  logic        train_mispredicted,\n    input  logic        train_taken,\n    input  logic [31:0] train_history,\n    output logic [31:0] predict_history\n);\n\n    // Internal history register\n    logic [31:0] history_reg;\n\n    // Initialize history to 0 to avoid X in simulation\n    initial begin\n        history_reg = 32'h0;\n    end\n\n    // Sequential logic for history update\n    always @(posedge clk or posedge areset) begin\n        if (areset) begin\n            // Asynchronous reset\n            history_reg <= 32'h0;\n        end else begin\n            // Misprediction takes precedence over prediction\n            if (train_mispredicted) begin\n                // Load history after completion: \n                // \"history before (train_history) concatenated with actual result (train_taken)\"\n                // To maintain 32-bit width, we take the lower 31 bits of train_history and append train_taken.\n                history_reg <= {train_history[30:0], train_taken};\n            end else if (predict_valid) begin\n                // Shift in predict_taken to LSB\n                // predict_history[0] is the direction of the youngest branch.\n                history_reg <= {history_reg[30:0], predict_taken};\n            end\n        end\n    end\n\n    // Continuous assignment for output\n    assign predict_history = history_reg;\n\nendmodule"
+}
+[2026-05-12 20:22:39,306 - mage.bash_tools - INFO] Running command: iverilog -t null -Wall -Winfloop -Wno-timescale -g2012 -o /dev/null ./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/rtl.sv
+[2026-05-12 20:22:39,344 - mage.sim_reviewer - INFO] Syntax check is_pass: True, 
+output: {
+    "stdout": "",
+    "stderr": ""
+}
+[2026-05-12 20:22:39,349 - mage.agent - INFO] Initial rtl:
+[2026-05-12 20:22:39,349 - mage.agent - INFO] module TopModule(
+    input  logic        clk,
+    input  logic        areset,
+    input  logic        predict_valid,
+    input  logic        predict_taken,
+    input  logic        train_mispredicted,
+    input  logic        train_taken,
+    input  logic [31:0] train_history,
+    output logic [31:0] predict_history
+);
+
+    // Internal history register
+    logic [31:0] history_reg;
+
+    // Initialize history to 0 to avoid X in simulation
+    initial begin
+        history_reg = 32'h0;
+    end
+
+    // Sequential logic for history update
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            // Asynchronous reset
+            history_reg <= 32'h0;
+        end else begin
+            // Misprediction takes precedence over prediction
+            if (train_mispredicted) begin
+                // Load history after completion: 
+                // "history before (train_history) concatenated with actual result (train_taken)"
+                // To maintain 32-bit width, we take the lower 31 bits of train_history and append train_taken.
+                history_reg <= {train_history[30:0], train_taken};
+            end else if (predict_valid) begin
+                // Shift in predict_taken to LSB
+                // predict_history[0] is the direction of the youngest branch.
+                history_reg <= {history_reg[30:0], predict_taken};
+            end
+        end
+    end
+
+    // Continuous assignment for output
+    assign predict_history = history_reg;
+
+endmodule
+[2026-05-12 20:22:39,350 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -o ./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/sim_output.vvp ./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/tb.sv ./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv; vvp -n ./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/sim_output.vvp
+[2026-05-12 20:22:39,448 - mage.sim_reviewer - INFO] Simulation is_pass: True, mismatch_cnt: 0, golden_tb_format: True
+output: {
+    "stdout": "VCD info: dumpfile wave.vcd opened for output.\n./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/tb.sv:104: $finish called at 10276 (1ps)\nHint: Output 'predict_history' has no mismatches.\nHint: Total mismatched samples is 0 out of 2055 samples\n\nSimulation finished at 10276 ps\nMismatches: 0 in 2055 samples\n",
+    "stderr": ""
+}
+[2026-05-12 20:22:39,448 - mage.token_counter - INFO] RTLGenerator cnt         : in        0 tokens, out        0 tokens
+[2026-05-12 20:22:39,448 - mage.token_counter - INFO] Total cnt                : in        0 tokens, out        0 tokens
+[2026-05-12 20:22:39,448 - mage.token_counter - INFO] Total cost               : $0.00 USD
+[2026-05-12 20:22:39,456 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -s tb -o ./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/sim_golden.vvp ./verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv ./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_ref.sv; vvp -n ./output_t22_gemma4_26b_full_0/VERILOG_EVAL_V2_Prob118_history_shift/sim_golden.vvp
+[2026-05-12 20:22:39,554 - mage.sim_reviewer - INFO] Golden simulation is_pass: True, 
+output: {
+    "stdout": "VCD info: dumpfile wave.vcd opened for output.\n./verilog-eval/dataset_spec-to-rtl/Prob118_history_shift_test.sv:104: $finish called at 10276 (1ps)\nHint: Output 'predict_history' has no mismatches.\nHint: Total mismatched samples is 0 out of 2055 samples\n\nSimulation finished at 10276 ps\nMismatches: 0 in 2055 samples\n",
+    "stderr": ""
+}

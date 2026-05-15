@@ -1,0 +1,218 @@
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generation Module (Unchanged)
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output logic [99:0] in
+);
+	initial begin
+		in <= $random;
+	repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+	end	
+	#1 $finish;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_both;
+		int errortime_out_both;
+		int errors_out_any;
+		int errortime_out_any;
+		int errors_out_different;
+		int errortime_out_different;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// State capture variables for first error display (Combinational Logic Requirement)
+	logic [99:0] first_error_in_both; 
+	logic [99:0] first_error_ref_both; 
+	logic [99:0] first_error_dut_both; 
+	int first_error_time_both = -1;
+
+	logic [99:0] first_error_in_any; 
+	logic [99:0] first_error_ref_any; 
+	logic [99:0] first_error_dut_any; 
+	int first_error_time_any = -1;
+
+	logic [99:0] first_error_in_diff; 
+	logic [99:0] first_error_ref_diff; 
+	logic [99:0] first_error_dut_diff; 
+	int first_error_time_diff = -1;
+
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [99:0] in;
+	logic [99:0] out_both_ref;
+	logic [99:0] out_both_dut;
+	logic [99:0] out_any_ref;
+	logic [99:0] out_any_dut;
+	logic [99:0] out_different_ref;
+	logic [99:0] out_different_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_both_ref,out_both_dut,out_any_ref,out_any_dut,out_different_ref,out_different_dut );
+	end
+
+	wire tb_match; 
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate Stimulus Generator
+	stimulus_gen stim1 (
+		.clk,
+		.tb_match,
+		in );
+	
+	// Instantiate Reference Model (Golden)
+	RefModule good1 (
+		.in,
+		out_both(out_both_ref),
+		out_any(out_any_ref),
+		out_different(out_different_ref) );
+	
+	// Instantiate Device Under Test (DUT)
+	TopModule top_module1 (
+		in,
+		out_both(out_both_dut),
+		out_any(out_any_dut),
+		out_different(out_different_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end	task
+
+	final begin
+		if (stats1.errors_out_both) begin
+			$display("Hint: Output 'out_both' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_out_both, stats1.errortime_out_both);
+			$display("--- Mismatch Details (out_both) ---");
+			$display("Time: %0d ps", stats1.errortime_out_both);
+			$display("Input IN: %h", first_error_in_both);
+			$display("Reference OUT_BOTH: %h", first_error_ref_both);
+			$display("DUT OUT_BOTH: %h", first_error_dut_both);
+			$display("-----------------------------------");
+		end
+		else $display("Hint: Output 'out_both' has no mismatches.");
+		if (stats1.errors_out_any) begin
+			$display("Hint: Output 'out_any' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_out_any, stats1.errortime_out_any);
+			$display("--- Mismatch Details (out_any) ---");
+			$display("Time: %0d ps", stats1.errortime_out_any);
+			$display("Input IN: %h", first_error_in_any);
+			$display("Reference OUT_ANY: %h", first_error_ref_any);
+			$display("DUT OUT_ANY: %h", first_error_dut_any);
+			$display("-----------------------------------");
+		end
+		else $display("Hint: Output 'out_any' has no mismatches.");
+		if (stats1.errors_out_different) begin
+			$display("Hint: Output 'out_different' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_out_different, stats1.errortime_out_different);
+			$display("--- Mismatch Details (out_different) ---");
+			$display("Time: %0d ps", stats1.errortime_out_different);
+			$display("Input IN: %h", first_error_in_diff);
+			$display("Reference OUT_DIFFERENT: %h", first_error_ref_diff);
+			$display("DUT OUT_DIFFERENT: %h", first_error_dut_diff);
+			$display("-----------------------------------");
+		end
+		else $display("Hint: Output 'out_different' has no mismatches.");
+
+		// Final Summary
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+	// Verification Check: XORing all results against each other to check for any difference
+	assign tb_match = ( { out_both_ref, out_any_ref, out_different_ref } === ( { out_both_ref, out_any_ref, out_different_ref } ^ { out_both_dut, out_any_dut, out_different_dut } ^ { out_both_ref, out_any_ref, out_different_ref } ) );
+
+	// Verification and State Logging (Combinational Logic Check)
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		
+		// Global Mismatch Tracking (Original Logic)
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+
+		// --- Output_Both Tracking ---
+		if (out_both_ref !== out_both_dut) begin // Simplified comparison
+			if (stats1.errors_out_both == 0) begin
+				stats1.errortime_out_both = $time;
+				first_error_time_both = $time;
+				first_error_in_both = in;
+				first_error_ref_both = out_both_ref;
+				first_error_dut_both = out_both_dut;
+			end
+			sstats1.errors_out_both = stats1.errors_out_both+1'b1;
+		end
+
+		// --- Output_Any Tracking ---
+		if (out_any_ref !== out_any_dut) begin // Simplified comparison
+			if (stats1.errors_out_any == 0) begin
+				stats1.errortime_out_any = $time;
+				first_error_time_any = $time;
+				first_error_in_any = in;
+				first_error_ref_any = out_any_ref;
+				first_error_dut_any = out_any_dut;
+			end
+			sstats1.errors_out_any = stats1.errors_out_any+1'b1;
+		end
+
+		// --- Output_Different Tracking ---
+		if (out_different_ref !== out_different_dut) begin // Simplified comparison
+			if (stats1.errors_out_different == 0) begin
+				stats1.errortime_out_different = $time;
+				first_error_time_diff = $time;
+				first_error_in_diff = in;
+				first_error_ref_diff = out_different_ref;
+				first_error_dut_diff = out_different_dut;
+			end
+			sstats1.errors_out_different = stats1.errors_out_different+1'b1;
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+// Placeholder for RefModule to allow compilation of the testbench
+module RefModule (
+    input  logic [99:0] in,
+    output logic [99:0] out_both,
+    output logic [99:0] out_any,
+    output logic [99:0] out_different
+);
+    // Implementation of reference model based on spec
+    assign out_both = in[1:100] & in[0:99]; // Simplified placeholder logic
+    assign out_any = in[0:99] | in[1:100]; // Simplified placeholder logic
+    assign out_different = in ^ circshift(in, 1); // Simplified placeholder logic
+endmodule

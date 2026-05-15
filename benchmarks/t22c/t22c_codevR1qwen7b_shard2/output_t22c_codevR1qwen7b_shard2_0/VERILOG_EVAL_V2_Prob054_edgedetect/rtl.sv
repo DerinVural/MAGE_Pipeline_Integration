@@ -1,0 +1,1 @@
+module TopModule (input clk, input [7:0] in, output [7:0] pedge); logic [7:0] in_prev; logic [7:0] pedge_reg; assign pedge = pedge_reg; always @(posedge clk) begin in_prev <= in; end always @(*) begin pedge_reg = in & ~in_prev; end endmodule

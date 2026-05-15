@@ -1,0 +1,185 @@
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg a, b, c, d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b,c,d} <= 4'b0;
+		wavedrom_start();
+		repeat(16) @(posedge clk)
+			{a,b,c,d} <= count++;	
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{d,c,b,a} <= $urandom;
+			
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input  logic a,
+	input  logic b,
+	input  logic c,
+	input  logic d,
+	output logic out
+);
+    always_comb begin
+        case ({c, d, a, b})
+            // cd=00: ab=01(X), 00(0), 10(1), 11(1)
+            4'b00_01: out = 1'bx;
+            4'b00_00: out = 1'b0;
+            4'b00_10: out = 1'b1;
+            4'b00_11: out = 1'b1;
+            // cd=01: ab=01(0), 00(0), 10(X), 11(X)
+            4'b01_01: out = 1'b0;
+            4'b01_00: out = 1'b0;
+            4'b01_10: out = 1'bx;
+            4'b01_11: out = 1'bx;
+            // cd=11: ab=01(0), 00(1), 10(1), 11(1)
+            4'b11_01: out = 1'b0;
+            4'b11_00: out = 1'b1;
+            4'b11_10: out = 1'b1;
+            4'b11_11: out = 1'b1;
+            // cd=10: ab=01(0), 00(1), 10(1), 11(1)
+            4'b10_01: out = 1'b0;
+            4'b10_00: out = 1'b1;
+            4'b10_10: out = 1'b1;
+            4'b10_11: out = 1'b1;
+            default:  out = 1'bx;
+        endcase
+    end
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic c;
+	logic d;
+	logic out_ref;
+	logic out_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,out_ref,out_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b,
+		.c,
+		.d );
+	RefModule good1 (
+		.a,
+		.b,
+		.c,
+		.d,
+		.out(out_ref) );
+		
+	TopModule top_module1 (
+		.a,
+		.b,
+		.c,
+		.d,
+		.out(out_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	assign tb_match = ( { out_ref } === ( { out_ref } ^ { out_dut } ^ { out_ref } ) );
+	
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+				$display("FIRST MISMATCH DETECTED at time %0t:", $time);
+				$display("Inputs: a=%b, b=%b, c=%b, d=%b", a, b, c, d);
+				$display("Outputs: DUT=%b, Ref=%b", out_dut, out_ref);
+			stats1.errors++;
+		end
+
+		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+				$display("FIRST MISMATCH DETECTED at time %0t:", $time);
+				$display("Inputs: a=%b, b=%b, c=%b, d=%b", a, b, c, d);
+				$display("Outputs: DUT=%b, Ref=%b", out_dut, out_ref);
+			stats1.errors_out = stats1.errors_out+1'b1; 
+		end
+
+	end
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors_out != 0 || stats1.errors != 0) begin
+			if (stats1.errors_out != 0) 
+				$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+			else 
+				$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end else begin
+			$display("SIMULATION PASSED");
+		end
+		
+		if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+		else $display("Hint: Output '%s' has no mismatches.", "out");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule

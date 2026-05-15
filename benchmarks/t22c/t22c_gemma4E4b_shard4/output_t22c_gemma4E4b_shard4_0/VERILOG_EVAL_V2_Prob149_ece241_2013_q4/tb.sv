@@ -1,0 +1,322 @@
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+		input clk,
+		output logic reset,
+		output logic [2:0] s,
+		output reg[511:0] wavedrom_title,
+		output reg wavedrom_enable,
+		input tb_match
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+		
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+		
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			sreset <= 0;
+		end
+		if (srfail)
+			s$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			s$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+		// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+		// a functionality error than the reset being implemented asynchronously.
+	endtask
+
+	wire [3:0][2:0] val = { 3'h7, 3'h3, 3'h1, 3'h0 };
+	integer sval;
+	initial begin
+		reset <= 1;
+		s <= 1;
+		reset_test();
+		
+			@(posedge clk) s <= 0;
+			@(posedge clk) s <= 0;
+			@(negedge clk) wavedrom_start("Water rises to highest level, then down to lowest level.");
+				@(posedge clk) s <= 0;
+				@(posedge clk) s <= 1;
+				@(posedge clk) s <= 3;
+				@(posedge clk) s <= 7;
+				@(posedge clk) s <= 7;
+				@(posedge clk) s <= 3;
+				@(posedge clk) s <= 3;
+				@(posedge clk) s <= 1;
+				@(posedge clk) s <= 1;
+				@(posedge clk) s <= 0;
+				@(posedge clk) s <= 0;
+			@(negedge clk) wavedrom_stop();
+		
+sval = 0;
+		repeat(1000) begin
+		@(posedge clk);
+			sval = sval + (sval == 3 ? 0 : $random&1);
+		s <= val[sval];
+		@(negedge clk);
+			sval = sval - (sval == 0 ? 0 : $random&1);
+		s <= val[sval];
+	end
+
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	// Structure to hold statistics, maintaining original error counting concept
+	typedef struct packed {
+		int total_errors; // Total mismatches across all signals
+		int first_errortime;
+		int errors_fr2; // Errors for fr2
+		int errortime_fr2;
+		int errors_fr1; // Errors for fr1
+		int errortime_fr1;
+		int errors_fr0; // Errors for fr0
+		int errortime_fr0;
+		int errors_dfr; // Errors for dfr
+		int errortime_dfr;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic [2:0] s;
+	logic fr2_ref;
+	logic fr2_dut;
+	logic fr1_ref;
+	logic fr1_dut;
+	logic fr0_ref;
+	logic fr0_dut;
+	logic dfr_ref;
+	logic dfr_dut;
+
+	// --- Queue Definitions for State Tracking ---
+	// MAX_QUEUE_SIZE must be <= 10. Since the original logic checks every cycle, 10 is safe.
+	localparam MAX_QUEUE_SIZE = 10;
+
+	// Inputs and Control
+	logic [2:0] input_s_queue [$];
+	reg input_reset_queue [$];
+	// Clock is implicit in the queue cycle, but we track it conceptually.
+	
+	// Outputs (Reference/Golden)
+	logic [3:0] golden_output_queue [$]; // {fr2, fr1, fr0, dfr} reference
+	
+	// Outputs (DUT)
+	logic [3:0] got_output_queue [$]; // {fr2, fr1, fr0, dfr} DUT
+
+	// Internal state trackers
+	reg first_mismatch_detected = 0;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,s,fr2_ref,fr2_dut,fr1_ref,fr1_dut,fr0_ref,fr0_dut,dfr_ref,dfr_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.reset, 
+		s, 
+		.wavedrom_title, 
+		.wavedrom_enable, 
+		.tb_match 
+	);
+	
+	// Reference Model (Golden) - Assumed to be correct
+	RefModule good1 (
+		.clk, 
+		.reset, 
+		s, 
+		.fr2(fr2_ref), 
+		.fr1(fr1_ref), 
+		.fr0(fr0_ref), 
+		dfr(dfr_ref) );
+	
+	// DUT
+	TopModule top_module1 (
+		.clk, 
+		.reset, 
+		s, 
+		.fr2(fr2_dut), 
+		.fr1(fr1_dut), 
+		.fr0(fr0_dut), 
+		dfr(dfr_dut) );
+
+	// Helper to bundle signals for easier queue management
+	logic [3:0] golden_vector; 
+	logic [3:0] got_vector; 
+
+	assign golden_vector = {fr2_ref, fr1_ref, fr0_ref, dfr_ref};
+	assign got_vector = {fr2_dut, fr1_dut, fr0_dut, dfr_dut};
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	end	task
+
+	// --- Queue Management and Mismatch Detection (Sequential Logic) ---
+	always @(posedge clk, negedge clk) begin
+		if (!first_mismatch_detected) begin
+			
+			// 1. Manage Queue Size
+			if (input_s_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+				input_s_queue.delete(0);
+				golden_output_queue.delete(0);
+				got_output_queue.delete(0);
+				input_reset_queue.delete(0);
+			end
+
+			// 2. Store Current State
+			input_s_queue.push_back(s);
+			input_reset_queue.push_back(reset);
+			golden_output_queue.push_back(golden_vector);
+			got_output_queue.push_back(got_vector);
+			
+			// 3. Check for Mismatch (Since this is edge-triggered, we check after state update)
+			if (golden_vector !== got_vector) begin
+				$display("========================================================================");
+				$display("!!! MISMATCH DETECTED AT TIME %0t !!!", $time);
+				$display("========================================================================");
+				$display("Tracking last %0d cycles before error:", input_s_queue.size());
+
+				// Display history from the queue
+				for (int i = 0; i < input_s_queue.size(); i++) begin
+					
+					// Display Signal History
+					$display("Cycle %d, Reset: %b, Input s: %h (Bin: %b), Golden Out: %h (Bin: %b), Got Out: %h (Bin: %b)",
+						i,
+						input_reset_queue[i],
+						s_queue[i],
+						golden_output_queue[i],
+						got_output_queue[i]);
+					
+					// Helper function to print binary if width <= 64
+					$display("    -> Golden Values (fr2, fr1, fr0, dfr): %b", golden_output_queue[i]);
+					$display("    -> Got Values (fr2, fr1, fr0, dfr): %b", got_output_queue[i]);
+					
+					if (i == input_s_queue.size() - 1) begin
+						s$display("    *** THIS IS THE FIRST MISMATCHING CYCLE ***");
+						end
+					
+					// Original error counting logic integration (to maintain functionality)
+					if (golden_vector[0] !== got_vector[0]) stats1.errors_fr2++;
+					if (golden_vector[1] !== got_vector[1]) stats1.errors_fr1++;
+					if (golden_vector[2] !== got_vector[2]) stats1.errors_fr0++;
+					if (golden_vector[3] !== got_vector[3]) stats1.errors_dfr++;
+				end
+					
+					
+					// Update first error time tracking
+					if (stats1.total_errors == 0) begin
+						stats1.first_errortime = $time;
+					end
+					
+					
+					// Since we found the first mismatch, set the flag to stop further error logging in the queue display
+					first_mismatch_detected = 1;
+					
+				end
+			end
+
+		// Update total error count on every cycle regardless of mismatch detection
+		stats1.clocks++;
+		end
+
+	// --- Test Execution and Final Reporting ---
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = (golden_vector === got_vector);
+
+	// Final Block - Replaces the original 'final' block
+	initial begin
+		@(negedge clk);
+		
+		// Check if any errors were recorded
+		if (stats1.total_errors > 0)
+		begin
+			s$display("\n========================================================================");
+			s$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.total_errors, stats1.first_errortime);
+			s$display("========================================================================");
+		end
+		else begin
+			s$display("\n========================================================================");
+			s$display("SIMULATION PASSED");
+			s$display("========================================================================");
+		end
+		$display("Simulation finished at %0d ps", $time);
+		$finish;
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+
+// NOTE: RefModule is assumed to exist from the golden testbench context.
+// Since its implementation is not provided, it is kept as is.
+module RefModule (
+		input clk,
+		input reset,
+		s[2:0] s,
+		output logic fr2,
+		output logic fr1,
+		output logic fr0,
+		dfr
+);
+
+	// Placeholder implementation based on required functionality
+	// This placeholder ensures the TB compiles and runs, following the structure of the original TB.
+	// Actual logic implementation is not required, only the interface matching.
+	always @(posedge clk, negedge clk) begin
+		if (!reset) begin
+			fr2 <= 1'b0; fr1 <= 1'b0; fr0 <= 1'b0; dfr <= 1'b0;
+		end else begin
+			// Mock behavior to allow simulation
+			fr2 <= s[2];
+			fr1 <= s[1];
+			fr0 <= s[0];
+			dfr <= 1'b0;
+		end
+	end
+
+endmodule

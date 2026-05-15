@@ -1,0 +1,107 @@
+`timescale 1ps/1ps
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out;
+        int errortime_out;
+        int clocks;
+    } stats;
+    stats stats1;
+    wire clk = 0;
+    reg resetn;
+    reg in;
+    wire out;
+    reg [511:0] input_queue [0:9];
+    reg [511:0] got_output_queue [0:9];
+    reg [511:0] golden_queue [0:9];
+    reg [511:0] reset_queue [0:9];
+    localparam MAX_QUEUE_SIZE = 10;
+    reg [1:0] match_detected = 0;
+    reg [511:0] expected_output;
+    reg [511:0] current_input;
+    reg [511:0] current_reset;
+    wire tb_match = (out === expected_output);
+    wire tb_mismatch = ~tb_match;
+    reg [511:0] clk_history [0:9];
+    reg [511:0] reset_history [0:9];
+    reg [511:0] in_history [0:9];
+    reg [511:0] out_history [0:9];
+
+    initial begin
+        clk = 0;
+        forever #5 clk = ~clk;
+    end
+
+    // Clock generation
+    initial begin
+        resetn = 0;
+        in = 0;
+        #25 resetn = 1;
+        #10 $finish;
+    end
+
+    // Stimulus generation
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, tb, clk, resetn, in, out);
+    end
+
+    // Reference module (assuming same as DUT for simplicity)
+    reg expected_out;
+    always @(posedge clk) begin
+        if (!resetn) expected_out <= 0;
+        else expected_out <= {expected_out[2:0], in};
+    end
+
+    // DUT instantiation
+    TopModule dut (
+        .clk(clk),
+        .resetn(resetn),
+        .in(in),
+        .out(out)
+    );
+
+    // Mismatch detection
+    always @(posedge clk, negedge clk) begin
+        if (match_detected == 0) begin
+            if (!tb_match) begin
+                if (stats1.errors == 0) stats1.errortime = $time;
+                stats1.errors = stats1.errors + 1;
+            end
+            // Store inputs and outputs for mismatch display
+            if ($time >= 1000 && $time <= 100000) begin
+                input_queue[input_queue.size()] = {clk, resetn, in};
+                got_output_queue[input_queue.size()] = out;
+                golden_queue[input_queue.size()] = expected_out;
+                reset_queue[input_queue.size()] = resetn;
+                if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+                    input_queue.delete(0);
+                    got_output_queue.delete(0);
+                    golden_queue.delete(0);
+                    reset_queue.delete(0);
+                end
+            end
+        end
+        stats1.clocks = stats1.clocks + 1;
+    end
+
+    // Timeout after 100K cycles
+    initial begin
+        #100000 $display("TIMEOUT");
+        $finish;
+    end
+
+    // Display final results
+    final begin
+        if (stats1.errors_out == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+            // Display the first mismatch from the queue
+            $display("Cycle %0d, reset %b, in %b, got output %b, exp output %b",
+                0, reset_queue[0], in_history[0], got_output_queue[0], golden_queue[0]);
+            // ... rest of the code to display all queues if needed
+        end
+    end
+endmodule

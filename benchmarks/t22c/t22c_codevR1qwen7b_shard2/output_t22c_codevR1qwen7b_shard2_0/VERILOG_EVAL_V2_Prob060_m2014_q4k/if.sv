@@ -1,0 +1,6 @@
+module TopModule (
+    input clk,
+    input resetn,
+    input in,
+    output out
+);

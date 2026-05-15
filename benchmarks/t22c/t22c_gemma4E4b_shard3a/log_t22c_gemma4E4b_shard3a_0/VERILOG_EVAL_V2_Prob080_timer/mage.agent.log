@@ -1,0 +1,1068 @@
+[2026-05-15 10:37:35,687 - mage.agent - INFO] Initial tb:
+[2026-05-15 10:37:35,689 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen(
+	input clk, 
+	output logic load, 
+	output logic [9:0] data, 
+	input tb_match,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	output int wavedrom_hide_after_time
+);
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+endtask
+	
+	task wavedrom_stop;
+		#1;
+endtask	
+
+	initial begin
+		load <= 1'b0;
+		wavedrom_start("Count 3, then 10 cycles");
+		@(posedge clk) {data, load} <= {10'd3, 1'b1};
+		@(posedge clk) {data, load} <= {10'hx, 1'b0};
+		@(posedge clk) load <= 0;
+		@(posedge clk) load <= 0;
+		@(posedge clk) load <= 0;
+		@(posedge clk) {data, load} <= {10'd10, 1'b1};
+		@(posedge clk) {data, load} <= {10'hx, 1'b0};
+		repeat(12) @(posedge clk);
+		wavedrom_stop();
+
+		@(posedge clk) {load, data} <= {1'b1, 10'h10};
+		@(posedge clk) {load, data} <= {1'b0, 10'h10};
+		@(posedge clk) {load, data} <= {1'b1, 10'h0};   // Load 0
+		@(posedge clk) {load, data} <= {1'b1, 10'h3ff}; // Load 1023
+		@(posedge clk) {load, data} <= {1'b0, 10'h0};
+		repeat(1040) @(posedge clk);
+
+		repeat(2500) @(posedge clk) begin
+		load <= !($urandom & 10'hf);
+		data <= $urandom_range(0,32);
+		end
+
+		#1 $finish;
+	end
+
+endmodule
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_tc;
+		int errortime_tc;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic load;
+	logic [9:0] data;
+	logic tc_ref;
+	logic tc_dut;
+
+	// --- Queue Declarations for improved logging ---
+	localparam MAX_QUEUE_SIZE = 11; // Sufficient for 10-bit counter + safety
+	
+	reg [9:0] input_data_queue [$]; // Data input
+	reg load_queue [$];             // Load input
+	reg tc_ref_queue [$];           // Reference output
+	reg tc_dut_queue [$];           // DUT output
+	reg tb_match_queue [$];         // Match status
+	
+	// For tracking error time and count as per original logic
+	int total_errors = 0;
+	int first_error_time = 0;
+	int tc_errors = 0;
+	int first_tc_error_time = 0;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,load,data,tc_ref,tc_dut );
+	end
+
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		.load, 
+		.data );
+	RefModule good1 (
+		.clk, 
+		.load, 
+		.data,
+		.tc(tc_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		.load,
+		.data,
+		.tc(tc_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end	task
+
+
+	// --- Queue and Mismatch Detection Logic (Clocked) ---
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		// Queue management: Keep size <= MAX_QUEUE_SIZE - 1
+		if (input_data_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_data_queue.delete(0);
+			load_queue.delete(0);
+			tc_ref_queue.delete(0);
+			tc_dut_queue.delete(0);
+			tb_match_queue.delete(0);
+		end
+
+		// Store current state
+		input_data_queue.push_back(data);
+		load_queue.push_back(load);
+		tc_ref_queue.push_back(tc_ref);
+		tc_dut_queue.push_back(tc_dut);
+		
+		// Check for mismatch (Original condition: tc_ref !== tc_dut)
+		tb_match = ( { tc_ref } === ( { tc_ref } ^ { tc_dut } ^ { tc_ref } ) );
+		tb_match_queue.push_back(tb_match);
+
+		// Error counting based on original logic
+		if (!tb_match) begin
+			if (total_errors == 0) total_errors = 1; // Flag first error occurrence
+			first_error_time = $time;
+			total_errors++;
+		end
+
+		// Specific TC error counting
+		if (tc_ref !== tc_dut) begin
+			if (tc_errors == 0) first_tc_error_time = $time;
+			tc_errors++;
+		end
+	end
+
+	// --- Final Reporting --- 
+	final begin
+		if (tc_errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", tc_errors, first_tc_error_time);
+			$display("Detailed TC Mismatch Log:");
+			for (int i = 0; i < input_data_queue.size(); i++) begin
+				$display("Cycle %d, Input Data: %h, Ref TC: %b, Got TC: %b",
+				i, input_data_queue[i], tc_ref_queue[i], tc_dut_queue[i]);
+			end
+		end
+		
+		if (total_errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_errors, first_error_time);
+			end
+		
+		if (total_errors == 0 && tc_errors == 0) begin
+			$display("SIMULATION PASSED");
+		end
+		$display("Simulation finished at %0d ps", $time);
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-15 10:37:35,690 - mage.agent - INFO] Initial if:
+[2026-05-15 10:37:35,690 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic load,
+    input  logic [9:0] data,
+    output logic tc
+);
+endmodule
+[2026-05-15 10:37:35,696 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk,
+ - input  load,
+ - input  data (10 bits)
+ - output tc
+
+The module should implement a timer that counts down for a given number
+of clock cycles, then asserts a signal to indicate that the given
+duration has elapsed. A good way to implement this is with a down-counter
+that asserts an output signal when the count becomes 0. At each clock
+cycle:
+
+  (1) If load = 1, load the internal counter with the 10-bit data, the
+  number of clock cycles the timer should count before timing out. The
+  counter can be loaded at any time, including when it is still counting
+  and has not yet reached 0.
+
+  (2) If load = 0, the internal counter should decrement by 1. The output
+  signal tc ("terminal count") indicates whether the internal counter has
+  reached 0. Once the internal counter has reached 0, it should stay 0
+  (stop counting) until the counter is loaded again.
+
+The module should implement a single D flip-flop. Assume all sequential
+logic is triggered on the positive edge of the clock.
+
+
+[2026-05-15 10:37:55,965 - mage.agent - INFO] Initial rtl:
+[2026-05-15 10:37:55,966 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic load,
+    input  logic [9:0] data,
+    output logic tc
+);
+
+    // Internal counter: 10 bits wide
+    logic [9:0] counter;
+
+    // Combinational assignment for output tc
+    // tc is high when the counter reaches 0
+    assign tc = (counter == 10'h0);
+
+    // Sequential logic (Counter update)
+    always @(posedge clk)
+    begin
+        if (load) begin
+            // (1) Load operation: Load counter with 'data'
+            counter <= data;
+        end else begin
+            // (2) Decrement operation: Decrement by 1, but hold at 0 if already 0
+            if (counter > 10'h0) begin
+                counter <= counter - 1;
+            end else begin
+                // Stop counting: If it's 0, it stays 0
+                counter <= 10'h0;
+            end
+        end
+    end
+
+    // Initialization (Requirement #3: Initialize sequential elements)
+    initial begin
+        counter = 10'h0;
+    end
+
+endmodule
+[2026-05-15 10:38:01,633 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-15 10:39:41,740 - mage.agent - INFO] Revised tb:
+[2026-05-15 10:39:41,740 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen(
+	input clk,
+	output logic load,
+	output logic [9:0] data,
+	input tb_match,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable,
+	output int wavedrom_hide_after_time
+);
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+endtask
+	
+	task wavedrom_stop;
+		h#1;
+endtask
+	
+		initial begin
+			load <= 1'b0;
+			wavedrom_start("Count 3, then 10 cycles");
+			@(posedge clk) {data, load} <= {10'd3, 1'b1};
+			@(posedge clk) {data, load} <= {10'hx, 1'b0};
+			@(posedge clk) load <= 0;
+			@(posedge clk) load <= 0;
+			@(posedge clk) load <= 0;
+			@(posedge clk) {data, load} <= {10'd10, 1'b1};
+			@(posedge clk) {data, load} <= {10'hx, 1'b0};
+			repeat(12) @(posedge clk);
+		wavedrom_stop();
+
+			@(posedge clk) {load, data} <= {1'b1, 10'h10};
+			@(posedge clk) {load, data} <= {1'b0, 10'h10};
+			@(posedge clk) {load, data} <= {1'b1, 10'h0};   // Load 0
+			@(posedge clk) {load, data} <= {1'b1, 10'h3ff}; // Load 1023
+			@(posedge clk) {load, data} <= {1'b0, 10'h0};
+			repeat(1040) @(posedge clk);
+
+			repeat(2500) @(posedge clk) begin
+			load <= !($urandom & 10'hf);
+			data <= $urandom_range(0,32);
+			end
+
+			#1 $finish;
+		end
+
+endmodule
+
+module tb();
+
+	typeof stats;
+	struct packed {
+		int errors;
+		int errortime;
+		int errors_tc;
+		int errortime_tc;
+		int clocks;
+	};
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic load;
+	logic [9:0] data;
+	logic tc_ref;
+	logic tc_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,load,data,tc_ref,tc_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.load, 
+		data, 
+		.tb_match,
+		wavedrom_title,
+		wavedrom_enable,
+		wavedrom_hide_after_time
+);
+	RefModule good1 (
+		.clk, 
+		.load, 
+		.data,
+		.tc(tc_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		.load,
+		.data,
+		.tc(tc_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+
+
+	// Helper function to display signals in HEX and BIN if width <= 64	
+	task display_signals;
+		input string label;
+		input logic [511:0] signal;
+		input string type;
+		begin
+			$write("\n--- Signal Dump: %s at time %0t ---\n", label, $time);
+			$write("| %s | %h | %b |
+", type, signal, signal);
+		end
+	endtask
+
+	// Overload for single bits
+	task display_signals_1bit;
+		input string label;
+		input logic signal;
+		begin
+			$write("\n--- Signal Dump: %s at time %0t ---\n", label, $time);
+			$write("| %s | %b |
+", label, signal);
+		end
+	endtask
+
+	// Function to handle display logic
+	function void display_signal_formatted(input string name, input logic signal, input logic [9:0] data_sig, input logic tc_sig, input logic [511:0] wavedrom_sig);
+		begin
+			display_signals_1bit(name + "_load", signal);
+			display_signals_1bit(name + "_tc_ref", tc_sig);
+			display_signals_1bit(name + "_tc_dut", tc_sig);
+			display_signals_1bit(name + "_tb_match", signal);
+			display_signals_1bit(name + "_tb_mismatch", signal);
+			display_signals_1bit(name + "_clk", signal);
+			display_signals_1bit(name + "_data", data_sig);
+			display_signals_1bit(name + "_wavedrom_title", wavedrom_sig);
+		end
+	endfunction
+
+	
+		// Initialize stats
+		stats1 = '{errors: 0, errortime: 0, errors_tc: 0, errortime_tc: 0, clocks: 0};
+	
+		// Store context for first mismatch
+		logic [9:0] first_mismatch_data_ref = 0;
+		logic [9:0] first_mismatch_data_dut = 0;
+		logic first_mismatch_tc_ref = 0;
+		logic first_mismatch_tc_dut = 0;
+		
+		// Main clock/verification loop
+		always @(posedge clk)
+		begin
+			stats1.clocks++;
+
+			// Check main match (tb_match logic)
+			if (!tb_match) begin
+				if (stats1.errors == 0) stats1.errortime = $time;
+				stats1.errors++;
+				
+				// Log first mismatch details
+				if (stats1.errors == 1) begin
+					$display("\n========================================================================");
+					$display("!!! FIRST MISMATCH DETECTED !!!");
+					$display("Time: %0t ps", $time);
+					$display("------------------------------------------------------------------------");
+					$display("--- Inputs ---");
+					display_signals_1bit("INPUT_clk", clk, data, tc_ref, wavedrom_title);
+					$write("| load | %b | data | %h | %b |
+", load, data, data);
+					$write("| tb_match | %b | tb_mismatch | %b |
+", tb_match, tb_mismatch);
+					$display("--- Outputs (DUT/REF) ---");
+					display_signals_1bit("OUTPUT_tc_ref", tc_ref);
+					display_signals_1bit("OUTPUT_tc_dut", tc_dut);
+					$display("========================================================================\n");
+				end
+				// Store data for subsequent error logging if needed (though requirement only asks for first error details)
+			if (stats1.errors == 1) begin
+					first_mismatch_data_ref = data;
+					first_mismatch_data_dut = data;
+					first_mismatch_tc_ref = tc_ref;
+					first_mismatch_tc_dut = tc_dut;
+				end
+			end
+
+		// Check specific TC mismatch
+			if (tc_ref !== tc_dut) begin
+			if (stats1.errors_tc == 0) stats1.errortime_tc = $time;
+			stats1.errors_tc++;
+			end
+			
+			// Detailed logging for TC mismatch (if it is the first one)
+			if (stats1.errors_tc == 1) begin
+				$display("\n========================================================================");
+				$display("!!! FIRST TC MISMATCH DETECTED !!!");
+				$display("Time: %0t ps", $time);
+				$display("------------------------------------------------------------------------");
+				$display("--- Inputs ---");
+				display_signals_1bit("INPUT_clk", clk, data, tc_ref, wavedrom_title);
+				$write("| load | %b | data | %h | %b |
+", load, data, data);
+				$write("| tb_match | %b | tb_mismatch | %b |
+", tb_match, tb_mismatch);
+				$display("--- Outputs (DUT/REF) ---");
+				display_signals_1bit("OUTPUT_tc_ref", tc_ref);
+				display_signals_1bit("OUTPUT_tc_dut", tc_dut);
+				$display("========================================================================\n");
+			end
+		end
+
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Reporting
+	initial begin
+		@(negedge clk);
+		#1; // Wait slightly after simulation ends to ensure all logs print
+
+		if (stats1.errors == 0 && stats1.errors_tc == 0) begin
+			$display("\n========================================================================");
+			$display("SIMULATION PASSED");
+			$display("========================================================================\n");
+			$finish();
+		end else begin
+			int total_mismatches = stats1.errors + stats1.errors_tc;
+			int first_error_time = (stats1.errors == 0) ? stats1.errortime_tc : stats1.errortime;
+
+			$display("\n========================================================================");
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_error_time);
+			$display("========================================================================\n");
+			$finish();
+		end
+	endmodule
+
+[2026-05-15 10:41:28,931 - mage.agent - INFO] Revised tb:
+[2026-05-15 10:41:28,931 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen(
+	input clk,
+	output logic load,
+	output logic [9:0] data,
+	input tb_match,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable,
+	output int wavedrom_hide_after_time
+);
+
+
+	task wavedrom_start(input[511:0] title = "");
+endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+	
+	initial begin
+		load <= 1'b0;
+		wavedrom_start("Count 3, then 10 cycles");
+		@(posedge clk) {data, load} <= {10'd3, 1'b1};
+		@(posedge clk) {data, load} <= {10'hx, 1'b0};
+		@(posedge clk) load <= 0;
+		@(posedge clk) load <= 0;
+		@(posedge clk) load <= 0;
+		@(posedge clk) {data, load} <= {10'd10, 1'b1};
+		@(posedge clk) {data, load} <= {10'hx, 1'b0};
+		repeat(12) @(posedge clk);
+		wavedrom_stop();
+
+		@(posedge clk) {load, data} <= {1'b1, 10'h10};
+		@(posedge clk) {load, data} <= {1'b0, 10'h10};
+		@(posedge clk) {load, data} <= {1'b1, 10'h0};   // Load 0
+		@(posedge clk) {load, data} <= {1'b1, 10'h3ff}; // Load 1023
+		@(posedge clk) {load, data} <= {1'b0, 10'h0};
+		repeat(1040) @(posedge clk);
+
+		repeat(2500) @(posedge clk) begin
+		load <= !($urandom & 10'hf);
+		data <= $urandom_range(0,32);
+		end
+
+		#1 $finish;
+	end
+
+endmodule
+module tb();
+
+	// Define statistics structure
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_tc;
+		int errortime_tc;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic load;
+	logic [9:0] data;
+	logic tc_ref;
+	logic tc_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Note: tb_mismatch is defined later, but we must match the original dumpvars list structure if possible.
+		// Since tb_match relies on tb_mismatch, we dump the signals available.
+		$dumpvars(1, stimulus_gen.stim1, clk, load, data, tc_ref, tc_dut, tb_match, wavedrom_title);
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.load, 
+		.data, 
+		.tb_match, 
+		wavedrom_title, 
+		wavedrom_enable, 
+		wavedrom_hide_after_time
+);
+	RefModule good1 (
+		.clk, 
+		.load, 
+		.data,
+		tc(tc_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		.load,
+		.data,
+		tc(tc_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+	
+	// Helper function to display signals in HEX and BIN if width <= 64	
+	task display_signals;
+		input string label;
+		input logic [511:0] signal;
+		input string type;
+		
+		begin
+			$write("\n--- Signal Dump: %s at time %0t ---\n", label, $time);
+			// Check width constraint for BIN display
+			if (signal.size() <= 64) begin
+				$write("| %s | %h | %b |
+", type, signal, signal);
+			end else begin
+				$write("| %s | %h |
+", type, signal);
+			end
+		end
+	endtask
+
+	// Overload for single bits
+	task display_signals_1bit;
+		input string label;
+		input logic signal;
+		
+		begin
+			$write("\n--- Signal Dump: %s at time %0t ---\n", label, $time);
+			$write("| %s | %b |
+", label, signal);
+		end
+	endtask
+
+	// Function to handle display logic
+	function void display_signal_formatted(input string name, input logic signal, input logic [9:0] data_sig, input logic tc_sig, input logic [511:0] wavedrom_sig);
+		begin
+			display_signals_1bit(name + "_load", signal);
+			display_signals_1bit(name + "_tc_ref", tc_sig);
+			display_signals_1bit(name + "_tc_dut", tc_sig);
+			display_signals_1bit(name + "_tb_match", signal);
+			display_signals_1bit(name + "_tb_mismatch", signal);
+			display_signals_1bit(name + "_clk", signal);
+			display_signals_1bit(name + "_data", data_sig);
+			display_signals_1bit(name + "_wavedrom_title", wavedrom_sig);
+		endfunction
+
+	// Initialize stats
+	initial begin
+		stats1 = '{errors: 0, errortime: 0, errors_tc: 0, errortime_tc: 0, clocks: 0};
+		// Initialize mismatch tracking variables
+		logic [9:0] first_mismatch_data_ref = 0;
+		logic [9:0] first_mismatch_data_dut = 0;
+		logic first_mismatch_tc_ref = 0;
+		logic first_mismatch_tc_dut = 0;
+		end
+
+	// Main clock/verification loop
+	always @(posedge clk) begin
+		stats1.clocks++;
+		
+		// Check main match (tb_match logic)
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			
+			// Log first mismatch details
+			if (stats1.errors == 1) begin
+				$display("\n======================================================================\n");
+				$display("!!! FIRST MISMATCH DETECTED (tb_match) !!!");
+				$display("Time: %0t ps", $time);
+				$display("------------------------------------------------------------------------");
+				$display("--- Inputs --- (Load, Data, Clk, Wavedrom)");
+				display_signals_1bit("INPUT_clk", clk);
+				$write("| load | %b | data | %h |
+", load, data);
+				display_signals_1bit("INPUT_tb_match", tb_match);
+				$write("| tb_mismatch | %b |
+", tb_mismatch);
+				$display("--- Outputs (DUT/REF) --- (TC)");
+				display_signals_1bit("OUTPUT_tc_ref", tc_ref);
+				display_signals_1bit("OUTPUT_tc_dut", tc_dut);
+			$display("========================================================================\n");
+			end
+			// Store data for subsequent error logging if needed
+			if (stats1.errors == 1) begin
+				first_mismatch_data_ref = data;
+				first_mismatch_data_dut = data;
+				first_mismatch_tc_ref = tc_ref;
+				first_mismatch_tc_dut = tc_dut;
+			end
+		end
+
+		// Check specific TC mismatch
+		if (tc_ref !== tc_dut) begin
+			if (stats1.errors_tc == 0) stats1.errortime_tc = $time;
+			sstats1.errors_tc++;
+		end
+		
+		// Detailed logging for TC mismatch (if it is the first one)
+		if (stats1.errors_tc == 1) begin
+			$display("\n======================================================================\n");
+			$display("!!! FIRST TC MISMATCH DETECTED !!!");
+			$display("Time: %0t ps", $time);
+			$display("------------------------------------------------------------------------");
+			$display("--- Inputs --- (Load, Data, Clk, Wavedrom)");
+			display_signals_1bit("INPUT_clk", clk);
+			$write("| load | %b | data | %h |
+", load, data);
+			display_signals_1bit("INPUT_tb_match", tb_match);
+			$write("| tb_mismatch | %b |
+", tb_mismatch);
+			$display("--- Outputs (DUT/REF) --- (TC)");
+			display_signals_1bit("OUTPUT_tc_ref", tc_ref);
+			display_signals_1bit("OUTPUT_tc_dut", tc_dut);
+			$display("========================================================================\n");
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Reporting
+	initial begin
+		// Wait for simulation to settle before final report
+		@(negedge clk);
+		#1;
+		
+		int total_mismatches = stats1.errors + stats1.errors_tc;
+		int first_error_time = 0;
+		
+		// Determine the absolute first error time
+		if (stats1.errors > 0 && (stats1.errors_tc == 0 || stats1.errortime < stats1.errortime_tc)) begin
+			first_error_time = stats1.errortime;
+		end else if (stats1.errors_tc > 0) begin
+			first_error_time = stats1.errortime_tc;
+		end
+		
+		if (total_mismatches == 0) begin
+			$display("\n======================================================================\n");
+			$display("SIMULATION PASSED");
+			$display("========================================================================\n");
+		end else begin
+			$display("\n======================================================================\n");
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_error_time);
+			$display("========================================================================\n");
+		end
+		$finish();
+	endmodule
+[2026-05-15 10:43:15,505 - mage.agent - INFO] Revised tb:
+[2026-05-15 10:43:15,505 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen(
+	input clk,
+	output logic load,
+	output logic [9:0] data,
+	input tb_match,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable,
+	output int wavedrom_hide_after_time
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask
+	
+	initial begin
+		load <= 1'b0;
+		wavedrom_start("Count 3, then 10 cycles");
+		@(posedge clk) {data, load} <= {10'd3, 1'b1};
+		@(posedge clk) {data, load} <= {10'hx, 1'b0};
+		@(posedge clk) load <= 0;
+		@(posedge clk) load <= 0;
+		@(posedge clk) load <= 0;
+		@(posedge clk) {data, load} <= {10'd10, 1'b1};
+		@(posedge clk) {data, load} <= {10'hx, 1'b0};
+		repeat(12) @(posedge clk);
+		wavedrom_stop();
+
+		@(posedge clk) {load, data} <= {1'b1, 10'h10};
+		@(posedge clk) {load, data} <= {1'b0, 10'h10};
+		@(posedge clk) {load, data} <= {1'b1, 10'h0};   // Load 0
+		@(posedge clk) {load, data} <= {1'b1, 10'h3ff}; // Load 1023
+		@(posedge clk) {load, data} <= {1'b0, 10'h0};
+		repeat(1040) @(posedge clk);
+
+		repeat(2500) @(posedge clk) begin
+		load <= !(
+			$urandom & 10'hf);
+		data <= $urandom_range(0,32);
+		end
+
+		h#1 $finish;
+	end
+
+endmodule
+module tb();
+
+	// Define statistics structure
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_tc;
+		int errortime_tc;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic load;
+	logic [9:0] data;
+	logic tc_ref;
+	logic tc_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Dump all relevant signals for debugging
+		$dumpvars(1, stimulus_gen.stim1, clk, load, data, tc_ref, tc_dut, tb_match, wavedrom_title);
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.load, 
+		.data, 
+		.tb_match, 
+		wavedrom_title, 
+		wavedrom_enable, 
+		wavedrom_hide_after_time
+);
+	RefModule good1 (
+		.clk, 
+		.load, 
+		.data, 
+		.tc(tc_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		.load,
+		.data,
+		.tc(tc_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+	
+	
+	// Helper function to display signals in HEX and BIN if width <= 64	
+	task display_signals;
+		input string label;
+		input logic [511:0] signal;
+		input string type;
+		
+		begin
+			$write("\n--- Signal Dump: %s at time %0t ---\n", label, $time);
+			// Check width constraint for BIN display
+			if (signal.size() <= 64) begin
+				$write("| %s | %h | %b |
+", type, signal, signal);
+				end else begin
+				$write("| %s | %h |
+", type, signal);
+				end
+		end
+		endtask
+	
+	// Overload for single bits
+	task display_signals_1bit;
+		input string label;
+		input logic signal;
+		
+		begin
+			$write("\n--- Signal Dump: %s at time %0t ---\n", label, $time);
+			$write("| %s | %b |
+", label, signal);
+		endtask
+		endtask
+	
+	// Function to handle display logic
+	function void display_signal_formatted(input string name, input logic signal, input logic [9:0] data_sig, input logic tc_sig, input logic [511:0] wavedrom_sig);
+		begin
+			display_signals_1bit(name + "_load", signal);
+			display_signals_1bit(name + "_tc_ref", tc_sig);
+			display_signals_1bit(name + "_tc_dut", tc_sig);
+			display_signals_1bit(name + "_tb_match", signal);
+			display_signals_1bit(name + "_tb_mismatch", signal);
+			display_signals_1bit(name + "_clk", signal);
+			display_signals_1bit(name + "_data", data_sig);
+			display_signals_1bit(name + "_wavedrom_title", wavedrom_sig);
+		endfunction
+
+	// Initialize stats
+	initial begin
+		stats1 = '{errors: 0, errortime: 0, errors_tc: 0, errortime_tc: 0, clocks: 0};
+		// Initialize mismatch tracking variables
+		logic [9:0] first_mismatch_data_ref = 0;
+		logic [9:0] first_mismatch_data_dut = 0;
+		logic first_mismatch_tc_ref = 0;
+		logic first_mismatch_tc_dut = 0;
+	end
+
+	// Main clock/verification loop
+	always @(posedge clk) begin
+		stats1.clocks++;
+		
+		// Check main match (tb_match logic)
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			
+			// Log first mismatch details
+			if (stats1.errors == 1) begin
+				$display("\n========================================================================\n");
+				$display("!!! FIRST MISMATCH DETECTED (tb_match) !!!");
+				$display("Time: %0t ps", $time);
+				$display("------------------------------------------------------------------------");
+				$display("--- Inputs ---");
+				display_signal_formatted("INPUT", load, data, tc_ref, wavedrom_title);
+				$write("| load | %b | data | %h | %b |\n", load, data, tb_mismatch);
+				$display("--- Outputs (DUT/REF) ---");
+				display_signal_formatted("OUTPUT", 0, 0, tc_ref, wavedrom_title); // Using dummy args for display context
+				display_signals_1bit("OUTPUT_tc_ref", tc_ref);
+				display_signals_1bit("OUTPUT_tc_dut", tc_dut);
+				$display("========================================================================\n");
+			end
+			// Store data for subsequent error logging if needed
+			if (stats1.errors == 1) begin
+				first_mismatch_data_ref = data;
+			first_mismatch_data_dut = data;
+			first_mismatch_tc_ref = tc_ref;
+			first_mismatch_tc_dut = tc_dut;
+			end
+		end
+
+		// Check specific TC mismatch
+		if (tc_ref !== tc_dut) begin
+			if (stats1.errors_tc == 0) stats1.errortime_tc = $time;
+			sstats1.errors_tc++;
+		end
+		
+		// Detailed logging for TC mismatch (if it is the first one)
+		if (stats1.errors_tc == 1) begin
+			$display("\n========================================================================\n");
+			$display("!!! FIRST TC MISMATCH DETECTED !!!");
+			$display("Time: %0t ps", $time);
+			$display("------------------------------------------------------------------------");
+			$display("--- Inputs ---");
+			display_signal_formatted("INPUT", load, data, tc_ref, wavedrom_title);
+			$write("| load | %b | data | %h | %b |\n", load, data, tb_mismatch);
+			$display("--- Outputs (DUT/REF) ---");
+			display_signals_1bit("OUTPUT_tc_ref", tc_ref);
+			display_signals_1bit("OUTPUT_tc_dut", tc_dut);
+			$display("========================================================================\n");
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		h#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Reporting
+	initial begin
+		// Wait for simulation to settle before final report
+		@(negedge clk);
+		#1;
+		
+		int total_mismatches = stats1.errors + stats1.errors_tc;
+		int first_error_time = 0;
+		
+		// Determine the absolute first error time
+		if (stats1.errors > 0 && (stats1.errors_tc == 0 || stats1.errortime < stats1.errortime_tc)) begin
+			first_error_time = stats1.errortime;
+		end else if (stats1.errors_tc > 0) begin
+			first_error_time = stats1.errortime_tc;
+		end
+		
+		if (total_mismatches == 0) begin
+			$display("\n======================================================================\n");
+			$display("SIMULATION PASSED");
+			$display("========================================================================\n");
+		end else begin
+			$display("\n======================================================================\n");
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_error_time);
+			$display("========================================================================\n");
+		end
+		$finish();
+	endmodule

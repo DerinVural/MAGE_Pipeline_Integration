@@ -1,0 +1,1065 @@
+[2026-05-14 15:17:05,235 - mage.agent - INFO] Initial tb:
+[2026-05-14 15:17:05,237 - mage.agent - INFO] // This testbench is an improved version of the golden testbench, tailored to test the combinational logic DUT (TopModule) according to the specified requirements.
+
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- Stimulus Generator (Kept from Golden TB) ---
+module stimulus_gen (
+	input clk,
+	output reg a, b, c, d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask
+
+	initial begin
+		int count; count = 0;
+		{a,b,c,d} <= 4'b0;
+		wavedrom_start();
+		repeat(16) @(posedge clk)
+			{a,b,c,d} <= count++;
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{d,c,b,a} <= $urandom;
+		#1 $finish;
+	end
+
+endmodule
+
+// --- Reference Module (Mocked/Kept from Golden TB) ---
+// Assuming RefModule implements the expected behavior for validation.
+module RefModule ( 
+    input a,
+    input b,
+    input c,
+    input d,
+    output out
+);
+    // In a real scenario, this would implement the expected logic. 
+    // For structural integrity, we must assume it's defined and works as expected.
+    // Since the logic is combinational, we use assign.
+    assign out = 1'b0; // Placeholder: Actual logic is needed here for real verification
+endmodule
+
+// --- Top Module Under Test (Implementation based on K-Map) ---
+module TopModule (
+    input a,
+    input b,
+    input c,
+    input d,
+    output out
+);
+    // K-Map: ab (row), cd (column)
+    // 00 | 1 | 1 | 0 | 1 |
+    // 01 | 1 | 0 | 0 | 1 |
+    // 11 | 0 | 1 | 1 | 1 |
+    // 10 | 1 | 1 | 0 | 0 |
+
+    // Mapping: ab=00, cd=00 -> 1
+    // ab=00, cd=01 -> 1
+    // ab=00, cd=11 -> 0
+    // ab=00, cd=10 -> 1
+    // ab=01, cd=00 -> 1
+    // ab=01, cd=01 -> 0
+    // ab=01, cd=11 -> 0
+    // ab=01, cd=10 -> 1
+    // ab=11, cd=00 -> 0
+    // ab=11, cd=01 -> 1
+    // ab=11, cd=11 -> 1
+    // ab=11, cd=10 -> 1
+    // ab=10, cd=00 -> 1
+    // ab=10, cd=01 -> 1
+    // ab=10, cd=11 -> 0
+    // ab=10, cd=10 -> 0
+    
+    assign out = ( (a==1'b0 && b==1'b0 && c==1'b0 && d==1'b0) || // 00/00 -> 1
+                   (a==1'b0 && b==1'b0 && c==1'b1 && d==1'b0) || // 00/10 -> 1
+                   (a==1'b0 && b==1'b1 && c==1'b0 && d==1'b0) || // 01/00 -> 1
+                   (a==1'b0 && b==1'b1 && c==1'b1 && d==1'b0) || // 01/10 -> 1
+                   (a==1'b1 && b==1'b1 && c==1'b0 && d==1'b1) || // 11/01 -> 1
+                   (a==1'b1 && b==1'b1 && c==1'b1 && d==1'b1) || // 11/11 -> 1
+                   (a==1'b1 && b==1'b1 && c==1'b1 && d==1'b0) || // 11/10 -> 1
+                   (a==1'b1 && b==1'b0 && c==1'b0 && d==1'b0) || // 10/00 -> 1
+                   (a==1'b1 && b==1'b0 && c==1'b0 && d==1'b1) || // 10/01 -> 1
+                   (a==1'b1 && b==1'b0 && c==1'b1 && d==1'b0) ); // 10/10 -> 0 (Wait, K-Map says 0, the logic derived above gives 0. Let's verify the 10/10 case: a=1, b=0, c=1, d=0 -> 0. My derivation above results in 0 for this case if I use the logic explicitly. Let's trust the derivation based on the map entries.)
+
+    // Simplified mapping based on K-map: 
+    // Index = 2*ab + cd (where ab is MSB of 2 bits, cd is LSB of 2 bits)
+    // Index = 4*ab[1] + 2*ab[0] + 2*cd[1] + cd[0]
+    // Using direct mapping for robustness:
+    assign out = ( (a&^b)&(c&^d) | // 00/00 = 1 (No, this is complex)
+                    (a&^b)&(c&d) | // 00/01 = 1
+                    (a&b)&(c&d) | // 11/11 = 1
+                    (a&b)&(~c&d) | // 11/10 = 1
+                    (a^b)&(~c&^d) | // 01/00 = 1
+                    (a^b)&(~c&d) | // 01/10 = 1
+                    (a^b)&(c&d) | // 01/11 = 0 (Mismatch)
+                    (a&^b)&(~c&^d) | // 10/00 = 1
+                    (a&^b)&(~c&d) | // 10/01 = 1
+                    (a&^b)&(c&^d) ); // 10/10 = 0 (Mismatch)
+
+    // Reverting to the direct, enumerated logic as it is safest for exact K-map translation:
+    assign out = ( (a&^b)&(~c&^d) || // 00/00 -> 1
+                   (a&^b)&(~c&d)  || // 00/10 -> 1
+                   (a&b)&(~c&^d)  || // 11/01 -> 1
+                   (a&b)&(c&d)    || // 11/11 -> 1
+                   (a^b)&(~c&^d)  || // 01/00 -> 1
+                   (a^b)&(~c&d)   || // 01/10 -> 1
+                   (a&^b)&(~c&^d)  || // 10/00 -> 1
+                   (a&^b)&(~c&d)   || // 10/01 -> 1
+                   (a&^b)&(c&^d) ); // 10/10 -> 0 (The last term is 0, so this is correct)
+    // The logic is implemented by checking all 16 minterms.
+
+endmodule
+
+// --- Testbench (Improved Golden TB) ---
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic c;
+	logic d;
+	logic out_ref;
+	logic out_dut;
+
+	// Variables to capture mismatch details (Rule 2: Combinational Logic)
+	logic [3:0] captured_inputs;
+	logic captured_ref_output;
+	logic captured_dut_output;
+	int first_mismatch_time = -1;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,out_ref,out_dut );
+	end
+
+	// Verification signals
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate components
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		a, 
+		b, 
+		c, 
+		d );
+	RefModule good1 (
+		a, 
+		b, 
+		c, 
+		d, 
+		out(out_ref) );
+	TopModule top_module1 (
+		a, 
+		b, 
+		c, 
+		d, 
+		out(out_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+
+	// --- Verification Logic & Error Counting (Improved) ---
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+
+		// Capture inputs for detailed logging upon first mismatch
+		captured_inputs = {a,b,c,d};
+
+		// Check for DUT/Reference mismatch
+		if (!tb_match) begin
+			// Original Error Counting Logic
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+
+			// Check for specific output mismatch tracking (Error_out)
+			if (out_ref !== out_dut) begin
+				if (stats1.errors_out == 0) first_mismatch_time = $time;
+				stats1.errortime_out = $time;
+				stats1.errors_out = stats1.errors_out+1'b1;
+			end
+		end
+		
+		// Capture signals at mismatch point for Rule 2 logging
+		if (!tb_match && stats1.errors_out == 1 && first_mismatch_time == $time) begin
+			captured_dut_output = out_dut;
+			captured_ref_output = out_ref;
+		end
+	end
+
+	// Assign tb_match (Simplifying the complex XOR expression from golden TB to its logical equivalent)
+	assign tb_match = (out_ref === out_dut);
+
+	// --- Finalization Block (Improved Display) ---
+	final begin
+		if (stats1.errors_out > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+			
+			// Display signals at the FIRST mismatch time (Rule 2)
+			$display("\n--- DETAILED MISMATCH REPORT (FIRST ERROR) ---");
+			$display("Time of First Mismatch: %0d ps", first_mismatch_time);
+			$display("Inputs (a b c d): %b (Hex: %h)", captured_inputs, captured_inputs);
+			$display("Reference Output (Expected): %b (Hex: %h)", captured_ref_output, captured_ref_output);
+			$display("DUT Output (Got): %b (Hex: %h)", captured_dut_output, captured_dut_output);
+			$display("Total Errors Detected: %0d", stats1.errors);
+		end
+	else begin
+		$display("SIMULATION PASSED");
+		end
+
+	// Original final display logic from golden TB (kept for residual tracking, but final message takes precedence)
+	// Note: The original Hint structure is replaced by the required final display.
+	$display("Simulation finished at %0d ps", $time);
+	$display("Total mismatched samples detected by internal counter: %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 15:17:05,237 - mage.agent - INFO] Initial if:
+[2026-05-14 15:17:05,237 - mage.agent - INFO] module TopModule (
+    input a,
+    input b,
+    input c,
+    input d,
+    output out
+);
+[2026-05-14 15:17:05,244 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  a
+ - input  b
+ - input  c
+ - input  d
+ - output out
+
+The module should implement the circuit described by the Karnaugh map
+below.
+
+              ab
+   cd   00  01  11  10
+   00 | 1 | 1 | 0 | 1 |
+   01 | 1 | 0 | 0 | 1 |
+   11 | 0 | 1 | 1 | 1 |
+   10 | 1 | 1 | 0 | 0 |
+
+
+[2026-05-14 15:17:56,084 - mage.agent - INFO] Initial rtl:
+[2026-05-14 15:17:56,085 - mage.agent - INFO] module TopModule (
+    input  logic a,
+    input  logic b,
+    input  logic c,
+    input  logic d,
+    output logic out
+);
+
+    // Implementation based on the K-map truth table (Sum of Minterms where out = 1):
+    // Minterms: m0, m1, m2, m4, m7, m8, m9, m13, m14, m15
+
+    assign out = ( (~a & ~b & ~c & ~d)  || // m0: 00/00 -> 1
+                   (~a & ~b & ~c & d)  || // m1: 00/01 -> 1
+                   (~a & ~b & c & ~d)  || // m2: 00/10 -> 1
+                   (~a & b & ~c & ~d)  || // m4: 01/00 -> 1
+                   (~a & b & c & d)  || // m7: 01/11 -> 1
+                   (a & ~b & ~c & ~d)  || // m8: 10/00 -> 1
+                   (a & ~b & ~c & d)  || // m9: 10/01 -> 1
+                   (a & b & ~c & d)  || // m13: 11/01 -> 1
+                   (a & b & c & ~d)  || // m14: 11/10 -> 1
+                   (a & b & c & d) );   // m15: 11/11 -> 1
+
+endmodule
+[2026-05-14 15:18:02,833 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 15:19:01,553 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:19:01,553 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg a, b, c, d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b,c,d} <= 4'b0;
+		wavedrom_start();
+		repeat(16) @(posedge clk)
+			{a,b,c,d} <= count++;	
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{d,c,b,a} <= $urandom;
+		
+		h#1 $finish;
+	end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// Variables to store first error details
+	logic first_error_captured = 0;
+	logic first_a, first_b, first_c, first_d;
+	logic first_out_dut, first_out_ref;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic c;
+	logic d;
+	logic out_ref;
+	logic out_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,out_ref,out_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* , 
+		.a,
+		.b,
+		.c,
+		.d );
+	RefModule good1 (
+		.a,
+		.b,
+		.c,
+		.d,
+		.out(out_ref) );
+	
+	TopModule top_module1 (
+		.a,
+		.b,
+		.c,
+		.d,
+		.out(out_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	// Function to display signals in HEX and BINARY format
+	func display_signal(logic sig, string label, integer index);
+		$display("[%s] Time %0t: Value = %h (Binary: %b)", label, $time, sig, sig);
+	endfunction
+
+	// Function to display the first mismatch details
+	func display_mismatch_details(integer errors_count, integer err_time);
+		$display("========================================================");
+		$display("*** FIRST MISMATCH DETECTED ***");
+		$display("Time of first mismatch: %0d ps", err_time);
+		$display("--------------------------------------------------------");
+		$display("Inputs:");
+		display_signal(a, "a", 0);
+		display_signal(b, "b", 1);
+		display_signal(c, "c", 2);
+		display_signal(d, "d", 3);
+		$display("Outputs:");
+		display_signal(out_dut, "DUT Output (out)", 4);
+		display_signal(out_ref, "Reference Output (out_ref)", 5);
+		$display("========================================================");
+	endfunction
+
+	
+	final begin
+		if (stats1.errors == 0 && stats1.errors_out == 0)
+			$display("SIMULATION PASSED");
+		else begin
+			integer total_mismatches = stats1.errors;
+			integer first_mismatch_time = stats1.errortime;
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_mismatch_time);
+			
+			if (stats1.errors == 1 && stats1.errortime != 0 && first_error_captured == 1)
+				display_mismatch_details(stats1.errors, stats1.errortime);
+		end
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_ref } === ( { out_ref } ^ { out_dut } ^ { out_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			
+			if (stats1.errors == 1 && first_error_captured == 0) begin
+				// Capture details on the first mismatch
+				first_a = a;
+				first_b = b;
+				first_c = c;
+				first_d = d;
+				first_out_dut = out_dut;
+				first_out_ref = out_ref;
+				first_error_captured = 1;
+			end
+			stats1.errors++;
+		end
+		
+		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			s	stats1.errors_out = stats1.errors_out+1'b1; 
+		end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+	endmodule
+
+[2026-05-14 15:22:26,076 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:22:26,076 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg a, b, c, d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b,c,d} <= 4'b0;
+		wavedrom_start();
+		repeat(16) @(posedge clk)
+			{a,b,c,d} <= count++;	
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{d,c,b,a} <= $urandom;
+		
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic c;
+	logic d;
+	logic out_ref;
+	logic out_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,out_ref,out_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* , 
+		.a,
+		.b,
+		.c,
+		.d );
+	RefModule good1 (
+		.a,
+		.b,
+		.c,
+		.d,
+		.out(out_ref) );
+	
+	TopModule top_module1 (
+		a,
+		b,
+		c,
+		d,
+		out_dut );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	// Function to display signals in HEX and BINARY format
+	func display_signal(logic sig, string label, integer index);
+		// Since inputs/outputs are 1-bit, printing as %h and %b is straightforward.
+		$display("[%s] Time %0t: Value = %h (Binary: %b)", label, $time, sig, sig);
+	endfunction
+
+	// Function to display the first mismatch details
+	func display_mismatch_details(integer err_time);
+		$display("========================================================")
+		$display("*** FIRST MISMATCH DETECTED ***")
+		$display("Time of first mismatch: %0d ps", err_time);
+		$display("--------------------------------------------------------")
+		$display("Inputs:")
+		display_signal(a, "a", 0);
+		display_signal(b, "b", 1);
+		display_signal(c, "c", 2);
+		display_signal(d, "d", 3);
+		$display("Outputs:")
+		display_signal(out_dut, "DUT Output (out)", 4);
+		display_signal(out_ref, "Reference Output (out_ref)", 5);
+		$display("========================================================")
+	endfunction
+	
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end
+		else begin
+			integer total_mismatches = stats1.errors;
+			integer first_mismatch_time = stats1.errortime;
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_mismatch_time);
+			
+			if (total_mismatches > 0 && stats1.errortime != 0) begin
+				display_mismatch_details(stats1.errortime);
+			end
+		end
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	// Simplification: tb_match is true if out_ref == out_dut
+	assign tb_match = ( out_ref === out_dut );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			
+			if (stats1.errors == 0) begin
+				// Capture details ONLY when errors count is about to increment from 0 to 1
+				// Note: We capture the values *after* the clock edge that caused the mismatch
+				stats1.errortime = $time;
+			end
+			stats1.errors++;
+		end
+		
+		// The original logic for errors_out used XOR which is equivalent to checking mismatch, but we keep the structure.
+		if (out_ref !== out_dut) // Simplified check equivalent to original logic
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			sstats1.errors_out = stats1.errors_out+1'b1; 
+		end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+[2026-05-14 15:23:33,776 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:23:33,776 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg a, b, c, d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask
+
+
+	initial begin
+		int count; count = 0;
+		{a,b,c,d} <= 4'b0;
+		wavedrom_start();
+		repeat(16) @(posedge clk)
+			{a,b,c,d} <= count++;
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{d,c,b,a} <= $urandom;
+		
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+		int clocks;
+	}
+stats;
+	
+stats stats1;
+	
+	
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+	
+reg clk=0;
+initial forever
+		#5 clk = ~clk;
+
+logic a;
+logic b;
+logic c;
+logic d;
+logic out_ref;
+logic out_dut;
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,out_ref,out_dut );
+end
+
+
+wire tb_match;
+wire tb_mismatch = ~tb_match;
+	
+stimulus_gen stim1 (
+		.clk,
+		.* , 
+		a,
+		b,
+		c,
+		d );
+RefModule good1 (
+		a,
+		b,
+		c,
+		d,
+		out(out_ref) );
+
+TopModule top_module1 (
+	a,
+	b,
+	c,
+	d,
+	out_dut );
+	
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task wait_for_end_of_timestep;
+		endtask
+
+
+	// Function to display signals in HEX and BINARY format
+	function display_signal(logic sig, string label, integer index);
+		// For 1-bit signals, %h and %b are sufficient.
+		$display("[%s] Time %0t: Value = %h (Binary: %b)", label, $time, sig, sig);
+	endfunction
+
+	// Function to display the first mismatch details
+	function display_mismatch_details(integer err_time);
+		$display("========================================================")
+		$display("*** FIRST MISMATCH DETECTED ***")
+		$display("Time of first mismatch: %0d ps", err_time);
+		$display("--------------------------------------------------------")
+		$display("Inputs:")
+		display_signal(a, "a", 0);
+		display_signal(b, "b", 1);
+		display_signal(c, "c", 2);
+		display_signal(d, "d", 3);
+		$display("Outputs:")
+		display_signal(out_dut, "DUT Output (out)", 4);
+		display_signal(out_ref, "Reference Output (out_ref)", 5);
+		$display("========================================================")
+	endfunction
+	
+
+final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end
+		else begin
+			integer total_mismatches = stats1.errors;
+			integer first_mismatch_time = stats1.errortime;
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_mismatch_time);
+			
+			if (total_mismatches > 0 && stats1.errortime != 0) begin
+				display_mismatch_details(stats1.errortime);
+			end
+		end
+	end
+
+
+// Verification: tb_match is true if out_ref == out_dut
+assign tb_match = ( out_ref === out_dut );
+
+// Use explicit sensitivity list here.
+always @(posedge clk, negedge clk) begin
+
+	stats1.clocks++;
+
+	if (!tb_match) begin
+		if (stats1.errors == 0) stats1.errortime = $time;
+			
+			if (stats1.errors == 0) begin
+				// Capture details when errors count is about to increment from 0 to 1
+				// The values a,b,c,d, out_dut, out_ref are stable at this time point due to sensitivity list
+				s
+				// We rely on the display_mismatch_details function to read the current signal values
+				send_mismatch_details_at_time($time);
+			end
+		stats1.errors++;
+	end
+
+	// Logic for errors_out (maintained from golden TB structure)
+	if (out_ref !== out_dut) 
+	begin 
+		if (stats1.errors_out == 0) stats1.errortime_out = $time;
+		sstats1.errors_out = stats1.errors_out+1'b1; 
+	end
+	end
+
+// Helper task to call display_mismatch_details correctly
+task send_mismatch_details_at_time(integer t);
+	display_mismatch_details(t);
+endtask
+
+
+// add timeout after 100K cycles
+initial begin
+	#1000000
+	$display("TIMEOUT");
+	$finish();
+end
+
+endmodule
+[2026-05-14 15:27:32,253 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:27:32,253 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg a, b, c, d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b,c,d} <= 4'b0;
+		wavedrom_start();
+		repeat(16) @(posedge clk)
+			{a,b,c,d} <= count++;
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{d,c,b,a} <= $urandom;
+		
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+
+	logic a;
+	logic b;
+	logic c;
+	logic d;
+	logic out_ref;
+	logic out_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,out_ref,out_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* , 
+		a,
+		b,
+		c,
+		d );
+	RefModule good1 (
+		a,
+		b,
+		c,
+		d,
+		.out(out_ref) );
+	
+	TopModule top_module1 (
+		a,
+		b,
+		c,
+		d,
+		out_dut );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+	task
+	
+	// Function to display signals in HEX and BINARY format
+	function display_signal(logic sig, string label, integer index);
+		// For 1-bit signals, %h and %b are sufficient.
+		$display("[%s] Time %0t: Value = %h (Binary: %b)", label, $time, sig, sig);
+	endfunction
+
+	// Function to display the first mismatch details
+	function display_mismatch_details(integer err_time);
+		$display("========================================================", 1);
+		$display("*** FIRST MISMATCH DETECTED ***", 1);
+		$display("Time of first mismatch: %0d ps", err_time);
+		$display("--------------------------------------------------------", 1);
+		$display("Inputs:", 1);
+		display_signal(a, "a", 0);
+		display_signal(b, "b", 1);
+		display_signal(c, "c", 2);
+		display_signal(d, "d", 3);
+		$display("Outputs:", 1);
+		display_signal(out_dut, "DUT Output (out)", 4);
+		display_signal(out_ref, "Reference Output (out_ref)", 5);
+		$display("========================================================", 1);
+	endfunction
+
+	// Helper task to call display_mismatch_details correctly
+	task send_mismatch_details_at_time(integer t);
+		display_mismatch_details(t);
+	endtask
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end
+		else begin
+			integer total_mismatches = stats1.errors;
+			integer first_mismatch_time = stats1.errortime;
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_mismatch_time);
+			
+			if (total_mismatches > 0 && stats1.errortime != 0) begin
+				send_mismatch_details_at_time(stats1.errortime);
+			end
+		end
+		end
+	
+	// Verification: tb_match is true if out_ref == out_dut
+	assign tb_match = ( out_ref === out_dut );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			
+			if (stats1.errors == 0) begin
+				// Capture details when errors count is about to increment from 0 to 1
+				send_mismatch_details_at_time($time);
+			end
+			sstats1.errors++;
+		end
+		
+		// Logic for errors_out (maintained from golden TB structure)
+		if (out_ref !== out_dut) 
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			sstats1.errors_out = stats1.errors_out+1'b1; 
+		end
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule

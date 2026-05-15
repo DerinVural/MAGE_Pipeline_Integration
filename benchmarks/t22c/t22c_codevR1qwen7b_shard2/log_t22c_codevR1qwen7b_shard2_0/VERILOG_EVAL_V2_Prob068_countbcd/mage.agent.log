@@ -1,0 +1,874 @@
+[2026-05-14 12:24:25,591 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:24:25,593 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input[511:0] title = ""); endtask
+    task wavedrom_stop; #1; endtask
+
+    initial begin
+        reset <= 1;
+        reset_test();
+        repeat(2) @(posedge clk);
+        @(negedge clk);
+        wavedrom_start("Counting");
+            repeat(12) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(71) @(posedge clk);
+        @(negedge clk) wavedrom_start("100 rollover");
+            repeat(16) @(posedge clk);
+        @(negedge clk) wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) reset <= !($random & 31);
+        repeat(19590) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_ena;
+        int errortime_ena;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    stats stats1;
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic reset;
+    logic [3:1] ena_ref;
+    logic [3:1] ena_dut;
+    logic [15:0] q_ref;
+    logic [15:0] q_dut;
+
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, reset, ena_ref, ena_dut, q_ref, q_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+
+    stimulus_gen stim1 (
+        .clk(clk),
+        .reset(reset),
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .tb_match(tb_match)
+    );
+
+    RefModule good1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_ref),
+        .q(q_ref)
+    );
+
+    TopModule top_module1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_dut),
+        .q(q_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask
+
+    final begin
+        if (stats1.errors_ena) $display("Hint: Output 'ena' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_ena, stats1.errortime_ena);
+        else $display("Hint: Output 'ena' has no mismatches.");
+        if (stats1.errors_q) $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else $display("Hint: Output 'q' has no mismatches.");
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %1d MISMATCHES DETECTED, FIRST AT TIME %1d", stats1.errors, stats1.errortime);
+        end
+    end
+
+    assign tb_match = ({ ena_ref, q_ref } === ({ ena_ref, q_ref } ^ { ena_dut, q_dut } ^ { ena_ref, q_ref }));
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (ena_ref !== (ena_ref ^ ena_dut ^ ena_ref)) begin
+            if (stats1.errors_ena == 0) stats1.errortime_ena = $time;
+            stats1.errors_ena++;
+        end
+        if (q_ref !== (q_ref ^ q_dut ^ q_ref)) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+
+    initial begin
+        #1000000 $display("TIMEOUT"); $finish();
+    end
+endmodule
+
+// Queue-based simulation mismatch display
+
+reg [1:0] input_queue [0:8];
+reg [3:0] got_output_queue [0:8];
+reg [3:0] golden_queue [0:8];
+reg reset_queue [0:8];
+localparam MAX_QUEUE_SIZE = 9;
+
+always @(posedge clk, negedge clk) begin
+    if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+        input_queue.delete(0);
+        got_output_queue.delete(0);
+        golden_queue.delete(0);
+        reset_queue.delete(0);
+    end
+    input_queue.push_back({reset, ena_dut, q_dut});
+    got_output_queue.push_back({ena_dut, q_dut});
+    golden_queue.push_back({ena_ref, q_ref});
+    reset_queue.push_back(reset);
+
+    if (got_output_queue[$size(got_output_queue)-1] !== golden_queue[$size(golden_queue)-1]) begin
+        $display("Mismatch detected at time %t", $time);
+        $display("\nLast %d cycles of simulation:", input_queue.size());
+        for (int i = 0; i < input_queue.size(); i++) begin
+            if (got_output_queue[i] === golden_queue[i]) begin
+                $display("Got Match at");
+            end else begin
+                $display("Got Mismatch at");
+            end
+            $display("Cycle %d, reset %b, ena %b, q %h, got output ena %b, q %h, exp ena %b, q %h",
+                i,
+                reset_queue[i],
+                ena_dut[i*3 +:3],
+                q_dut[i*16 +:16],
+                got_output_queue[i][3 +:3],
+                got_output_queue[i][19 +:16],
+                golden_queue[i][3 +:3],
+                golden_queue[i][19 +:16]
+            );
+        end
+    end
+end
+[2026-05-14 12:24:25,593 - mage.agent - INFO] Initial if:
+[2026-05-14 12:24:25,593 - mage.agent - INFO] module TopModule(clk, reset, ena, q); input clk; input reset; output logic [2:0] ena; output logic [15:0] q; endmodule
+[2026-05-14 12:24:25,598 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - output ena (3 bits)
+ - output q   (16 bits)
+
+The module should implement a 4-digit BCD (binary-coded decimal) counter.
+Each decimal digit is encoded using 4 bits: q[3:0] is the ones digit,
+q[7:4] is the tens digit, etc. For digits [3:1], also output an enable
+signal indicating when each of the upper three digits should be
+incremented. Include a synchronous active-high reset. Assume all
+sequential logic is triggered on the positive edge of the clock.
+
+
+[2026-05-14 12:24:41,723 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:24:41,723 - mage.agent - INFO] module TopModule(clk, reset, ena, q);
+    input logic clk;
+    input logic reset;
+    output logic [2:0] ena;
+    output logic [15:0] q;
+
+    // 4-digit BCD counters: thousands, hundreds, tens, ones
+    logic [3:0] thousands;
+    logic [3:0] hundreds;
+    logic [3:0] tens;
+    logic [3:0] ones;
+
+    // Ena signals: ena[0] is always 1 when ones increment, ena[1] when tens increment, etc.
+    // ena[2:0] correspond to thousands, hundreds, tens
+
+    // Initialize all registers to 0 except maybe ones to start at 1? Wait, BCD counter starts at 0.
+
+    // Initialize all digits to 0 with initial block
+    initial begin
+        thousands = 4'd0;
+        hundreds = 4'd0;
+        tens = 4'd0;
+        ones = 4'd0;
+        ena = 3'b111; // default enables all digits to increment when lower digits reach max
+    end
+
+    // Combinational logic for ena signals
+    always @(*) begin
+        ena[0] = (ones == 4'd9); // enable tens when ones overflows
+        ena[1] = (tens == 4'd9) & ena[0]; // enable hundreds when tens overflows and ena[0] is active
+        ena[2] = (hundreds == 4'd9) & ena[1]; // enable thousands when hundreds overflows and ena[1] is active
+    end
+
+    // Sequential logic for counters
+    always @(posedge clk) begin
+        if (reset) begin
+            // Reset to 0 or initial state
+            thousands <= 4'd0;
+            hundreds <= 4'd0;
+            tens <= 4'd0;
+            ones <= 4'd0;
+        end else begin
+            // Increment ones every cycle if not reset
+            if (ones < 4'd9) begin
+                ones <= ones + 4'd1;
+            end else begin
+                ones <= 4'd0;
+            end
+
+            // Handle carry over to tens if enabled
+            if (ena[0]) begin
+                if (tens < 4'd9) begin
+                    tens <= tens + 4'd1;
+                end else begin
+                    tens <= 4'd0;
+                end
+            end
+
+            // Handle hundreds if enabled
+            if (ena[1]) begin
+                if (hundreds < 4'd9) begin
+                    hundreds <= hundreds + 4'd1;
+                end else begin
+                    hundreds <= 4'd0;
+                end
+            end
+
+            // Handle thousands if enabled
+            if (ena[2]) begin
+                if (thousands < 4'd9) begin
+                    thousands <= thousands + 4'd1;
+                end else begin
+                    thousands <= 4'd0;
+                end
+            end
+        end
+    end
+
+    // Combine all digits into q output
+    assign q = {thousands, hundreds, tens, ones};
+
+endmodule
+
+[2026-05-14 12:24:43,049 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 12:25:02,659 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:25:02,660 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input [511:0] title = "");
+    endtask
+
+    task wavedrom_stop;
+        #1;
+    endtask
+
+    initial begin
+        reset <= 1;
+        reset_test();
+        repeat(2) @(posedge clk);
+        @(negedge clk);
+        wavedrom_start("Counting");
+            repeat(12) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(71) @(posedge clk);
+        @(negedge clk) wavedrom_start("100 rollover");
+            repeat(16) @(posedge clk);
+        @(negedge clk) wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) reset <= !($random & 31);
+        repeat(19590) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_ena;
+        int errortime_ena;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+
+    stats stats1 = '0;
+
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    logic reset;
+    logic [3:1] ena_ref;
+    logic [3:1] ena_dut;
+    logic [15:0] q_ref;
+    logic [15:0] q_dut;
+
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, reset, ena_ref, ena_dut, q_ref, q_dut);
+    end
+
+    wire tb_match = ~tb_mismatch;
+    wire tb_mismatch;
+    assign tb_mismatch = ( { ena_ref, q_ref } === ( { ena_ref, q_ref } ^ { ena_dut, q_dut } ^ { ena_ref, q_ref } ) );
+
+    stimulus_gen stim1 (
+        .clk(clk),
+        .reset(reset),
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .tb_match(tb_match)
+    );
+
+    RefModule good1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_ref),
+        .q(q_ref)
+    );
+
+    TopModule top_module1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_dut),
+        .q(q_dut)
+    );
+
+    logic strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask
+
+    final begin
+        if (stats1.errors_ena)
+            $display("Hint: Output 'ena' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_ena, stats1.errortime_ena);
+        else
+            $display("Hint: Output 'ena' has no mismatches.");
+
+        if (stats1.errors_q)
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else
+            $display("Hint: Output 'q' has no mismatches.");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples
+", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors == 0)
+            $display("SIMULATION PASSED");
+        else
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+    end
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (ena_ref !== (ena_ref ^ ena_dut ^ ena_ref)) begin
+            if (stats1.errors_ena == 0) stats1.errortime_ena = $time;
+            stats1.errors_ena++;
+        end
+        if (q_ref !== (q_ref ^ q_dut ^ q_ref)) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+
+    initial begin
+        #1000000 $display("TIMEOUT"); $finish();
+    end
+endmodule
+
+[2026-05-14 12:25:20,379 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:25:20,379 - mage.agent - INFO] `timescale 1 ps/1 ps
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+    task wavedrom_start(input [511:0] title = "" ); endtask
+    task wavedrom_stop; #1; endtask
+    initial begin
+        reset <= 1;
+        reset_test();
+        repeat(2) @(posedge clk);
+        @(negedge clk);
+        wavedrom_start("Counting");
+        repeat(12) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(71) @(posedge clk);
+        @(negedge clk) wavedrom_start("100 rollover");
+        repeat(16) @(posedge clk);
+        @(negedge clk) wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) reset <= !($random & 31);
+        repeat(19590) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_ena;
+        int errortime_ena;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    stats stats1 = '0;
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic reset;
+    logic [3:1] ena_ref;
+    logic [3:1] ena_dut;
+    logic [15:0] q_ref;
+    logic [15:0] q_dut;
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, reset, ena_ref, ena_dut, q_ref, q_dut);
+    end
+    wire tb_match = ~tb_mismatch;
+    wire tb_mismatch;
+    assign tb_mismatch = ( { ena_ref, q_ref } === ( { ena_ref, q_ref } ^ { ena_dut, q_dut } ^ { ena_ref, q_ref } ) );
+    stimulus_gen stim1 (
+        .clk(clk),
+        .reset(reset),
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .tb_match(tb_match)
+    );
+    RefModule good1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_ref),
+        .q(q_ref)
+    );
+    TopModule top_module1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_dut),
+        .q(q_dut)
+    );
+    logic strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask
+    final begin
+        if (stats1.errors_ena)
+            $display("Hint: Output 'ena' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_ena, stats1.errortime_ena);
+        else
+            $display("Hint: Output 'ena' has no mismatches.");
+        if (stats1.errors_q)
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else
+            $display("Hint: Output 'q' has no mismatches.");
+        $display("Hint: Total mismatched samples is %1d out of %1d samples
+", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors == 0)
+            $display("SIMULATION PASSED");
+        else
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+    end
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (ena_ref !== ( ena_ref ^ ena_dut ^ ena_ref )) begin
+            if (stats1.errors_ena == 0) stats1.errortime_ena = $time;
+            stats1.errors_ena++;
+        end
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+    initial begin
+        #1000000 $display("TIMEOUT"); $finish();
+    end
+endmodule
+[2026-05-14 12:25:34,256 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:25:34,256 - mage.agent - INFO] `timescale 1 ps/1 ps
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+    task wavedrom_start(input [511:0] title = ""); endtask
+    task wavedrom_stop; #1; endtask
+    initial begin
+        reset <= 1;
+        reset_test();
+        repeat(2) @(posedge clk);
+        @(negedge clk);
+        wavedrom_start("Counting");
+        repeat(12) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(71) @(posedge clk);
+        @(negedge clk) wavedrom_start("100 rollover");
+        repeat(16) @(posedge clk);
+        @(negedge clk) wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) reset <= !($random & 31);
+        repeat(19590) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_ena;
+        int errortime_ena;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    stats stats1;
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic reset;
+    logic [3:1] ena_ref;
+    logic [3:1] ena_dut;
+    logic [15:0] q_ref;
+    logic [15:0] q_dut;
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, reset, ena_ref, ena_dut, q_ref, q_dut);
+    end
+    wire tb_match = ~tb_mismatch;
+    wire tb_mismatch = ({ ena_ref, q_ref } === ({ ena_ref, q_ref } ^ { ena_dut, q_dut } ^ { ena_ref, q_ref }));
+    stimulus_gen stim1 (
+        .clk(clk),
+        .reset(reset),
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .tb_match(tb_match)
+    );
+    RefModule good1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_ref),
+        .q(q_ref)
+    );
+    TopModule top_module1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_dut),
+        .q(q_dut)
+    );
+    logic strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask
+    final begin
+        if (stats1.errors_ena) $display("Hint: Output 'ena' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_ena, stats1.errortime_ena);
+        else $display("Hint: Output 'ena' has no mismatches.");
+        if (stats1.errors_q) $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else $display("Hint: Output 'q' has no mismatches.");
+        $display("Hint: Total mismatched samples is %1d out of %1d samples
+", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors == 0) $display("SIMULATION PASSED");
+        else $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+    end
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (ena_ref !== ( ena_ref ^ ena_dut ^ ena_ref )) begin
+            if (stats1.errors_ena == 0) stats1.errortime_ena = $time;
+            stats1.errors_ena++;
+        end
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+    initial begin
+        #1000000 $display("TIMEOUT"); $finish();
+    end
+endmodule
+[2026-05-14 12:25:52,287 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:25:52,287 - mage.agent - INFO] `timescale 1 ps/1 ps
+module stimulus_gen (
+    input clk,
+    output reg reset,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+    task wavedrom_start(input [511:0] title = "" ); endtask
+    task wavedrom_stop; #1; endtask
+    initial begin
+        reset <= 1;
+        reset_test();
+        repeat(2) @(posedge clk);
+        @(negedge clk);
+        wavedrom_start("Counting");
+        repeat(12) @(posedge clk);
+        @(negedge clk);
+        wavedrom_stop();
+        repeat(71) @(posedge clk);
+        @(negedge clk) wavedrom_start("100 rollover");
+        repeat(16) @(posedge clk);
+        @(negedge clk) wavedrom_stop();
+        repeat(400) @(posedge clk, negedge clk) reset <= !($random & 31);
+        repeat(19590) @(posedge clk);
+        reset <= 1'b1;
+        repeat(5) @(posedge clk);
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_ena;
+        int errortime_ena;
+        int errors_q;
+        int errortime_q;
+        int clocks;
+    } stats;
+    stats stats1 = '0;
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic reset;
+    logic [3:1] ena_ref;
+    logic [3:1] ena_dut;
+    logic [15:0] q_ref;
+    logic [15:0] q_dut;
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, reset, ena_ref, ena_dut, q_ref, q_dut);
+    end
+    wire tb_match = ~tb_mismatch;
+    wire tb_mismatch;
+    assign tb_mismatch = ( { ena_ref, q_ref } === ( { ena_ref, q_ref } ^ { ena_dut, q_dut } ^ { ena_ref, q_ref } ) );
+    stimulus_gen stim1 (
+        .clk(clk),
+        .reset(reset),
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .tb_match(tb_match)
+    );
+    RefModule good1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_ref),
+        .q(q_ref)
+    );
+    TopModule top_module1 (
+        .clk(clk),
+        .reset(reset),
+        .ena(ena_dut),
+        .q(q_dut)
+    );
+    logic strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask
+    final begin
+        if (stats1.errors_ena)
+            $display("Hint: Output 'ena' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_ena, stats1.errortime_ena);
+        else
+            $display("Hint: Output 'ena' has no mismatches.");
+        if (stats1.errors_q)
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else
+            $display("Hint: Output 'q' has no mismatches.");
+        $display("Hint: Total mismatched samples is %1d out of %1d samples
+", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors == 0)
+            $display("SIMULATION PASSED");
+        else
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+    end
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (ena_ref !== ( ena_ref ^ ena_dut ^ ena_ref )) begin
+            if (stats1.errors_ena == 0) stats1.errortime_ena = $time;
+            stats1.errors_ena++;
+        end
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref )) begin
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q++;
+        end
+    end
+    initial begin
+        #1000000 $display("TIMEOUT"); $finish();
+    end
+endmodule
+

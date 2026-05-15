@@ -1,0 +1,419 @@
+[2026-05-12 22:46:14,997 - mage.agent - INFO] TB Gen BYPASSED — loaded golden testbench from ./verilog-eval/dataset_spec-to-rtl/Prob152_lemmings3_test.sv
+[2026-05-12 22:46:14,999 - mage.agent - INFO] Initial tb:
+[2026-05-12 22:46:14,999 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic areset,
+	output logic bump_left,
+	output logic bump_right,
+	output logic dig,
+	output logic ground,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+	reg reset;
+	assign areset = reset;
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+	
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+	
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			reset <= 0;
+		end
+		if (srfail)
+			$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+		// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+		// a functionality error than the reset being implemented asynchronously.
+	
+	endtask
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+
+	
+	wire [0:13][3:0] d = {
+		4'h2,
+		4'h2,
+		4'h3,
+		4'h2,
+		4'ha,
+		4'h2,
+		4'h0,
+		4'h0,
+		4'h0,
+		4'h3,
+		4'h2,
+		4'h2,
+		4'h2,
+		4'h2
+	};
+	
+	initial begin
+		reset <= 1'b1;
+		{bump_left, bump_right, ground, dig} <= 4'h2;
+		reset_test(1);
+
+		reset <= 1'b1;
+		@(posedge clk);
+		reset <= 0;
+		
+		@(negedge clk);
+		wavedrom_start("Digging");
+		for (int i=0;i<14;i++)
+			@(posedge clk) {bump_left, bump_right, ground, dig} <= d[i];
+		wavedrom_stop();
+		
+		repeat(400) @(posedge clk, negedge clk) begin
+			{dig, bump_right, bump_left} <= $random & $random;
+			ground <= |($random & 7);
+			reset <= !($random & 31);
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_walk_left;
+		int errortime_walk_left;
+		int errors_walk_right;
+		int errortime_walk_right;
+		int errors_aaah;
+		int errortime_aaah;
+		int errors_digging;
+		int errortime_digging;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic areset;
+	logic bump_left;
+	logic bump_right;
+	logic ground;
+	logic dig;
+	logic walk_left_ref;
+	logic walk_left_dut;
+	logic walk_right_ref;
+	logic walk_right_dut;
+	logic aaah_ref;
+	logic aaah_dut;
+	logic digging_ref;
+	logic digging_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,bump_left,bump_right,ground,dig,walk_left_ref,walk_left_dut,walk_right_ref,walk_right_dut,aaah_ref,aaah_dut,digging_ref,digging_dut );
+	end
+
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.areset,
+		.bump_left,
+		.bump_right,
+		.ground,
+		.dig );
+	RefModule good1 (
+		.clk,
+		.areset,
+		.bump_left,
+		.bump_right,
+		.ground,
+		.dig,
+		.walk_left(walk_left_ref),
+		.walk_right(walk_right_ref),
+		.aaah(aaah_ref),
+		.digging(digging_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.areset,
+		.bump_left,
+		.bump_right,
+		.ground,
+		.dig,
+		.walk_left(walk_left_dut),
+		.walk_right(walk_right_dut),
+		.aaah(aaah_dut),
+		.digging(digging_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors_walk_left) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "walk_left", stats1.errors_walk_left, stats1.errortime_walk_left);
+		else $display("Hint: Output '%s' has no mismatches.", "walk_left");
+		if (stats1.errors_walk_right) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "walk_right", stats1.errors_walk_right, stats1.errortime_walk_right);
+		else $display("Hint: Output '%s' has no mismatches.", "walk_right");
+		if (stats1.errors_aaah) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "aaah", stats1.errors_aaah, stats1.errortime_aaah);
+		else $display("Hint: Output '%s' has no mismatches.", "aaah");
+		if (stats1.errors_digging) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "digging", stats1.errors_digging, stats1.errortime_digging);
+		else $display("Hint: Output '%s' has no mismatches.", "digging");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { walk_left_ref, walk_right_ref, aaah_ref, digging_ref } === ( { walk_left_ref, walk_right_ref, aaah_ref, digging_ref } ^ { walk_left_dut, walk_right_dut, aaah_dut, digging_dut } ^ { walk_left_ref, walk_right_ref, aaah_ref, digging_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (walk_left_ref !== ( walk_left_ref ^ walk_left_dut ^ walk_left_ref ))
+		begin if (stats1.errors_walk_left == 0) stats1.errortime_walk_left = $time;
+			stats1.errors_walk_left = stats1.errors_walk_left+1'b1; end
+		if (walk_right_ref !== ( walk_right_ref ^ walk_right_dut ^ walk_right_ref ))
+		begin if (stats1.errors_walk_right == 0) stats1.errortime_walk_right = $time;
+			stats1.errors_walk_right = stats1.errors_walk_right+1'b1; end
+		if (aaah_ref !== ( aaah_ref ^ aaah_dut ^ aaah_ref ))
+		begin if (stats1.errors_aaah == 0) stats1.errortime_aaah = $time;
+			stats1.errors_aaah = stats1.errors_aaah+1'b1; end
+		if (digging_ref !== ( digging_ref ^ digging_dut ^ digging_ref ))
+		begin if (stats1.errors_digging == 0) stats1.errortime_digging = $time;
+			stats1.errors_digging = stats1.errors_digging+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+
+[2026-05-12 22:46:14,999 - mage.agent - INFO] Initial if:
+[2026-05-12 22:46:14,999 - mage.agent - INFO] 
+[2026-05-12 22:46:15,002 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+ - input  bump_left
+ - input  bump_right
+ - input  ground
+ - input  dig
+ - output walk_left
+ - output walk_right
+ - output aaah
+ - output digging
+
+The game Lemmings involves critters with fairly simple brains. So simple
+that we are going to model it using a finite state machine. In the
+Lemmings' 2D world, Lemmings can be in one of two states: walking left
+(walk_left is 1) or walking right (walk_right is 1). It will switch
+directions if it hits an obstacle. In particular, if a Lemming is bumped
+on the left (by receiving a 1 on bump_left), it will walk right. If it's
+bumped on the right (by receiving a 1 on bump_right), it will walk left.
+If it's bumped on both sides at the same time, it will still switch
+directions.
+
+In addition to walking left and right and changing direction when bumped,
+when ground=0, the Lemming will fall and say "aaah!". When the ground
+reappears (ground=1), the Lemming will resume walking in the same
+direction as before the fall. Being bumped while falling does not affect
+the walking direction, and being bumped in the same cycle as ground
+disappears (but not yet falling), or when the ground reappears while
+still falling, also does not affect the walking direction.
+
+In addition to walking and falling, Lemmings can sometimes be told to do
+useful things, like dig (it starts digging when dig=1). A Lemming can dig
+if it is currently walking on ground (ground=1 and not falling), and will
+continue digging until it reaches the other side (ground=0). At that
+point, since there is no ground, it will fall (aaah!), then continue
+walking in its original direction once it hits ground again. As with
+falling, being bumped while digging has no effect, and being told to dig
+when falling or when there is no ground is ignored. (In other words, a
+walking Lemming can fall, dig, or switch directions. If more than one of
+these conditions are satisfied, fall has higher precedence than dig,
+which has higher precedence than switching directions.)
+
+Implement a Moore state machine that models this behaviour. areset is
+positive edge triggered asynchronous reseting the Lemming machine to walk
+left. Assume all sequential logic is triggered on the positive edge of
+the clock.
+
+
+
+[2026-05-12 22:47:15,439 - mage.agent - INFO] Initial rtl:
+[2026-05-12 22:47:15,439 - mage.agent - INFO] module TopModule(
+    input  logic clk,
+    input  logic areset,
+    input  logic bump_left,
+    input  logic bump_right,
+    input  logic ground,
+    input  logic dig,
+    output logic walk_left,
+    output logic walk_right,
+    output logic aaah,
+    output logic digging
+);
+
+    // State definitions
+    localparam WALK_L      = 4'd0;
+    localparam WALK_R      = 4'd1;
+    localparam DIG_L       = 4'd2;
+    localparam DIG_R       = 4'd3;
+    localparam FALL_L      = 4'd4;
+    localparam FALL_R      = 4'd5;
+    localparam DIG_FALL_L  = 4'd6;
+    localparam DIG_FALL_R  = 4'd7;
+
+    logic [3:0] state;
+
+    // Asynchronous reset to WALK_L
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            state <= WALK_L;
+        end else begin
+            state <= state_next;
+        end
+    end
+
+    logic [3:0] state_next;
+
+    // Determine next state based on precedence: ground=0 > dig=1 > bump
+    always @(*) begin
+        state_next = state;
+
+        case (state)
+            WALK_L:
+                if (!ground)      state_next = FALL_L;
+                else if (dig)     state_next = DIG_L;
+                else if (bump_left)  state_next = WALK_R;
+                else if (bump_right) state_next = WALK_L; // No change
+                // Note: if bump_left and bump_right both 1, spec says 'still switch directions'. 
+                // We interpret this as: if bump_left is 1, go Right. If bump_right is 1, go Left. 
+                // If both, let's prioritize one or handle logic. 
+                // Re-reading: "If it's bumped on both sides... it will still switch directions."
+                // This usually implies if direction was L, it goes R. If R, it goes L.
+                // Let's refine bump logic:
+                else if (bump_left && bump_right) state_next = WALK_R; // Arbitrary but consistent
+                else if (bump_left)  state_next = WALK_R;
+                else if (bump_right) state_next = WALK_L;
+
+            WALK_R:
+                if (!ground)      state_next = FALL_R;
+                else if (dig)     state_next = DIG_R;
+                else if (bump_left)  state_next = WALK_R;
+                else if (bump_right) state_next = WALK_L;
+                else if (bump_left && bump_right) state_next = WALK_L;
+
+            DIG_L:
+                if (!ground)      state_next = DIG_FALL_L;
+                else if (!dig)    state_next = WALK_L;
+                // Bumps ignored while digging
+
+            DIG_R:
+                if (!ground)      state_next = DIG_FALL_R;
+                else if (!dig)    state_next = WALK_R;
+                // Bumps ignored while digging
+
+            FALL_L:
+                if (ground)       state_next = WALK_L;
+                // Bumps ignored while falling
+
+            FALL_R:
+                if (ground)       state_next = WALK_R;
+                // Bumps ignored while falling
+
+            DIG_FALL_L:
+                if (ground)       state_next = WALK_L;
+
+            DIG_FALL_R:
+                if (ground)       state_next = WALK_R;
+
+            default:
+                state_next = WALK_L;
+        endcase
+
+        // Refined Bump Logic to handle "bump both sides switches direction"
+        // If state is WALK_L, and bump_left & bump_right, it should go to WALK_R.
+        // The logic above handles this via 'else if' priority or explicit check.
+        // Let's correct the WALK_L/R bump logic for the "both" case.
+        if (state == WALK_L && ground && !dig) begin
+            if (bump_left || bump_right) begin
+                if (bump_left && bump_right) state_next = WALK_R; // If L, switch to R
+                else if (bump_left) state_next = WALK_R;
+                else if (bump_right) state_next = WALK_L; // stays L
+            end
+        end
+        if (state == WALK_R && ground && !dig) begin
+             if (bump_left || bump_right) begin
+                if (bump_left && bump_right) state_next = WALK_L; // If R, switch to L
+                else if (bump_left) state_next = WALK_R; // stays R
+                else if (bump_right) state_next = WALK_L;
+            end
+        end
+        // Re-writing the WALK logic more cleanly
+    end
+
+    // Actually, the simple CASE above is cleaner if we fix the bump logic inside.
+    // Let's use a cleaner approach for the whole state machine.
+endmodule
+[2026-05-12 22:55:27,636 - mage.agent - INFO] Candidate generation: round 1 / 20
+[2026-05-12 22:55:27,733 - mage.agent - INFO] Candidate generation: round 2 / 20
+[2026-05-12 22:55:27,821 - mage.agent - INFO] Candidate generation: round 3 / 20
+[2026-05-12 22:55:27,903 - mage.agent - INFO] Candidate generation: round 4 / 20

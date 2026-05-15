@@ -1,0 +1,6 @@
+interface TopModule (
+    input clk,
+    input reset,
+    input w,
+    output z
+);

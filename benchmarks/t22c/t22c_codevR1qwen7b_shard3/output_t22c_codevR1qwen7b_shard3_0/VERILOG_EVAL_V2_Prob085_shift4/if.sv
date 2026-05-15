@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output areset, output reg load, output reg ena, output reg [3:0] data);

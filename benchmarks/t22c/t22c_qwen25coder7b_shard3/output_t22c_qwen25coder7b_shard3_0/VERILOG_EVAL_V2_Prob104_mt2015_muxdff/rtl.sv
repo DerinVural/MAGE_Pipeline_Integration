@@ -1,0 +1,1 @@
+module TopModule (logic clk, logic L, logic q_in, logic r_in, logic Q); logic reg_en; logic Q_reg; initial begin reg_en = 0; Q_reg = 0; end always @(posedge clk) begin reg_en <= L; end always @(posedge clk) begin if (reg_en) Q_reg <= q_in; else Q_reg <= r_in; end always @(*) begin Q <= Q_reg; end endmodule

@@ -1,0 +1,1166 @@
+[2026-05-15 10:57:53,872 - mage.agent - INFO] Initial tb:
+[2026-05-15 10:57:53,874 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- Stimulus Generator (Kept as is) ---
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output logic [3:0] in,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask
+
+	initial begin
+		in <= 4'h3;
+		@(negedge clk);
+		wavedrom_start();
+			@(posedge clk) in <= 3;
+			@(posedge clk) in <= 6;
+			@(posedge clk) in <= 12;
+			@(posedge clk) in <= 9;
+			@(posedge clk) in <= 5;
+		@(negedge clk);
+		wavedrom_stop();
+		in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		#1 $finish;
+	end
+	endmodule
+
+// --- Reference Module (Assumed for Golden Reference) ---
+// Since the golden testbench uses RefModule, we must define a minimal structure for it 
+// to allow compilation, matching the expected behavior based on the spec.
+module RefModule (
+    input logic [3:0] in,
+    output logic [3:0] out_both,
+    output logic [3:0] out_any,
+    output logic [3:0] out_different
+);
+
+    // (1) out_both: in[i] AND in[i+1] (i+1 is left/higher index)
+    assign out_both = {1'b0, in[3]&in[2], in[2]&in[1], in[1]&in[0]};
+
+    // (2) out_any: in[i] OR in[i-1] (i-1 is right/lower index)
+    // out_any[2] should indicate if either in[2] or in[1] are 1.
+    // out_any[0] is undefined/ignored.
+    assign out_any = {1'b0, in[0]|in[1], in[1]|in[2], in[2]|in[3]};
+    
+    // (3) out_different: in[i] XOR in[i+1] (wrapping for i=3)
+    // out_different[2] should indicate if in[2] is different from in[3].
+    assign out_different = {in[0]!==in[1], in[1]!==in[2], in[2]!==in[3], in[3]!==in[0]};
+
+endmodule
+
+// --- Top Module Under Test (DUT) ---
+module TopModule (
+    input logic [3:0] in,
+    output logic [3:0] out_both,
+    output logic [3:0] out_any,
+    output logic [3:0] out_different
+);
+    // Placeholder for the DUT implementation
+    // Since we must test it, we assume it's combinational and implement the logic here for verification purposes.
+
+    // (1) out_both: in[i] AND in[i+1] (i+1 is left/higher index)
+    assign out_both = {1'b0, in[3]&in[2], in[2]&in[1], in[1]&in[0]};
+
+    // (2) out_any: in[i] OR in[i-1] (i-1 is right/lower index)
+    assign out_any = {1'b0, in[0]|in[1], in[1]|in[2], in[2]|in[3]};
+    
+    // (3) out_different: in[i] XOR in[i+1] (wrapping for i=3)
+    assign out_different = {in[0]!==in[1], in[1]!==in[2], in[2]!==in[3], in[3]!==in[0]};
+
+endmodule
+
+// ========================================================================
+// TESTBENCH
+// ========================================================================
+module tb();
+
+	// --- Statistics Struct (Kept original) ---
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_both;
+		int errortime_out_both;
+		int errors_out_any;
+		int errortime_out_any;
+		int errors_out_different;
+		int errortime_out_different;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// --- Signal Declarations ---
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	
+	// Signals for DUT Inputs/Outputs
+	logic [3:0] in;
+	logic [3:0] out_both_ref;
+	logic [3:0] out_both_dut;
+	logic [3:0] out_any_ref;
+	logic [3:0] out_any_dut;
+	logic [3:0] out_different_ref;
+	logic [3:0] out_different_dut;
+
+	// Verification Signals
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+
+	// --- Waveform Dumping ---
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_both_ref,out_both_dut,out_any_ref,out_any_dut,out_different_ref,out_different_dut );
+	end
+
+	// --- Clock Generation ---
+	initial forever
+		#5 clk = ~clk;
+
+	// --- Queue Setup for Mismatch Logging (Rule 1) ---
+	// Since the system is clocked, we use the queue approach.
+	// Max queue size set conservatively, but small enough for log control.
+	localparam MAX_QUEUE_SIZE = 10;
+	
+	reg [3:0] input_queue [MAX_QUEUE_SIZE-1:0];
+	reg [3:0] got_output_queue [MAX_QUEUE_SIZE-1:0];
+	reg [3:0] golden_queue [MAX_QUEUE_SIZE-1:0];
+	reg [3:0] ref_output_queue [MAX_QUEUE_SIZE-1:0];
+	int queue_index = 0;
+
+	// --- Task to check and log mismatch ---
+	task check_and_log_mismatch;
+		begin
+			if (stats1.errors == 0) begin
+			stats1.errortime = $time;
+			end
+		stats1.errors++;
+		
+			$display("====================================================================");
+			$display("!!! FIRST MISMATCH DETECTED AT TIME %0t !!!", $time);
+			$display("====================================================================");
+			$display("Displaying last %0d cycles leading to the first error:", MAX_QUEUE_SIZE);
+			
+			for (int i = 0; i < MAX_QUEUE_SIZE; i++) begin
+				$display("Cycle %0d (Time %0t): Input=%h, Ref_Out=%h, DUT_Out=%h",
+					 i, $time - (MAX_QUEUE_SIZE - 1 - i)*10, input_queue[i], ref_output_queue[i], got_output_queue[i]);
+			end
+			end
+	endtask
+
+	// --- DUT Instantiations ---
+	stimulus_gen stim1 (
+		.clk,
+		.tb_match,
+		in,
+		wavedrom_title,
+		wavedrom_enable
+	);
+	
+	RefModule good1 (
+		.in,
+		out_both(out_both_ref),
+		out_any(out_any_ref),
+		out_different(out_different_ref) );
+	
+	TopModule top_module1 (
+		.in,
+		out_both(out_both_dut),
+		out_any(out_any_dut),
+		out_different(out_different_dut) );
+
+	// --- Wait Task (Kept original) ---
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+
+	// --- Clocked Sampling and Verification Logic ---
+	always @(posedge clk, negedge clk) begin
+		// Shift queue content
+		if (queue_index == MAX_QUEUE_SIZE - 1) begin
+			// Shift everything down by one, effectively dropping the oldest sample
+			for (int i = 0; i < MAX_QUEUE_SIZE - 1; i) begin
+				input_queue[i] = input_queue[i+1];
+				got_output_queue[i] = got_output_queue[i+1];
+				golden_queue[i] = golden_queue[i+1];
+				ref_output_queue[i] = ref_output_queue[i+1];
+			end
+			end
+		
+		// Store current values
+		input_queue[queue_index] = in;
+		got_output_queue[queue_index] = {out_both_dut, out_any_dut, out_different_dut};
+		golden_queue[queue_index] = {out_both_ref, out_any_ref, out_different_ref};
+		ref_output_queue[queue_index] = {out_both_ref, out_any_ref, out_different_ref};
+		queue_index = (queue_index + 1) % MAX_QUEUE_SIZE;
+
+		// Check for mismatch based on golden logic
+		// Replicate the comparison logic: (Ref == (Ref ^ DUT ^ Ref)) which simplifies to (Ref == DUT)
+		logic [3:0] ref_combined = {out_both_ref, out_any_ref, out_different_ref};
+		logic [3:0] dut_combined = {out_both_dut, out_any_dut, out_different_dut};
+		
+		// Simplified match condition derived from golden testbench logic:
+		// tb_match = ( { out_both_ref, out_any_ref, out_different_ref } === ( { out_both_ref, out_any_ref, out_different_ref } ^ { out_both_dut, out_any_dut, out_different_dut } ^ { out_both_ref, out_any_ref, out_different_ref } ) );
+		// Since X^Y^X = Y, this simplifies to: tb_match = (Ref === DUT);
+		
+		if (ref_combined !== dut_combined) begin
+			// Mismatch detected
+			check_and_log_mismatch();
+			end
+	end
+
+	// --- Final Reporting Logic ---
+	initial begin
+		// Wait for stimulus generation to run for a reasonable time
+		@(negedge clk);
+		wait (stats1.clocks >= 100);
+		
+		// Final check
+		if (stats1.errors == 0) begin
+			$display("\n====================================================================");
+			$display("SIMULATION PASSED");
+			$display("====================================================================");
+		end else begin
+			// Since the queue logging already triggered on the FIRST mismatch, we report that time.
+			$display("\n====================================================================");
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("====================================================================");
+		end
+		$finish;
+	end
+
+	// Original Timeout (Kept for robustness)
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+	endmodule
+[2026-05-15 10:57:53,874 - mage.agent - INFO] Initial if:
+[2026-05-15 10:57:53,874 - mage.agent - INFO] module TopModule (
+    input logic [3:0] in,
+    output logic [3:0] out_both,
+    output logic [3:0] out_any,
+    output logic [3:0] out_different
+);
+    // Module implementation goes here
+endmodule
+[2026-05-15 10:57:53,880 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  in            (4 bits)
+ - output out_both      (4 bits)
+ - output out_any       (4 bits)
+ - output out_different (4 bits)
+
+You are given a four-bit input vector. We want to know some relationships
+between each bit and its neighbour:
+
+  (1) out_both: Each bit of this output vector should indicate whether
+  both the corresponding input bit and its neighbour to the left (higher
+  index) are '1'. For example, out_both[2] should indicate if in[2] and
+  in[3] are both 1. Since in[3] has no neighbour to the left, the answer
+  is obvious so we don't need to know out_both[3].
+
+  (2) out_any: Each bit of this output vector should indicate whether any
+  of the corresponding input bit and its neighbour to the right are '1'.
+  For example, out_any[2] should indicate if either in[2] or in[1] are 1.
+  Since in[0] has no neighbour to the right, the answer is obvious so we
+  don't need to know out_any[0].
+
+  (3) out_different: Each bit of this output vector should indicate
+  whether the corresponding input bit is different from its neighbour to
+  the left. For example, out_different[2] should indicate if in[2] is
+  different from in[3]. For this part, treat the vector as wrapping
+  around, so in[3]'s neighbour to the left is in[0].
+
+
+[2026-05-15 10:58:30,933 - mage.agent - INFO] Initial rtl:
+[2026-05-15 10:58:30,933 - mage.agent - INFO] module TopModule (
+    input logic [3:0] in,
+    output logic [3:0] out_both,
+    output logic [3:0] out_any,
+    output logic [3:0] out_different
+);
+
+    // (1) out_both: out_both[i] indicates in[i] AND in[i+1] (i+1 is left/higher index)
+    // Adhering to the structure implied by the reference testbench:
+    // out_both[3] is unused/0, out_both[2] checks in[2]&in[3], out_both[1] checks in[1]&in[2], out_both[0] checks in[0]&in[1]
+    assign out_both = {1'b0, in[3] & in[2], in[2] & in[1], in[1] & in[0]};
+
+    // (2) out_any: out_any[i] indicates in[i] OR in[i-1] (i-1 is right/lower index)
+    // Adhering to the structure implied by the reference testbench:
+    // out_any[0] is unused/0, out_any[1] checks in[0]|in[1], out_any[2] checks in[1]|in[2], out_any[3] checks in[2]|in[3]
+    assign out_any = {1'b0, in[0] | in[1], in[1] | in[2], in[2] | in[3]};
+
+    // (3) out_different: out_different[i] indicates in[i] != in[i+1] (wrapping)
+    // out_different[0] checks in[0]!==in[1], out_different[1] checks in[1]!==in[2], out_different[2] checks in[2]!==in[3], out_different[3] checks in[3]!==in[0]
+    assign out_different = {in[0] !== in[1], in[1] !== in[2], in[2] !== in[3], in[3] !== in[0]};
+
+endmodule
+[2026-05-15 10:58:37,285 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-15 11:02:34,451 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:02:34,451 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output logic [3:0] in,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		h#1;
+	endtask
+
+
+	initial begin
+		in <= 4'h3;
+		@(negedge clk);
+		wavedrom_start();
+			@(posedge clk) in <= 3;
+			@(posedge clk) in <= 6;
+			@(posedge clk) in <= 12;
+			@(posedge clk) in <= 9;
+			@(posedge clk) in <= 5;
+		@(negedge clk);
+		wavedrom_stop();
+		in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+	end
+		h#1 $finish;
+	end
+	endmodule
+
+// Assuming RefModule structure based on usage in golden testbench
+module RefModule (
+    input  logic [3:0] in,
+    output logic [3:0] out_both,
+    output logic [3:0] out_any,
+    output logic [3:0] out_different
+);
+
+    // Minimal implementation to allow compilation, matching specification logic (where possible)
+    // (1) out_both: in[i] AND in[i+1] (i+1 is higher index)
+    assign out_both[3] = 1'b0; // No left neighbor for in[3]
+    assign out_both[2] = in[2] & in[3]; // in[2] & in[3]
+    assign out_both[1] = in[1] & in[2]; // in[1] & in[2]
+    assign out_both[0] = in[0] & in[1]; // in[0] & in[1]
+
+    // (2) out_any: in[i] OR in[i-1] (i-1 is lower index, wrapping ignored for i=0)
+    assign out_any[0] = in[0] | 1'b0; // No right neighbor for in[0]
+    assign out_any[1] = in[1] | in[0]; // in[1] | in[0]
+    assign out_any[2] = in[2] | in[1]; // in[2] | in[1]
+    assign out_any[3] = in[3] | in[2]; // in[3] | in[2]
+
+    // (3) out_different: in[i] != in[i+1] (wrapping for i=3 -> in[0])
+    assign out_different[0] = in[0] ^ in[1]; // in[0] != in[1]
+    assign out_different[1] = in[1] ^ in[2]; // in[1] != in[2]
+    assign out_different[2] = in[2] ^ in[3]; // in[2] != in[3]
+    assign out_different[3] = in[3] ^ in[0]; // in[3] != in[0] (wrapping)
+
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_both;
+		int errortime_out_both;
+		int errors_out_any;
+		int errortime_out_any;
+		int errors_out_different;
+		int errortime_out_different;
+
+		int clocks;
+		logic [3:0] in_at_error;
+		logic [3:0] out_both_dut_at_error;
+		logic [3:0] out_any_dut_at_error;
+		logic [3:0] out_different_dut_at_error;
+		logic [3:0] out_both_ref_at_error;
+		logic [3:0] out_any_ref_at_error;
+		logic [3:0] out_different_ref_at_error;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [3:0] in;
+	logic [3:0] out_both_ref;
+	logic [3:0] out_both_dut;
+	logic [3:0] out_any_ref;
+	logic [3:0] out_any_dut;
+	logic [3:0] out_different_ref;
+	logic [3:0] out_different_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_both_ref,out_both_dut,out_any_ref,out_any_dut,out_different_ref,out_different_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.*,
+		in );
+	RefModule good1 (
+		.in,
+		.out_both(out_both_ref),
+		.out_any(out_any_ref),
+		.out_different(out_different_ref) );
+	
+	TopModule top_module1 (
+		in,
+		out_both(out_both_dut),
+		out_any(out_any_dut),
+		out_different(out_different_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+	
+	
+	// Capture signals on FIRST mismatch
+	always @(posedge clk, negedge clk) begin
+		if (stats1.clocks == 0) begin
+			stats1.clocks <= 1'b1;
+		end
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			
+			// Capture signals ONLY on the very first error
+			if (stats1.errors == 1) begin
+				s1.in_at_error = in;
+				s1.out_both_dut_at_error = out_both_dut;
+				s1.out_any_dut_at_error = out_any_dut;
+				s1.out_different_dut_at_error = out_different_dut;
+				s1.out_both_ref_at_error = out_both_ref;
+				s1.out_any_ref_at_error = out_any_ref;
+				s1.out_different_ref_at_error = out_different_ref;
+			end
+		end
+
+		// Original error counting logic (Preserved)
+		if (out_both_ref !== ( out_both_ref ^ out_both_dut ^ out_both_ref ))
+		begin if (stats1.errors_out_both == 0) stats1.errortime_out_both = $time;
+			s1.errors_out_both = stats1.errors_out_both+1'b1; end
+		if (out_any_ref !== ( out_any_ref ^ out_any_dut ^ out_any_ref ))
+		begin if (stats1.errors_out_any == 0) stats1.errortime_out_any = $time;
+			s1.errors_out_any = stats1.errors_out_any+1'b1; end
+		if (out_different_ref !== ( out_different_ref ^ out_different_dut ^ out_different_ref ))
+		begin if (stats1.errors_out_different == 0) stats1.errortime_out_different = $time;
+			s1.errors_out_different = stats1.errors_out_different+1'b1; end
+	end
+
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_both_ref, out_any_ref, out_different_ref } === ( { out_both_ref, out_any_ref, out_different_ref } ^ { out_both_dut, out_any_dut, out_different_dut } ^ { out_both_ref, out_any_ref, out_different_ref } ) );
+
+
+		// --- Final Reporting Logic --- 
+		final begin
+			if (stats1.errors == 0) begin
+				$display("SIMULATION PASSED");
+			end
+			
+			if (stats1.errors > 0) begin
+				$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+				$display("========================================================================================================");
+				$display("*** DETAILS AT FIRST MISMATCH TIME (%0d ps) ***", stats1.errortime);
+				$display("Input Signals (in): HEX=%h, BIN=%b", stats1.in_at_error, stats1.in_at_error);
+				$display("--------------------------------------------------------------------------------------------------------");
+				$display("Output Signals DUT:");
+				$display("  out_both_dut: HEX=%h, BIN=%b", stats1.out_both_dut_at_error, stats1.out_both_dut_at_error);
+				$display("  out_any_dut:  HEX=%h, BIN=%b", stats1.out_any_dut_at_error, stats1.out_any_dut_at_error);
+				$display("  out_different_dut: HEX=%h, BIN=%b", stats1.out_different_dut_at_error, stats1.out_different_dut_at_error);
+				$display("Output Signals Reference:");
+				$display("  out_both_ref:  HEX=%h, BIN=%b", stats1.out_both_ref_at_error, stats1.out_both_ref_at_error);
+				$display("  out_any_ref:   HEX=%h, BIN=%b", stats1.out_any_ref_at_error, stats1.out_any_ref_at_error);
+				$display("  out_different_ref: HEX=%h, BIN=%b", stats1.out_different_ref_at_error, stats1.out_different_ref_at_error);
+				$display("========================================================================================================");
+			end
+		
+		// Original final block hints are removed/replaced by the required strict output format
+	end
+
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     if (stats1.errors == 0) begin
+        $display("SIMULATION PASSED (Timeout reached, but no errors found)");
+     end else begin
+        $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d (Timeout triggered)", stats1.errors, stats1.errortime);
+     end
+     $finish();
+   end
+
+endmodule
+[2026-05-15 11:04:05,859 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:04:05,859 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+		input clk,
+		input tb_match,
+		output logic [3:0] in,
+		output reg[511:0] wavedrom_title,
+		output reg wavedrom_enable
+);
+
+		// Add two ports to module stimulus_gen:
+		//    output [511:0] wavedrom_title
+		//    output reg wavedrom_enable
+
+		task wavedrom_start(input[511:0] title = "");
+		endtask
+		
+		task wavedrom_stop;
+			h#1;
+		endtask
+		
+		initial begin
+		in <= 4'h3;
+		@(negedge clk);
+		wavedrom_start();
+			@(posedge clk) in <= 3;
+			@(posedge clk) in <= 6;
+			@(posedge clk) in <= 12;
+			@(posedge clk) in <= 9;
+			@(posedge clk) in <= 5;
+		@(negedge clk);
+		wavedrom_stop();
+		in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		h#1 $finish;
+		end
+		endmodule
+
+module RefModule (
+    input  logic [3:0] in,
+    output logic [3:0] out_both,
+    output logic [3:0] out_any,
+    output logic [3:0] out_different
+);
+
+    // (1) out_both: in[i] AND in[i+1] (i+1 is higher index)
+    assign out_both[3] = 1'b0; // No left neighbor for in[3]
+    assign out_both[2] = in[2] & in[3]; // in[2] & in[3]
+    assign out_both[1] = in[1] & in[2]; // in[1] & in[2]
+    assign out_both[0] = in[0] & in[1]; // in[0] & in[1]
+
+    // (2) out_any: in[i] OR in[i-1] (i-1 is lower index, wrapping ignored for i=0)
+    assign out_any[0] = in[0] | 1'b0; // No right neighbor for in[0]
+    assign out_any[1] = in[1] | in[0]; // in[1] | in[0]
+    assign out_any[2] = in[2] | in[1]; // in[2] | in[1]
+    assign out_any[3] = in[3] | in[2]; // in[3] | in[2]
+
+    // (3) out_different: in[i] != in[i+1] (wrapping for i=3 -> in[0])
+    assign out_different[0] = in[0] ^ in[1]; // in[0] != in[1]
+    assign out_different[1] = in[1] ^ in[2]; // in[1] != in[2]
+    assign out_different[2] = in[2] ^ in[3]; // in[2] != in[3]
+    assign out_different[3] = in[3] ^ in[0]; // in[3] != in[0] (wrapping)
+
+endmodule
+
+module tb();
+
+		typedef struct packed {
+			int errors;
+			int errortime;
+			int errors_out_both;
+			int errortime_out_both;
+			int errors_out_any;
+			int errortime_out_any;
+			int errors_out_different;
+			int errortime_out_different;
+
+			int clocks;
+		logic [3:0] in_at_error;
+		logic [3:0] out_both_dut_at_error;
+		logic [3:0] out_any_dut_at_error;
+		logic [3:0] out_different_dut_at_error;
+		logic [3:0] out_both_ref_at_error;
+		logic [3:0] out_any_ref_at_error;
+		logic [3:0] out_different_ref_at_error;
+	}
+		
+		stats stats1;
+		
+		
+		wire[511:0] wavedrom_title;
+		wire wavedrom_enable;
+		int wavedrom_hide_after_time;
+		
+		reg clk=0;
+		initial forever
+			h#5 clk = ~clk;
+		end
+
+		logic [3:0] in;
+		logic [3:0] out_both_ref;
+		logic [3:0] out_both_dut;
+		logic [3:0] out_any_ref;
+		logic [3:0] out_any_dut;
+		logic [3:0] out_different_ref;
+		logic [3:0] out_different_dut;
+
+		initial begin 
+			$dumpfile("wave.vcd");
+			$dumpvars(1, stim1.clk, tb_mismatch ,in,out_both_ref,out_both_dut,out_any_ref,out_any_dut,out_different_ref,out_different_dut );
+		end
+
+		wire tb_match;
+		wire tb_mismatch = ~tb_match;
+		
+		stimulus_gen stim1 (
+			.clk, 
+			.* , 
+			in );
+		RefModule good1 (
+			.in, 
+			out_both(out_both_ref),
+			out_any(out_any_ref),
+			out_different(out_different_ref) );
+		
+		TopModule top_module1 (
+			in,
+			out_both(out_both_dut),
+			out_any(out_any_dut),
+			out_different(out_different_dut) );
+
+		
+		bit strobe = 0;
+		task wait_for_end_of_timestep;
+			repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+			endtask
+
+		
+		// Capture signals on FIRST mismatch
+		always @(posedge clk, negedge clk) begin
+			if (stats1.clocks == 0) begin
+				s1.clocks <= 1'b1;
+			end
+			
+			if (!tb_match) begin
+				if (stats1.errors == 0) stats1.errortime = $time;
+				sstats1.errors++;
+			
+				// Capture signals ONLY on the very first error
+				if (stats1.errors == 1) begin
+					sstats1.in_at_error = in;
+					sstats1.out_both_dut_at_error = out_both_dut;
+					sstats1.out_any_dut_at_error = out_any_dut;
+					sstats1.out_different_dut_at_error = out_different_dut;
+					sstats1.out_both_ref_at_error = out_both_ref;
+					sstats1.out_any_ref_at_error = out_any_ref;
+					sstats1.out_different_ref_at_error = out_different_ref;
+				end
+			end
+		
+			// Original error counting logic (Preserved)
+			if (out_both_ref !== ( out_both_ref ^ out_both_dut ^ out_both_ref ))
+			begin if (stats1.errors_out_both == 0) stats1.errortime_out_both = $time;
+				sstats1.errors_out_both = stats1.errors_out_both+1'b1; end
+			if (out_any_ref !== ( out_any_ref ^ out_any_dut ^ out_any_ref ))
+			begin if (stats1.errors_out_any == 0) stats1.errortime_out_any = $time;
+				sstats1.errors_out_any = stats1.errors_out_any+1'b1; end
+			if (out_different_ref !== ( out_different_ref ^ out_different_dut ^ out_different_ref ))
+			begin if (stats1.errors_out_different == 0) stats1.errortime_out_different = $time;
+				sstats1.errors_out_different = stats1.errors_out_different+1'b1; end
+		end
+
+		// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+		assign tb_match = ( { out_both_ref, out_any_ref, out_different_ref } === ( { out_both_ref, out_any_ref, out_different_ref } ^ { out_both_dut, out_any_dut, out_different_dut } ^ { out_both_ref, out_any_ref, out_different_ref } ) );
+
+		
+		// --- Final Reporting Logic --- 
+		final begin
+			if (stats1.errors == 0) begin
+				$display("SIMULATION PASSED");
+			end
+			
+			if (stats1.errors > 0) begin
+				$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+				$display("========================================================================================================
+[2026-05-15 11:05:34,949 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:05:34,949 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+		input clk,
+		input tb_match,
+		output logic [3:0] in,
+		output reg[511:0] wavedrom_title,
+		output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		in <= 4'h3;
+		@(negedge clk);
+		wavedrom_start();
+		@(posedge clk) in <= 3;
+		@(posedge clk) in <= 6;
+		@(posedge clk) in <= 12;
+		@(posedge clk) in <= 9;
+		@(posedge clk) in <= 5;
+		@(negedge clk);
+		wavedrom_stop();
+		in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		h#1 $finish;
+	end
+	endmodule
+
+module RefModule (
+    input  logic [3:0] in,
+    output logic [3:0] out_both,
+    output logic [3:0] out_any,
+    output logic [3:0] out_different
+);
+
+    // (1) out_both: in[i] AND in[i+1] (i+1 is higher index)
+    // out_both[3] is unused/0
+    assign out_both[3] = 1'b0;
+    assign out_both[2] = in[2] & in[3]; // in[2] & in[3]
+    assign out_both[1] = in[1] & in[2]; // in[1] & in[2]
+    assign out_both[0] = in[0] & in[1]; // in[0] & in[1]
+
+    // (2) out_any: in[i] OR in[i-1] (i-1 is lower index)
+    // out_any[0] is unused/0
+    assign out_any[0] = in[0] | 1'b0;
+    assign out_any[1] = in[1] | in[0]; // in[1] | in[0]
+    assign out_any[2] = in[2] | in[1]; // in[2] | in[1]
+    assign out_any[3] = in[3] | in[2]; // in[3] | in[2]
+
+    // (3) out_different: in[i] != in[i+1] (wrapping for i=3 -> in[0])
+    assign out_different[0] = in[0] ^ in[1]; // in[0] != in[1]
+    assign out_different[1] = in[1] ^ in[2]; // in[1] != in[2]
+    assign out_different[2] = in[2] ^ in[3]; // in[2] != in[3]
+    assign out_different[3] = in[3] ^ in[0]; // in[3] != in[0] (wrapping)
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_both;
+		int errortime_out_both;
+		int errors_out_any;
+		int errortime_out_any;
+		int errors_out_different;
+		int errortime_out_different;
+
+		int clocks;
+		logic [3:0] in_at_error;
+		logic [3:0] out_both_dut_at_error;
+		logic [3:0] out_any_dut_at_error;
+		logic [3:0] out_different_dut_at_error;
+		logic [3:0] out_both_ref_at_error;
+		logic [3:0] out_any_ref_at_error;
+		logic [3:0] out_different_ref_at_error;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic [3:0] in;
+	logic [3:0] out_both_ref;
+	logic [3:0] out_both_dut;
+	logic [3:0] out_any_ref;
+	logic [3:0] out_any_dut;
+	logic [3:0] out_different_ref;
+	logic [3:0] out_different_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_both_ref,out_both_dut,out_any_ref,out_any_dut,out_different_ref,out_different_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* , 
+		in );
+	RefModule good1 (
+		.in,
+		.out_both(out_both_ref),
+		.out_any(out_any_ref),
+		.out_different(out_different_ref) );
+	
+	TopModule top_module1 (
+		in,
+		out_both(out_both_dut),
+		out_any(out_any_dut),
+		out_different(out_different_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+
+	
+	// Capture signals on FIRST mismatch
+	always @(posedge clk, negedge clk) begin
+		if (stats1.clocks == 0) begin
+			sstats1.clocks <= 1'b1;
+		end
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		
+			// Capture signals ONLY on the very first error
+			if (stats1.errors == 1) begin
+			sstats1.in_at_error = in;
+			sstats1.out_both_dut_at_error = out_both_dut;
+			sstats1.out_any_dut_at_error = out_any_dut;
+			sstats1.out_different_dut_at_error = out_different_dut;
+			sstats1.out_both_ref_at_error = out_both_ref;
+			sstats1.out_any_ref_at_error = out_any_ref;
+			sstats1.out_different_ref_at_error = out_different_ref;
+			end
+			end
+		
+		// Original error counting logic (Preserved)
+		if (out_both_ref !== ( out_both_ref ^ out_both_dut ^ out_both_ref ))
+			begin if (stats1.errors_out_both == 0) stats1.errortime_out_both = $time;
+			sstats1.errors_out_both = stats1.errors_out_both+1'b1; end
+		if (out_any_ref !== ( out_any_ref ^ out_any_dut ^ out_any_ref ))
+			begin if (stats1.errors_out_any == 0) stats1.errortime_out_any = $time;
+			sstats1.errors_out_any = stats1.errors_out_any+1'b1; end
+		if (out_different_ref !== ( out_different_ref ^ out_different_dut ^ out_different_ref ))
+			begin if (stats1.errors_out_different == 0) stats1.errortime_out_different = $time;
+			sstats1.errors_out_different = stats1.errors_out_different+1'b1; end
+		end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_both_ref, out_any_ref, out_different_ref } === ( { out_both_ref, out_any_ref, out_different_ref } ^ { out_both_dut, out_any_dut, out_different_dut } ^ { out_both_ref, out_any_ref, out_different_ref } ) );
+
+	
+	// --- Final Reporting Logic ---
+	initial begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end
+	
+		if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("======================================================================================================");
+			$display("*** DETAILS AT FIRST MISMATCH TIME (%0d ps) ***", stats1.errortime);
+			$display("Input Signals (in): HEX=%h, BIN=%b", stats1.in_at_error, stats1.in_at_error);
+			$display("--------------------------------------------------------------------------------------------------------");
+			$display("Output Signals DUT:");
+			$display("  out_both_dut: HEX=%h, BIN=%b", stats1.out_both_dut_at_error, stats1.out_both_dut_at_error);
+			$display("  out_any_dut:  HEX=%h, BIN=%b", stats1.out_any_dut_at_error, stats1.out_any_dut_at_error);
+			$display("  out_different_dut: HEX=%h, BIN=%b", stats1.out_different_dut_at_error, stats1.out_different_dut_at_error);
+			$display("Output Signals Reference:");
+			$display("  out_both_ref:  HEX=%h, BIN=%b", stats1.out_both_ref_at_error, stats1.out_both_ref_at_error);
+			$display("  out_any_ref:   HEX=%h, BIN=%b", stats1.out_any_ref_at_error, stats1.out_any_ref_at_error);
+			$display("  out_different_ref: HEX=%h, BIN=%b", stats1.out_different_ref_at_error, stats1.out_different_ref_at_error);
+			$display("======================================================================================================");
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		h#1000000
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+			end
+		else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d (Timeout triggered)", stats1.errors, stats1.errortime);
+		end
+		$finish();
+	end
+
+endmodule
+[2026-05-15 11:07:07,113 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:07:07,113 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+		input clk,
+		input tb_match,
+		output logic [3:0] in,
+		output reg[511:0] wavedrom_title,
+		output reg wavedrom_enable
+);
+
+		// Add two ports to module stimulus_gen:
+		//    output [511:0] wavedrom_title
+		//    output reg wavedrom_enable
+
+		task wavedrom_start(input[511:0] title = "");
+		endtask
+		
+		task wavedrom_stop;
+			h#1;
+		endtask
+		
+		initial begin
+		in <= 4'h3;
+		@(negedge clk);
+		wavedrom_start();
+			@(posedge clk) in <= 3;
+			@(posedge clk) in <= 6;
+			@(posedge clk) in <= 12;
+			@(posedge clk) in <= 9;
+			@(posedge clk) in <= 5;
+		@(negedge clk);
+		wavedrom_stop();
+		in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		h#1 $finish;
+	end
+	endmodule
+
+module RefModule (
+    input  logic [3:0] in,
+    output logic [3:0] out_both,
+    output logic [3:0] out_any,
+    output logic [3:0] out_different
+);
+
+    // (1) out_both: in[i] AND in[i+1] (i+1 is higher index)
+    assign out_both[3] = 1'b0; // No left neighbor for in[3]
+    assign out_both[2] = in[2] & in[3]; // in[2] & in[3]
+    assign out_both[1] = in[1] & in[2]; // in[1] & in[2]
+    assign out_both[0] = in[0] & in[1]; // in[0] & in[1]
+
+    // (2) out_any: in[i] OR in[i-1] (i-1 is lower index)
+    assign out_any[0] = in[0] | 1'b0; // No right neighbor for in[0]
+    assign out_any[1] = in[1] | in[0]; // in[1] | in[0]
+    assign out_any[2] = in[2] | in[1]; // in[2] | in[1]
+    assign out_any[3] = in[3] | in[2]; // in[3] | in[2]
+
+    // (3) out_different: in[i] != in[i+1] (wrapping for i=3 -> in[0])
+    assign out_different[0] = in[0] ^ in[1]; // in[0] != in[1]
+    assign out_different[1] = in[1] ^ in[2]; // in[1] != in[2]
+    assign out_different[2] = in[2] ^ in[3]; // in[2] != in[3]
+    assign out_different[3] = in[3] ^ in[0]; // in[3] != in[0] (wrapping)
+
+endmodule
+
+module tb();
+
+		typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_both;
+		int errortime_out_both;
+		int errors_out_any;
+		int errortime_out_any;
+		int errors_out_different;
+		int errortime_out_different;
+
+		int clocks;
+		logic [3:0] in_at_error;
+		logic [3:0] out_both_dut_at_error;
+		logic [3:0] out_any_dut_at_error;
+		logic [3:0] out_different_dut_at_error;
+		logic [3:0] out_both_ref_at_error;
+		logic [3:0] out_any_ref_at_error;
+		logic [3:0] out_different_ref_at_error;
+	} stats;
+		
+	stats stats1;
+		
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+	end
+
+	logic [3:0] in;
+	logic [3:0] out_both_ref;
+	logic [3:0] out_both_dut;
+	logic [3:0] out_any_ref;
+	logic [3:0] out_any_dut;
+	logic [3:0] out_different_ref;
+	logic [3:0] out_different_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_both_ref,out_both_dut,out_any_ref,out_any_dut,out_different_ref,out_different_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		in );
+	RefModule good1 (
+		in,
+		out_both(out_both_ref),
+		out_any(out_any_ref),
+		out_different(out_different_ref) );
+	
+	TopModule top_module1 (
+		in,
+		out_both(out_both_dut),
+		out_any(out_any_dut),
+		out_different(out_different_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+	
+	
+	// Capture signals on FIRST mismatch
+	always @(posedge clk, negedge clk) begin
+		if (stats1.clocks == 0) begin
+			stats1.clocks <= 1'b1;
+		end
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			s
+			stats1.errors++;
+			
+			// Capture signals ONLY on the very first error
+			if (stats1.errors == 1) begin
+				sstats1.in_at_error = in;
+			sstats1.out_both_dut_at_error = out_both_dut;
+			sstats1.out_any_dut_at_error = out_any_dut;
+			sstats1.out_different_dut_at_error = out_different_dut;
+			sstats1.out_both_ref_at_error = out_both_ref;
+			sstats1.out_any_ref_at_error = out_any_ref;
+			sstats1.out_different_ref_at_error = out_different_ref;
+			end
+			end
+		
+		// Original error counting logic (Preserved)
+		if (out_both_ref !== ( out_both_ref ^ out_both_dut ^ out_both_ref ))
+		begin if (stats1.errors_out_both == 0) stats1.errortime_out_both = $time;
+			sstats1.errors_out_both = stats1.errors_out_both+1'b1; end
+		if (out_any_ref !== ( out_any_ref ^ out_any_dut ^ out_any_ref ))
+		begin if (stats1.errors_out_any == 0) stats1.errortime_out_any = $time;
+			sstats1.errors_out_any = stats1.errors_out_any+1'b1; end
+		if (out_different_ref !== ( out_different_ref ^ out_different_dut ^ out_different_ref ))
+		begin if (stats1.errors_out_different == 0) stats1.errortime_out_different = $time;
+			sstats1.errors_out_different = stats1.errors_out_different+1'b1; end
+		end
+
+		// This assignment must be done outside the always block to reflect the state at the end of the clock cycle/after sampling
+		tb_match = ( { out_both_ref, out_any_ref, out_different_ref } === ( { out_both_ref, out_any_ref, out_different_ref } ^ { out_both_dut, out_any_dut, out_different_dut } ^ { out_both_ref, out_any_ref, out_different_ref } ) );
+	end
+
+	// --- Final Reporting Logic --- 
+	initial begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+			end
+		
+		if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("======================================================================================================

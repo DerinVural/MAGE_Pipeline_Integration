@@ -1,0 +1,1131 @@
+[2026-05-14 14:35:05,673 - mage.agent - INFO] Initial tb:
+[2026-05-14 14:35:05,674 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// ===========================================================
+// Stimulus Generator (Maintained exactly as golden)
+// ===========================================================
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output logic [99:0] in,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask
+	
+	
+	initial begin
+		reg [3:0] count; count = 0;
+		in <= 100'h0;
+		// AND gate uses huge numbers and creates a sparse waveform.
+		@(negedge clk) wavedrom_start("Test AND gate");
+			@(posedge clk,negedge clk) in <= 100'h0;	// Test OR gate
+			@(posedge clk,negedge clk); in <= ~100'h0;	// Test AND gate
+			@(posedge clk,negedge clk); in <= 100'h3ffff;	
+			@(posedge clk,negedge clk); in <= ~100'h3ffff;	
+			@(posedge clk,negedge clk); in <= 100'h80;	
+			@(posedge clk,negedge clk); in <= ~100'h80;			wavedrom_stop();
+
+		@(negedge clk) wavedrom_start("Test OR and XOR gates");
+			@(posedge clk) in <= 100'h0;	// Test OR gate
+			@(posedge clk); in <= 100'h7;	// Test AND gate
+			repeat(10) @(posedge clk, negedge clk) begin
+				in <= count;	
+			count <= count + 1;
+			end
+			@(posedge clk) in <= 100'h0;
+		@(negedge clk) wavedrom_stop();
+		
+		in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		for (int i=0;i<100;i++) begin
+			@(negedge clk) in <= 100'h1<<i;
+			@(posedge clk) in <= ~(100'h1<<i);
+		end
+		@(posedge clk) in <= 100'h0;	// Test OR gate
+		@(posedge clk); in <= ~100'h0;	// Test AND gate
+		@(posedge clk);
+		#1 $finish;
+	end
+		endmodule
+
+
+// ===========================================================
+// Testbench (Improved)
+// ===========================================================
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_and;
+		int errortime_out_and;
+		int errors_out_or;
+		int errortime_out_or;
+		int errors_out_xor;
+		int errortime_out_xor;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [99:0] in;
+	logic out_and_ref;
+	logic out_and_dut;
+	logic out_or_ref;
+	logic out_or_dut;
+	logic out_xor_ref;
+	logic out_xor_dut;
+
+	// Variables to capture state at first mismatch (Combinational logic requirement)
+	logic [99:0] first_mismatch_in; 
+	logic out_and_mismatch_val; 
+	logic out_or_mismatch_val; 
+	logic out_xor_mismatch_val;
+	int first_mismatch_time = -1;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_and_ref,out_and_dut,out_or_ref,out_or_dut,out_xor_ref,out_xor_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		in );
+	RefModule good1 (
+		in, 
+		.out_and(out_and_ref),
+		.out_or(out_or_ref),
+		.out_xor(out_xor_ref) );
+	TopModule top_module1 (
+		in,
+		.out_and(out_and_dut),
+		.out_or(out_or_dut),
+		.out_xor(out_xor_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+	
+	
+	// Combinational Mismatch Capture Logic
+	always @(posedge clk, negedge clk) begin
+    // Clock update and basic error counting (Maintaining original logic)
+    stats1.clocks++;
+    if (!tb_match) begin
+        if (stats1.errors == 0) stats1.errortime = $time;
+        stats1.errors++;
+    end
+
+    // Individual output error counting (Maintaining original logic)
+    if (out_and_ref !== ( out_and_ref ^ out_and_dut ^ out_and_ref ))
+    begin 
+        if (stats1.errors_out_and == 0) stats1.errortime_out_and = $time;
+        stats1.errors_out_and = stats1.errors_out_and+1'b1;
+    end
+    if (out_or_ref !== ( out_or_ref ^ out_or_dut ^ out_or_ref ))
+    begin 
+        if (stats1.errors_out_or == 0) stats1.errortime_out_or = $time;
+        stats1.errors_out_or = stats1.errors_out_or+1'b1;
+    end
+    if (out_xor_ref !== ( out_xor_ref ^ out_xor_dut ^ out_xor_ref ))
+    begin 
+        if (stats1.errors_out_xor == 0) stats1.errortime_out_xor = $time;
+        stats1.errors_out_xor = stats1.errors_out_xor+1'b1;
+    end
+
+    // Combinational Logic Mismatch Capture (Rule 2: Capture state on first mismatch)
+    if (!tb_match && first_mismatch_time == -1) begin
+        first_mismatch_time = $time;
+        first_mismatch_in = in;
+        out_and_mismatch_val = out_and_dut;
+        out_or_mismatch_val = out_or_dut;
+        out_xor_mismatch_val = out_xor_dut;
+    end
+end
+
+   // Timeout
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final reporting (Modified to meet new requirements)
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, first_mismatch_time);
+			
+			$display("\n--- Details of FIRST Mismatch at Time %0d ---", first_mismatch_time);
+			// Display inputs
+			s$display("Input (in): %h (Binary: %b)", first_mismatch_in, first_mismatch_in);
+			// Display outputs
+			s$display("DUT Output (out_and): %h (Binary: %b)", out_and_mismatch_val, out_and_mismatch_val);
+			s$display("Reference Output (out_and): %h (Binary: %b)", out_and_ref, out_and_ref);
+			s$display("DUT Output (out_or): %h (Binary: %b)", out_or_mismatch_val, out_or_mismatch_val);
+			s$display("Reference Output (out_or): %h (Binary: %b)", out_or_ref, out_or_ref);
+			s$display("DUT Output (out_xor): %h (Binary: %b)", out_xor_mismatch_val, out_xor_mismatch_val);
+			s$display("Reference Output (out_xor): %h (Binary: %b)", out_xor_ref, out_xor_ref);
+		end
+	
+		$display("\n--- Summary --- ");
+		if (stats1.errors_out_and) $display("Hint: Output 'out_and' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_out_and, stats1.errortime_out_and);
+		else $display("Hint: Output 'out_and' has no mismatches.");
+		if (stats1.errors_out_or) $display("Hint: Output 'out_or' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_out_or, stats1.errortime_out_or);
+		else $display("Hint: Output 'out_or' has no mismatches.");
+		if (stats1.errors_out_xor) $display("Hint: Output 'out_xor' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_out_xor, stats1.errortime_out_xor);
+		else $display("Hint: Output 'out_xor' has no mismatches.");
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+	endmodule
+
+[2026-05-14 14:35:05,675 - mage.agent - INFO] Initial if:
+[2026-05-14 14:35:05,675 - mage.agent - INFO] module TopModule (
+    input  logic [99:0] in,
+    output logic out_and,
+    output logic out_or,
+    output logic out_xor
+);
+// Module implementation goes here
+endmodule
+[2026-05-14 14:35:05,681 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  in (100 bits)
+ - output out_and
+ - output out_or
+ - output out_xor
+
+The module should implement a combinational circuit with 100 inputs,
+in[99:0]. There are 3 outputs:
+
+  (1) out_and : output of a 100-input AND gate
+  (2) out_or  : output of a 100-input OR  gate
+  (3) out_xor : output of a 100-input XOR gate
+
+
+[2026-05-14 14:35:21,159 - mage.agent - INFO] Initial rtl:
+[2026-05-14 14:35:21,159 - mage.agent - INFO] module TopModule (
+    input  logic [99:0] in,
+    output logic out_and,
+    output logic out_or,
+    output logic out_xor
+);
+
+    // (1) out_and: 100-input AND gate
+    // out_and is high (1) only if all bits in 'in' are high (1).
+    assign out_and = &in;
+
+    // (2) out_or: 100-input OR gate
+    // out_or is high (1) if at least one bit in 'in' is high (1).
+    assign out_or = |in;
+
+    // (3) out_xor: 100-input XOR gate
+    // out_xor is high (1) if the count of '1's in 'in' is odd.
+    assign out_xor = ^in;
+
+endmodule
+[2026-05-14 14:35:28,644 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 14:36:46,100 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:36:46,100 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output logic [99:0] in,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	
+	initial begin
+		reg [3:0] count; count = 0;
+		in <= 100'h0;
+		// AND gate uses huge numbers and creates a sparse waveform.
+		@(negedge clk) wavedrom_start("Test AND gate");
+			@(posedge clk,negedge clk) in <= 100'h0; // Test OR gate
+			@(posedge clk,negedge clk); in <= ~100'h0; // Test AND gate
+			@(posedge clk,negedge clk); in <= 100'h3ffff;
+			@(posedge clk,negedge clk); in <= ~100'h3ffff;
+			@(posedge clk,negedge clk); in <= 100'h80;
+			@(posedge clk,negedge clk); in <= ~100'h80;
+		wavedrom_stop();
+
+		@(negedge clk) wavedrom_start("Test OR and XOR gates");
+			@(posedge clk) in <= 100'h0; // Test OR gate
+			@(posedge clk); in <= 100'h7; // Test AND gate
+			repeat(10) @(posedge clk, negedge clk) begin
+			in <= count;
+			count <= count + 1;
+		end
+			@(posedge clk) in <= 100'h0;
+		@(negedge clk) wavedrom_stop();
+		
+		in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		for (int i=0;i<100;i++) begin
+			@(negedge clk) in <= 100'h1<<i;
+			@(posedge clk) in <= ~(100'h1<<i);
+		end
+		@(posedge clk) in <= 100'h0; // Test OR gate
+		@(posedge clk); in <= ~100'h0; // Test AND gate
+		@(posedge clk);
+		#1 $finish;
+	end	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_and;
+		int errortime_out_and;
+		int errors_out_or;
+		int errortime_out_or;
+		int errors_out_xor;
+		int errortime_out_xor;
+
+		int clocks;
+		// Variables to store state at first mismatch
+		logic [99:0] first_in;
+		logic first_out_and_dut,
+		logic first_out_or_dut,
+		logic first_out_xor_dut;
+		logic first_out_and_ref,
+		logic first_out_or_ref,
+		logic first_out_xor_ref;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [99:0] in;
+	logic out_and_ref;
+	logic out_and_dut;
+	logic out_or_ref;
+	logic out_or_dut;
+	logic out_xor_ref;
+	logic out_xor_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_and_ref,out_and_dut,out_or_ref,out_or_dut,out_xor_ref,out_xor_dut );
+	end
+
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.tb_match,
+		in 
+	);
+	RefModule good1 (
+		in,
+		out_and(out_and_ref),
+		out_or(out_or_ref),
+		out_xor(out_xor_ref) );
+	
+	TopModule top_module1 (
+		in,
+		out_and(out_and_dut),
+		out_or(out_or_dut),
+		out_xor(out_xor_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+	
+	// Helper function to display signals in required format
+	task display_signals;
+		$display("\n======================================================================");
+		$display("--- FIRST MISMATCH DETECTED AT TIME %0d ps ---", $time);
+		$display("Input Signals (in): HEX = %h, BIN = %b", first_in, first_in);
+		$display("Reference Outputs: AND = %b, OR = %b, XOR = %b", first_out_and_ref, first_out_or_ref, first_out_xor_ref);
+		$display("DUT Outputs:       AND = %b, OR = %b, XOR = %b", first_out_and_dut, first_out_or_dut, first_out_xor_dut);
+		$display("======================================================================");
+	endtask
+	
+	initial begin
+		// Initialize tracking variables
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_out_and = 0;
+		stats1.errortime_out_and = 0;
+		stats1.errors_out_or = 0;
+		stats1.errortime_out_or = 0;
+		stats1.errors_out_xor = 0;
+		stats1.errortime_out_xor = 0;
+		stats1.clocks = 0;
+		end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_and_ref, out_or_ref, out_xor_ref } === ( { out_and_ref, out_or_ref, out_xor_ref } ^ { out_and_dut, out_or_dut, out_xor_dut } ^ { out_and_ref, out_or_ref, out_xor_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				// Capture signals at first error
+				first_in = in;
+				out_and_dut = out_and_dut;
+				out_or_dut = out_or_dut;
+				out_xor_dut = out_xor_dut;
+				first_out_and_ref = out_and_ref;
+				out_or_ref = out_or_ref;
+				out_xor_ref = out_xor_ref;
+				sdisplay_signals();
+			end
+			stats1.errors++;
+		end
+		
+		// Mismatch specific checks (must follow original logic)
+		if (out_and_ref !== ( out_and_ref ^ out_and_dut ^ out_and_ref ))
+		begin if (stats1.errors_out_and == 0) stats1.errortime_out_and = $time;
+			sstats1.errors_out_and = stats1.errors_out_and+1'b1; end
+		
+		if (out_or_ref !== ( out_or_ref ^ out_or_dut ^ out_or_ref ))
+		begin if (stats1.errors_out_or == 0) stats1.errortime_out_or = $time;
+			sstats1.errors_out_or = stats1.errors_out_or+1'b1; end
+		
+		if (out_xor_ref !== ( out_xor_ref ^ out_xor_dut ^ out_xor_ref ))
+		begin if (stats1.errors_out_xor == 0) stats1.errortime_out_xor = $time;
+			sstats1.errors_out_xor = stats1.errors_out_xor+1'b1; end
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	endmodule
+
+[2026-05-14 14:38:18,611 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:38:18,611 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output logic [99:0] in,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+	
+	initial begin
+		reg [3:0] count; count = 0;
+		in <= 100'h0;
+		// AND gate uses huge numbers and creates a sparse waveform.
+		@(negedge clk) wavedrom_start("Test AND gate");
+			@(posedge clk,negedge clk) in <= 100'h0; // Test OR gate
+			@(posedge clk,negedge clk); in <= ~100'h0; // Test AND gate
+			@(posedge clk,negedge clk); in <= 100'h3ffff;
+			@(posedge clk,negedge clk); in <= ~100'h3ffff;
+			@(posedge clk,negedge clk); in <= 100'h80;
+			@(posedge clk,negedge clk); in <= ~100'h80;
+		wavedrom_stop();
+
+		@(negedge clk) wavedrom_start("Test OR and XOR gates");
+			@(posedge clk) in <= 100'h0; // Test OR gate
+			@(posedge clk); in <= 100'h7; // Test AND gate
+			repeat(10) @(posedge clk, negedge clk) begin
+				in <= count;
+			count <= count + 1;
+			end
+			@(posedge clk) in <= 100'h0;
+		wavedrom_stop();
+		
+		in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		for (int i=0;i<100;i++) begin
+			@(negedge clk) in <= 100'h1<<i;
+			@(posedge clk) in <= ~(100'h1<<i);
+		end
+		@(posedge clk) in <= 100'h0; // Test OR gate
+		@(posedge clk); in <= ~100'h0; // Test AND gate
+		@(posedge clk);
+		#1 $finish;
+	end	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_and;
+		int errortime_out_and;
+		int errors_out_or;
+		int errortime_out_or;
+		int errors_out_xor;
+		int errortime_out_xor;
+
+		int clocks;
+		// Variables to store state at first mismatch
+		logic [99:0] first_in;
+		logic first_out_and_dut, first_out_or_dut, first_out_xor_dut;
+		logic first_out_and_ref, first_out_or_ref, first_out_xor_ref;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [99:0] in;
+	logic out_and_ref;
+	logic out_and_dut;
+	logic out_or_ref;
+	logic out_or_dut;
+	logic out_xor_ref;
+	logic out_xor_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_and_ref,out_and_dut,out_or_ref,out_or_dut,out_xor_ref,out_xor_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.*,
+		.in );
+	RefModule good1 (
+		in,
+		out_and(out_and_ref),
+		out_or(out_or_ref),
+		out_xor(out_xor_ref) );
+	
+	TopModule top_module1 (
+		in,
+		out_and(out_and_dut),
+		out_or(out_or_dut),
+		out_xor(out_xor_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+	
+	// Helper function to display signals in required format
+	task display_mismatch_details;
+		$display("\n======================================================================");
+		$display("--- FIRST MISMATCH DETECTED AT TIME %0d ps ---", $time);
+		// Display Input Signals (100 bits)
+		$display("Input Signals (in): HEX = %h, BIN = %b", first_in, first_in);
+		// Display Reference Outputs (1 bit)
+		$display("Reference Outputs: AND = %b, OR = %b, XOR = %b", first_out_and_ref, first_out_or_ref, first_out_xor_ref);
+		// Display DUT Outputs (1 bit)
+		$display("DUT Outputs:       AND = %b, OR = %b, XOR = %b", first_out_and_dut, first_out_or_dut, first_out_xor_dut);
+		$display("======================================================================");
+	endtask
+	
+	initial begin
+		// Initialize tracking variables
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_out_and = 0;
+		stats1.errortime_out_and = 0;
+		stats1.errors_out_or = 0;
+		stats1.errortime_out_or = 0;
+		stats1.errors_out_xor = 0;
+		stats1.errortime_out_xor = 0;
+		stats1.clocks = 0;
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_and_ref, out_or_ref, out_xor_ref } === ( { out_and_ref, out_or_ref, out_xor_ref } ^ { out_and_dut, out_or_dut, out_xor_dut } ^ { out_and_ref, out_or_ref, out_xor_ref } ) );
+		// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+		// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				// Capture signals at first error
+				first_in = in;
+				out_and_dut = out_and_dut;
+				out_or_dut = out_or_dut;
+				out_xor_dut = out_xor_dut;
+				first_out_and_ref = out_and_ref;
+				out_or_ref = out_or_ref;
+				out_xor_ref = out_xor_ref;
+				display_mismatch_details();
+			end
+			stats1.errors++;
+		end
+		
+		// Mismatch specific checks (must follow original logic)
+		// Note: The original logic uses (Ref XOR DUT XOR Ref) which simplifies to DUT.
+		if (out_and_ref !== ( out_and_ref ^ out_and_dut ^ out_and_ref ))
+		begin if (stats1.errors_out_and == 0) stats1.errortime_out_and = $time;
+			stats1.errors_out_and = stats1.errors_out_and+1'b1; end
+		
+		if (out_or_ref !== ( out_or_ref ^ out_or_dut ^ out_or_ref ))
+		begin if (stats1.errors_out_or == 0) stats1.errortime_out_or = $time;
+			stats1.errors_out_or = stats1.errors_out_or+1'b1; end
+		
+		if (out_xor_ref !== ( out_xor_ref ^ out_xor_dut ^ out_xor_ref ))
+		begin if (stats1.errors_out_xor == 0) stats1.errortime_out_xor = $time;
+			sstats1.errors_out_xor = stats1.errors_out_xor+1'b1; end
+		end
+		
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	endmodule
+[2026-05-14 14:39:48,276 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:39:48,276 - mage.agent - INFO] ```systemverilog
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output logic [99:0] in,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+	
+	initial begin
+		reg [3:0] count; count = 0;
+		in <= 100'h0;
+		// AND gate uses huge numbers and creates a sparse waveform.
+		@(negedge clk) wavedrom_start("Test AND gate");
+			@(posedge clk,negedge clk) in <= 100'h0; // Test OR gate
+			@(posedge clk,negedge clk); in <= ~100'h0; // Test AND gate
+			@(posedge clk,negedge clk); in <= 100'h3ffff;
+			@(posedge clk,negedge clk); in <= ~100'h3ffff;
+			@(posedge clk,negedge clk); in <= 100'h80;
+			@(posedge clk,negedge clk); in <= ~100'h80;
+		wavedrom_stop();
+
+		@(negedge clk) wavedrom_start("Test OR and XOR gates");
+			@(posedge clk) in <= 100'h0; // Test OR gate
+			@(posedge clk); in <= 100'h7; // Test AND gate
+			repeat(10) @(posedge clk, negedge clk) begin
+			in <= count;
+			count <= count + 1;
+		end
+			@(posedge clk) in <= 100'h0;
+		wavedrom_stop();
+		
+in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		for (int i=0;i<100;i++) begin
+			@(negedge clk) in <= 100'h1<<i;
+			@(posedge clk) in <= ~(100'h1<<i);
+		end
+		@(posedge clk) in <= 100'h0; // Test OR gate
+		@(posedge clk); in <= ~100'h0; // Test AND gate
+		@(posedge clk);
+		#1 $finish;
+	end	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_and;
+		int errortime_out_and;
+		int errors_out_or;
+		int errortime_out_or;
+		int errors_out_xor;
+		int errortime_out_xor;
+		int clocks;
+		// Variables to store state at first mismatch
+		logic [99:0] first_in;
+		logic first_out_and_dut, first_out_or_dut, first_out_xor_dut;
+		logic first_out_and_ref, first_out_or_ref, first_out_xor_ref;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [99:0] in;
+	logic out_and_ref;
+	logic out_and_dut;
+	logic out_or_ref;
+	logic out_or_dut;
+	logic out_xor_ref;
+	logic out_xor_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_and_ref,out_and_dut,out_or_ref,out_or_dut,out_xor_ref,out_xor_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.*,
+		.in );
+	RefModule good1 (
+		in,
+		out_and(out_and_ref),
+		out_or(out_or_ref),
+		out_xor(out_xor_ref) );
+	
+	TopModule top_module1 (
+		in,
+		out_and(out_and_dut),
+		out_or(out_or_dut),
+		out_xor(out_xor_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+	
+	// Helper function to display signals in required format
+	task display_mismatch_details;
+		$display("
+======================================================================");
+		$display("--- FIRST MISMATCH DETECTED AT TIME %0d ps ---", $time);
+		// Display Input Signals (100 bits)
+		$display("Input Signals (in): HEX = %h, BIN = %b", first_in, first_in);
+		// Display Reference Outputs (1 bit)
+		$display("Reference Outputs: AND = %b, OR = %b, XOR = %b", first_out_and_ref, first_out_or_ref, first_out_xor_ref);
+		// Display DUT Outputs (1 bit)
+		$display("DUT Outputs:       AND = %b, OR = %b, XOR = %b", first_out_and_dut, first_out_or_dut, first_out_xor_dut);
+		$display("======================================================================");
+	endtask
+	
+	initial begin
+		// Initialize tracking variables
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_out_and = 0;
+		stats1.errortime_out_and = 0;
+		stats1.errors_out_or = 0;
+		stats1.errortime_out_or = 0;
+		stats1.errors_out_xor = 0;
+		stats1.errortime_out_xor = 0;
+		stats1.clocks = 0;
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_and_ref, out_or_ref, out_xor_ref } === ( { out_and_ref, out_or_ref, out_xor_ref } ^ { out_and_dut, out_or_dut, out_xor_dut } ^ { out_and_ref, out_or_ref, out_xor_ref } ) );
+		// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+		// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				// Capture signals at first error
+				first_in = in;
+				out_and_dut = out_and_dut;
+				out_or_dut = out_or_dut;
+				out_xor_dut = out_xor_dut;
+				first_out_and_ref = out_and_ref;
+				out_or_ref = out_or_ref;
+				out_xor_ref = out_xor_ref;
+				display_mismatch_details();
+			end
+			stats1.errors++;
+		end
+		
+		// Mismatch specific checks (must follow original logic)
+		if (out_and_ref !== ( out_and_ref ^ out_and_dut ^ out_and_ref ))
+		begin if (stats1.errors_out_and == 0) stats1.errortime_out_and = $time;
+			sstats1.errors_out_and = stats1.errors_out_and+1'b1; end
+		
+		if (out_or_ref !== ( out_or_ref ^ out_or_dut ^ out_or_ref ))
+		begin if (stats1.errors_out_or == 0) stats1.errortime_out_or = $time;
+			sstats1.errors_out_or = stats1.errors_out_or+1'b1; end
+		
+		if (out_xor_ref !== ( out_xor_ref ^ out_xor_dut ^ out_xor_ref ))
+		begin if (stats1.errors_out_xor == 0) stats1.errortime_out_xor = $time;
+			sstats1.errors_out_xor = stats1.errors_out_xor+1'b1; end
+		end
+		
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Summary Display
+	initial begin
+		@(negedge clk);
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$finish();
+	end
+
+endmodule
+```
+[2026-05-14 14:41:23,026 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:41:23,027 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	input tb_match,
+	output logic [99:0] in,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+	
+	initial begin
+		reg [3:0] count; count = 0;
+		in <= 100'h0;
+		// AND gate uses huge numbers and creates a sparse waveform.
+		@(negedge clk) wavedrom_start("Test AND gate");
+			@(posedge clk,negedge clk) in <= 100'h0; // Test OR gate
+			@(posedge clk,negedge clk); in <= ~100'h0; // Test AND gate
+			@(posedge clk,negedge clk); in <= 100'h3ffff;
+			@(posedge clk,negedge clk); in <= ~100'h3ffff;
+			@(posedge clk,negedge clk); in <= 100'h80;
+			@(posedge clk,negedge clk); in <= ~100'h80;
+		wavedrom_stop();
+
+		@(negedge clk) wavedrom_start("Test OR and XOR gates");
+			@(posedge clk) in <= 100'h0; // Test OR gate
+			@(posedge clk); in <= 100'h7; // Test AND gate
+			repeat(10) @(posedge clk, negedge clk) begin
+			in <= count;
+			count <= count + 1;
+		end
+			@(posedge clk) in <= 100'h0;
+		wavedrom_stop();
+		
+in <= $random;
+		repeat(100) begin
+		@(negedge clk) in <= $random;
+		@(posedge clk) in <= $random;
+		end
+		for (int i=0;i<100;i++) begin
+			@(negedge clk) in <= 100'h1<<i;
+			@(posedge clk) in <= ~(100'h1<<i);
+		end
+		@(posedge clk) in <= 100'h0; // Test OR gate
+		@(posedge clk); in <= ~100'h0; // Test AND gate
+		@(posedge clk);
+		#1 $finish;
+	end	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_and;
+		int errortime_out_and;
+		int errors_out_or;
+		int errortime_out_or;
+		int errors_out_xor;
+		int errortime_out_xor;
+		int clocks;
+		// Variables to store state at first mismatch
+		logic [99:0] first_in;
+		logic first_out_and_dut, first_out_or_dut, first_out_xor_dut;
+		logic first_out_and_ref, first_out_or_ref, first_out_xor_ref;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [99:0] in;
+	logic out_and_ref;
+	logic out_and_dut;
+	logic out_or_ref;
+	logic out_or_dut;
+	logic out_xor_ref;
+	logic out_xor_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_match ,in,out_and_ref,out_and_dut,out_or_ref,out_or_dut,out_xor_ref,out_xor_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in );
+	RefModule good1 (
+		in,
+		out_and(out_and_ref),
+		out_or(out_or_ref),
+		out_xor(out_xor_ref) );
+	
+	TopModule top_module1 (
+		in,
+		out_and(out_and_dut),
+		out_or(out_or_dut),
+		out_xor(out_xor_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+	
+	// Helper function to display signals in required format
+	task display_mismatch_details;
+		$display("
+======================================================================");
+		$display("--- FIRST MISMATCH DETECTED AT TIME %0d ps ---", $time);
+		// Display Input Signals (100 bits)
+		$display("Input Signals (in): HEX = %h, BIN = %b", first_in, first_in);
+		// Display Reference Outputs (1 bit)
+		$display("Reference Outputs: AND = %b, OR = %b, XOR = %b", first_out_and_ref, first_out_or_ref, first_out_xor_ref);
+		// Display DUT Outputs (1 bit)
+		$display("DUT Outputs:       AND = %b, OR = %b, XOR = %b", first_out_and_dut, first_out_or_dut, first_out_xor_dut);
+		$display("======================================================================");
+	endtask
+	
+	initial begin
+		// Initialize tracking variables
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_out_and = 0;
+		stats1.errortime_out_and = 0;
+		stats1.errors_out_or = 0;
+		stats1.errortime_out_or = 0;
+		stats1.errors_out_xor = 0;
+		stats1.errortime_out_xor = 0;
+		stats1.clocks = 0;
+	end
+	
+	// Verification check
+	assign tb_match = ( { out_and_ref, out_or_ref, out_xor_ref } === ( { out_and_ref, out_or_ref, out_xor_ref } ^ { out_and_dut, out_or_dut, out_xor_dut } ^ { out_and_ref, out_or_ref, out_xor_ref } ) );
+		// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				// Capture signals at first error
+				first_in = in;
+				out_and_dut = out_and_dut;
+				out_or_dut = out_or_dut;
+				out_xor_dut = out_xor_dut;
+				first_out_and_ref = out_and_ref;
+				out_or_ref = out_or_ref;
+				out_xor_ref = out_xor_ref;
+			display_mismatch_details();
+			end
+			stats1.errors++;
+		end
+		
+		// Mismatch specific checks (must follow original logic)
+		if (out_and_ref !== ( out_and_ref ^ out_and_dut ^ out_and_ref ))
+		begin if (stats1.errors_out_and == 0) stats1.errortime_out_and = $time;
+			sstats1.errors_out_and = stats1.errors_out_and+1'b1; end
+		
+		if (out_or_ref !== ( out_or_ref ^ out_or_dut ^ out_or_ref ))
+		begin if (stats1.errors_out_or == 0) stats1.errortime_out_or = $time;
+			sstats1.errors_out_or = stats1.errors_out_or+1'b1; end
+		
+		if (out_xor_ref !== ( out_xor_ref ^ out_xor_dut ^ out_xor_ref ))
+		begin if (stats1.errors_out_xor == 0) stats1.errortime_out_xor = $time;
+			sstats1.errors_out_xor = stats1.errors_out_xor+1'b1; end
+		end
+		
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Summary Display
+	initial begin
+		// Wait for simulation to settle or reach the end condition
+		@(negedge clk);
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$finish();
+	end
+
+endmodule
+

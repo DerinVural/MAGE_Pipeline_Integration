@@ -1,0 +1,1 @@
+module TopModule (input clk, input d, input q); endmodule

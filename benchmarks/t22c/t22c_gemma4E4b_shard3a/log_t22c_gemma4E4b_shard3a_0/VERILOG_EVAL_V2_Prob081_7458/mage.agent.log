@@ -1,0 +1,1491 @@
+[2026-05-15 10:44:48,125 - mage.agent - INFO] Initial tb:
+[2026-05-15 10:44:48,127 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Interface for stimulus_gen (from golden_testbench)
+module stimulus_gen (
+	input clk,
+	output reg p1a, p1b, p1c, p1d, p1e, p1f,
+	output reg p2a, p2b, p2c, p2d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		#1;
+	endtask
+
+	initial begin
+		int count; count = 0;
+		{p1a,p1b,p1c,p1d,p1e,p1f} <= 4'h0;
+		{p2a,p2b,p2c,p2d} <= 4'h0;
+		wavedrom_start();
+		repeat(20) @(posedge clk) begin
+		{p1a,p1b,p1c,p1d,p1e,p1f} <= {count[2:0], count[3:1]};
+		{p2a,p2b,p2c,p2d} <= count;
+		count = count + 1;
+		end
+		wavedrom_stop();
+
+		repeat(400) @(posedge clk,negedge clk) begin
+		{p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d} <= $random;
+		end
+		
+		#1 $finish;
+	end
+	endmodule
+
+// Dummy RefModule to match golden testbench instantiation
+module RefModule (
+    input p1a, p1b, p1c, p1d, p1e, p1f,
+    input p2a, p2b, p2c, p2d,
+    output p1y,
+    output p2y
+);
+    // Simple reference logic for testing purposes (assuming TopModule implements this)
+    assign p1y = (p1a & p1b & p1c) | (p1d & p1e & p1f);
+    assign p2y = (p2a & p2b) | (p2c & p2d);
+endmodule
+
+// DUT Module (must match interface)
+module TopModule (
+    input p1a,
+    input p1b,
+    input p1c,
+    input p1d,
+    input p1e,
+    input p1f,
+    input p2a,
+    input p2b,
+    input p2c,
+    input p2d,
+    output p1y,
+    output p2y
+);
+    // Implementation based on spec: p1y = (p1a&p1b&p1c) | (p1d&p1e&p1f); p2y = (p2a&p2b) | (p2c&p2d);
+    assign p1y = (p1a & p1b & p1c) | (p1d & p1e & p1f);
+    assign p2y = (p2a & p2b) | (p2c & p2d);
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_p1y;
+		int errortime_p1y;
+		int errors_p2y;
+		int errortime_p2y;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic p1a;
+	logic p1b;
+	logic p1c;
+	logic p1d;
+	logic p1e;
+	logic p1f;
+	logic p2a;
+	logic p2b;
+	logic p2c;
+	logic p2d;
+	logic p1y_ref;
+	logic p1y_dut;
+	logic p2y_ref;
+	logic p2y_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d,p1y_ref,p1y_dut,p2y_ref,p2y_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.p1a, // Explicit mapping for consistency
+		.p1b,
+		.p1c,
+		.p1d,
+		.p1e,
+		.p1f,
+		.p2a,
+		.p2b,
+		.p2c,
+		.p2d,
+		.wavedrom_title,
+		.wavedrom_enable
+	);
+	RefModule good1 (
+		.p1a,
+		.p1b,
+		.p1c,
+		.p1d,
+		.p1e,
+		.p1f,
+		.p2a,
+		.p2b,
+		.p2c,
+		.p2d,
+		.p1y(p1y_ref),
+		.p2y(p2y_ref) );
+	
+	TopModule top_module1 (
+		.p1a,
+		.p1b,
+		.p1c,
+		.p1d,
+		.p1e,
+		.p1f,
+		.p2a,
+		.p2b,
+		.p2c,
+		.p2d,
+		.p1y(p1y_dut),
+		.p2y(p2y_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask
+	
+	// Store initial values for combinational check comparison
+	logic [9:0] input_data_storage;
+	logic [1:0] output_data_storage;
+	logic [1:0] golden_output_storage;
+	
+	initial begin
+		// Initialize storage with current values before simulation starts processing
+		input_data_storage = {p1a, p1b, p1c, p1d, p1e, p1f, p2a, p2b, p2c, p2d};
+		output_data_storage = {p1y_dut, p2y_dut};
+		golden_output_storage = {p1y_ref, p2y_ref};
+	end
+
+	// Verification and Mismatch Logic (Combinational Check)
+	always @(*) begin
+		// Check for mismatch based on the current state
+		if (p1y_ref !== p1y_dut || p2y_ref !== p2y_dut) begin
+			// Mismatch detected
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			
+			// Check p1y mismatch
+			if (p1y_ref !== p1y_dut) begin
+				if (stats1.errors_p1y == 0) stats1.errortime_p1y = $time;
+				stats1.errors_p1y = stats1.errors_p1y + 1'b1;
+			end
+			// Check p2y mismatch
+			if (p2y_ref !== p2y_dut) begin
+				if (stats1.errors_p2y == 0) stats1.errortime_p2y = $time;
+				stats1.errors_p2y = stats1.errors_p2y + 1'b1;
+			end
+		end
+	end
+
+	// Clocked update for statistics and state capture (to synchronize with clocking events)
+	always @(posedge clk)
+	begin
+		stats1.clocks++;
+		// Since it's combinational, we capture the inputs and outputs that caused the mismatch
+		// We update the stored values on every clock edge to represent the state *after* inputs have settled
+		input_data_storage = {p1a, p1b, p1c, p1d, p1e, p1f, p2a, p2b, p2c, p2d};
+		output_data_storage = {p1y_dut, p2y_dut};
+		golden_output_storage = {p1y_ref, p2y_ref};
+	end
+
+	final begin
+		if (stats1.errors_p1y) $display("Hint: Output 'p1y' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_p1y, stats1.errortime_p1y);
+		else $display("Hint: Output 'p1y' has no mismatches.");
+		if (stats1.errors_p2y) $display("Hint: Output 'p2y' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_p2y, stats1.errortime_p2y);
+		else $display("Hint: Output 'p2y' has no mismatches.");
+
+		if (stats1.errors == 0) begin
+			s$display("SIMULATION PASSED");
+		end else begin
+			s$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-15 10:44:48,127 - mage.agent - INFO] Initial if:
+[2026-05-15 10:44:48,127 - mage.agent - INFO] module TopModule (
+    input p1a,
+    input p1b,
+    input p1c,
+    input p1d,
+    input p1e,
+    input p1f,
+    input p2a,
+    input p2b,
+    input p2c,
+    input p2d,
+    output p1y,
+    output p2y
+);
+[2026-05-15 10:44:48,133 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  p1a
+ - input  p1b
+ - input  p1c
+ - input  p1d
+ - input  p1e
+ - input  p1f
+ - input  p2a
+ - input  p2b
+ - input  p2c
+ - input  p2d
+ - output p1y
+ - output p2y
+
+The 7458 is a chip with four AND gates and two OR gates. Implement a
+module with the same functionality as the 7458 chip. It has 10 inputs and
+2 outputs. You may choose to use an `assign` statement to drive each of
+the output wires, or you may choose to declare (four) wires for use as
+intermediate signals, where each internal wire is driven by the output of
+one of the AND gates.
+
+In this circuit, p1y should be the OR of two 3-input AND gates: one that
+ANDs p1a, p1b, and p1c, and the second that ANDs p1d, p1e, and p1f. The
+output p2y is the OR of two 2-input AND gates: one that ANDs p2a and p2b,
+and the second that ANDs p2c and p2d.
+
+
+[2026-05-15 10:45:05,691 - mage.agent - INFO] Initial rtl:
+[2026-05-15 10:45:05,691 - mage.agent - INFO] module TopModule (
+    input p1a,
+    input p1b,
+    input p1c,
+    input p1d,
+    input p1e,
+    input p1f,
+    input p2a,
+    input p2b,
+    input p2c,
+    input p2d,
+    output p1y,
+    output p2y
+);
+
+    // p1y is the OR of two 3-input AND gates:
+    // AND1: p1a & p1b & p1c
+    // AND2: p1d & p1e & p1f
+    // p1y = AND1 | AND2
+    assign p1y = (p1a & p1b & p1c) | (p1d & p1e & p1f);
+
+    // p2y is the OR of two 2-input AND gates:
+    // AND3: p2a & p2b
+    // AND4: p2c & p2d
+    // p2y = AND3 | AND4
+    assign p2y = (p2a & p2b) | (p2c & p2d);
+
+endmodule
+[2026-05-15 10:45:10,229 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-15 10:50:05,429 - mage.agent - INFO] Revised tb:
+[2026-05-15 10:50:05,430 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- DUT Definition (Included for self-containment of the testbench) ---
+module TopModule (
+    input logic p1a,
+    input logic p1b,
+    input logic p1c,
+    input logic p1d,
+    input logic p1e,
+    input logic p1f,
+    input logic p2a,
+    input logic p2b,
+    input logic p2c,
+    input logic p2d,
+    output logic p1y,
+    output logic p2y
+);
+    // Intermediate wires for AND gates
+    logic and1_out;
+    logic and2_out;
+    logic and3_out;
+    logic and4_out;
+
+    // p1y: OR of (p1a & p1b & p1c) and (p1d & p1e & p1f)
+    assign and1_out = p1a & p1b & p1c;
+    assign and2_out = p1d & p1e & p1f;
+    assign p1y = and1_out | and2_out;
+
+    // p2y: OR of (p2a & p2b) and (p2c & p2d)
+    assign and3_out = p2a & p2b;
+    assign and4_out = p2c & p2d;
+    assign p2y = and3_out | and4_out;
+endmodule
+
+// --- Stimulus Generator (Kept as is) ---
+module stimulus_gen (
+	input logic clk,
+	output logic p1a, p1b, p1c, p1d, p1e, p1f,
+	output logic p2a, p2b, p2c, p2d,
+	output logic[511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input logic[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		int count; count = 0;
+		{p1a,p1b,p1c,p1d,p1e,p1f} <= 4'h0;
+		{p2a,p2b,p2c,p2d} <= 4'h0;
+		wavedrom_start();
+		repeat(20) @(posedge clk) begin
+		{p1a,p1b,p1c,p1d,p1e,p1f} <= {count[2:0], count[3:1]};
+		{p2a,p2b,p2c,p2d} <= count;
+		count = count + 1;
+		end
+		wavedrom_stop();
+
+		repeat(400) @(posedge clk,negedge clk) begin
+		{p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d} <= $random;
+		end
+		#1 $finish;
+	end
+	endmodule
+
+// --- Testbench ---
+module tb();
+
+	// Helper structure to hold statistics and error details
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_p1y;
+		int errortime_p1y;
+		int errors_p2y;
+		int errortime_p2y;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// Signal Declarations
+	logic[511:0] wavedrom_title;
+	logic wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	// Clock Generation	
+	logic clk = 0;
+	initial forever
+		h#5 clk = ~clk;
+
+	// DUT/Reference Signal Declarations
+	logic p1a, p1b, p1c, p1d, p1e, p1f;
+	logic p2a, p2b, p2c, p2d;
+	logic p1y_ref, p1y_dut;
+	logic p2y_ref, p2y_dut;
+
+	// Testbench Utilities
+	
+	// Task to display signals (Hex and Bin if <= 64 bits)
+	task display_signals;
+		input logic[7:0] name_out;
+		input logic[7:0] val_dut;
+		input logic[7:0] val_ref;
+		begin
+			$display("Time=%0t: Signal %s | DUT: %h (%b) | REF: %h (%b)",
+				$time,
+				name_out,
+				val_dut,
+				val_ref);
+		end
+	endtask
+
+	// Task to display inputs (All inputs are 1 bit here)
+	task display_inputs;
+		input logic[7:0] name_in;
+		input logic[7:0] val_in;
+		begin
+			$display("Time=%0t: Input Signals | %s: %h (%b)",
+				$time,
+				name_in,
+				val_in,
+				val_in);
+		end
+	endtask
+
+	// Task to display mismatch details (As required by prompt)
+	task report_mismatch;
+		input logic[7:0] signal_name;
+		input logic[7:0] dut_val;
+		input logic[7:0] ref_val;
+		input logic[7:0] inputs_val;
+		begin
+			$display("\n==================================================================");
+			$display("FIRST MISMATCH DETECTED at Time = %0t ps for Signal %s", $time, signal_name);
+			$display("------------------------------------------------------------------");
+			$display("Input Signals:  %h (%b)", inputs_val, inputs_val);
+			$display("Output Signals: DUT = %h (%b) | Expected = %h (%b)", dut_val, dut_val, ref_val, ref_val);
+			$display("==================================================================");
+		endtask
+
+	// --- Testbench Instantiations ---
+	
+	// 1. Stimulus Generator
+	stimulus_gen stim1 (
+		.clk, clk,
+		.p1a, p1a,
+		.p1b, p1b,
+		.p1c, p1c,
+		.p1d, p1d,
+		.p1e, p1e,
+		.p1f, p1f,
+		.p2a, p2a,
+		.p2b, p2b,
+		.p2c, p2c,
+		.p2d, p2d,
+		.wavedrom_title, wavedrom_title,
+		.wavedrom_enable, wavedrom_enable
+	);
+
+	// 2. Reference Module (Golden) - Assumed to exist and match logic
+	// Note: RefModule definition is assumed to be available in the simulation environment.
+	// We must follow the structure from the golden testbench.
+	RefModule good1 (
+		.p1a, p1a,
+		.p1b, p1b,
+		.p1c, p1c,
+		.p1d, p1d,
+		.p1e, p1e,
+		.p1f, p1f,
+		.p2a, p2a,
+		.p2b, p2b,
+		.p2c, p2c,
+		.p2d, p2d,
+		.p1y(p1y_ref),
+		.p2y(p2y_ref) 
+	);
+	
+	// 3. DUT Instantiation
+	TopModule top_module1 (
+		.p1a, p1a,
+		.p1b, p1b,
+		.p1c, p1c,
+		.p1d, p1d,
+		.p1e, p1e,
+		.p1f, p1f,
+		.p2a, p2a,
+		.p2b, p2b,
+		.p2c, p2c,
+		.p2d, p2d,
+		.p1y(p1y_dut),
+		.p2y(p2y_dut) 
+	);
+
+	// --- Verification Logic ---
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+
+	// Verification: XOR comparison logic
+	assign tb_match = ( { p1y_ref, p2y_ref } === ( { p1y_ref, p2y_ref } ^ { p1y_dut, p2y_dut } ^ { p1y_ref, p2y_ref } ) );
+
+	// Global state tracking for error reporting
+	// We use 'int' for tracking counts and times as in the golden testbench.
+	
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Check overall mismatch
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			end
+		
+		// Check p1y mismatch
+		if (p1y_ref !== ( p1y_ref ^ p1y_dut ^ p1y_ref ))
+		begin 
+			if (stats1.errors_p1y == 0) stats1.errortime_p1y = $time;
+			stats1.errors_p1y = stats1.errors_p1y + 1'b1;
+		end
+		
+		// Check p2y mismatch
+		if (p2y_ref !== ( p2y_ref ^ p2y_dut ^ p2y_ref ))
+		begin 
+			if (stats1.errors_p2y == 0) stats1.errortime_p2y = $time;
+			stats1.errors_p2y = stats1.errors_p2y + 1'b1;
+		end
+		end
+
+	// --- Simulation Control and Final Reporting ---
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Updated dumpvars to include all relevant signals
+		$dumpvars(1, stim1.clk, tb_mismatch, p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d,p1y_ref,p1y_dut,p2y_ref,p2y_dut);
+		
+		// Initial state logging (Optional but good practice)
+		$display("--- Starting Simulation ---");
+		end
+
+	// Task to report the first mismatch details when an error is detected
+	task report_current_state;
+		begin
+			// Inputs
+			display_inputs("P_IN", {p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d}, {p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d});
+			// Outputs
+			$display("Output Signals: DUT = %h (%b) | Expected = %h (%b)", p1y_dut, p1y_dut, p1y_ref, p1y_ref);
+			$display("Output Signals: DUT = %h (%b) | Expected = %h (%b)", p2y_dut, p2y_dut, p2y_ref, p2y_ref);
+		end
+	endtask
+
+	// Overriding the error detection logic to call the detailed report when first error occurs
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Check overall mismatch
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+			stats1.errortime = $time;
+			report_current_state(); // Report detailed state on first error
+			end
+			stats1.errors++;
+		end
+		
+		// Check p1y mismatch
+		if (p1y_ref !== ( p1y_ref ^ p1y_dut ^ p1y_ref ))
+		begin 
+			if (stats1.errors_p1y == 0) begin
+			stats1.errortime_p1y = $time;
+			report_current_state(); // Report detailed state on first error
+			end
+			stats1.errors_p1y = stats1.errors_p1y + 1'b1;
+		end
+		
+		// Check p2y mismatch
+		if (p2y_ref !== ( p2y_ref ^ p2y_dut ^ p2y_ref ))
+		begin 
+			if (stats1.errors_p2y == 0) begin
+			stats1.errortime_p2y = $time;
+			report_current_state(); // Report detailed state on first error
+			end
+			stats1.errors_p2y = stats1.errors_p2y + 1'b1;
+		end
+		end
+
+	// Timeout mechanism
+	initial begin
+		#1000000
+		$display("\n!!! TIMEOUT REACHED !!!");
+		$finish();
+	end
+
+	// Final Reporting Block (Replaces original final block)
+	initial begin
+		@(negedge clk);
+		// Wait a bit longer after simulation finishes naturally
+		#10;
+		
+		$display("\n==================================================================");
+		$display("SIMULATION SUMMARY");
+		$display("==================================================================");
+		
+		// Check p1y
+		if (stats1.errors_p1y > 0) begin
+			s$display("SIMULATION FAILED - x%0d MISMATCHES DETECTED, FIRST AT TIME %0d (p1y)", stats1.errors_p1y, stats1.errortime_p1y);
+		end else begin
+			s$display("Output 'p1y' passed all checks.");
+		end
+		
+		// Check p2y
+		if (stats1.errors_p2y > 0) begin
+			s$display("SIMULATION FAILED - x%0d MISMATCHES DETECTED, FIRST AT TIME %0d (p2y)", stats1.errors_p2y, stats1.errortime_p2y);
+		end else begin
+			s$display("Output 'p2y' passed all checks.");
+		end
+		
+		// Final overall check (Prioritizing the first overall error if any)
+		if (stats1.errors > 0) begin
+			s$display("SIMULATION FAILED - x%0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end else begin
+			s$display("SIMULATION PASSED");
+		end
+		$display("Total mismatched samples: %0d out of %0d samples.", stats1.errors, stats1.clocks);
+		$finish();
+	end
+	endmodule
+[2026-05-15 10:51:52,152 - mage.agent - INFO] Revised tb:
+[2026-05-15 10:51:52,152 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- DUT Definition (Included for self-containment of the testbench) ---
+module TopModule (
+    input logic p1a,
+    input logic p1b,
+    input logic p1c,
+    input logic p1d,
+    input logic p1e,
+    input logic p1f,
+    input logic p2a,
+    input logic p2b,
+    input logic p2c,
+    input logic p2d,
+    output logic p1y,
+    output logic p2y
+);
+    // Intermediate wires for AND gates
+    logic and1_out;
+    logic and2_out;
+    logic and3_out;
+    logic and4_out;
+
+    // p1y: OR of (p1a & p1b & p1c) and (p1d & p1e & p1f)
+    assign and1_out = p1a & p1b & p1c;
+    assign and2_out = p1d & p1e & p1f;
+    assign p1y = and1_out | and2_out;
+
+    // p2y: OR of (p2a & p2b) and (p2c & p2d)
+    assign and3_out = p2a & p2b;
+    assign and4_out = p2c & p2d;
+    assign p2y = and3_out | and4_out;
+endmodule
+
+// --- Stimulus Generator (Kept as is) ---
+module stimulus_gen (
+    input logic clk,
+    output logic p1a, p1b, p1c, p1d, p1e, p1f,
+    output logic p2a, p2b, p2c, p2d,
+    output logic[511:0] wavedrom_title,
+    output logic wavedrom_enable
+);
+
+    task wavedrom_start(input logic[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask
+        
+    initial begin
+        int count; count = 0;
+        {p1a,p1b,p1c,p1d,p1e,p1f} <= 4'h0;        
+        {p2a,p2b,p2c,p2d} <= 4'h0;        
+        wavedrom_start();
+        repeat(20) @(posedge clk) begin
+            {p1a,p1b,p1c,p1d,p1e,p1f} <= {count[2:0], count[3:1]};        
+            {p2a,p2b,p2c,p2d} <= count;        
+            count = count + 1;
+        end
+        wavedrom_stop();
+
+        repeat(400) @(posedge clk,negedge clk) begin
+            {p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d} <= $random;
+        end
+        
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    // Helper structure to hold statistics and error details
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_p1y;
+        int errortime_p1y;
+        int errors_p2y;
+        int errortime_p2y;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    
+    // Signal Declarations
+    logic[511:0] wavedrom_title;
+    logic wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    // Clock Generation
+    logic clk = 0;
+    initial forever
+        #5 clk = ~clk;
+
+    // DUT/Reference Signal Declarations (1-bit signals as per instantiation)
+    logic p1a, p1b, p1c, p1d, p1e, p1f;
+    logic p2a, p2b, p2c, p2d;
+    logic p1y_ref, p1y_dut;
+    logic p2y_ref, p2y_dut;
+
+    // Testbench Utilities
+    
+    // Task to display signals (Hex and Bin if <= 64 bits)
+    task display_signals;
+        input logic name_out[7:0];
+        input logic val_dut;
+        input logic val_ref;
+        input logic inputs_val[9:0];
+        begin
+            $display("Time=%0t: Signal %s | DUT: %b (%h) | REF: %b (%h) | Inputs: %b (%h)",
+                $time,
+                name_out,
+                val_dut,
+                val_dut,
+                val_ref,
+                val_ref,
+                inputs_val);
+        end
+    endtask
+
+    // Task to display mismatch details (As required by prompt)
+    task report_mismatch;
+        input logic[7:0] signal_name;
+        input logic dut_val;
+        input logic ref_val;
+        input logic inputs_val[9:0];
+        begin
+            $display("\n==================================================================");
+            $display("FIRST MISMATCH DETECTED at Time = %0t ps for Signal %s", $time, signal_name);
+            $display("------------------------------------------------------------------");
+            // Display Inputs
+            $display("Input Signals:  %b (%h)", inputs_val, inputs_val);
+            // Display Outputs
+            $display("Output Signals: DUT = %b (%h) | Expected = %b (%h)", dut_val, dut_val, ref_val, ref_val);
+            $display("==================================================================");
+        endtask
+
+    // --- Testbench Instantiations ---
+    
+    // 1. Stimulus Generator
+    stimulus_gen stim1 (
+        .clk, clk,
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .wavedrom_title, wavedrom_title,
+        .wavedrom_enable, wavedrom_enable
+    );
+    
+    // 2. Reference Module (Golden) - Assumed to exist and match logic
+    RefModule good1 (
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .p1y(p1y_ref),
+        .p2y(p2y_ref) 
+    );
+    
+    // 3. DUT Instantiation
+    TopModule top_module1 (
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .p1y(p1y_dut),
+        .p2y(p2y_dut) 
+    );
+
+    // Global state tracking for error reporting
+    // We use 'int' for tracking counts and times as in the golden testbench.
+
+    // Verification Logic
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    // Verification: XOR comparison logic
+    assign tb_match = ( { p1y_ref, p2y_ref } === ( { p1y_ref, p2y_ref } ^ { p1y_dut, p2y_dut } ^ { p1y_ref, p2y_ref } ) );
+    
+    // Initial signal logging
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d,p1y_ref,p1y_dut,p2y_ref,p2y_dut );
+        $display("--- Starting Simulation ---");
+    end
+
+    // Clocked verification and error tracking
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Combine all inputs into one vector for display purposes
+        logic [9:0] all_inputs = {p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d};
+
+        // Check overall mismatch
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                report_mismatch("Overall", p1y_dut, p2y_dut, all_inputs);
+            end
+            stats1.errors++;
+        end
+        
+        // Check p1y mismatch
+        if (p1y_ref !== ( p1y_ref ^ p1y_dut ^ p1y_ref ))
+        begin 
+            if (stats1.errors_p1y == 0) begin
+                stats1.errortime_p1y = $time;
+                // When p1y mismatches, we report based on the current state
+                report_mismatch("p1y", p1y_dut, p1y_ref, all_inputs);
+            end
+            stats1.errors_p1y = stats1.errors_p1y + 1'b1;
+        end
+        
+        // Check p2y mismatch
+        if (p2y_ref !== ( p2y_ref ^ p2y_dut ^ p2y_ref ))
+        begin 
+            if (stats1.errors_p2y == 0) begin
+                stats1.errortime_p2y = $time;
+                // When p2y mismatches, we report based on the current state
+                report_mismatch("p2y", p2y_dut, p2y_ref, all_inputs);
+            end
+            stats1.errors_p2y = stats1.errors_p2y + 1'b1;
+        end
+    end
+
+    // Timeout mechanism
+    initial begin
+        #1000000
+        $display("\n!!! TIMEOUT REACHED !!!");
+        $finish();
+    end
+
+    // Final Reporting Block
+    initial begin
+        // Wait for a stable state after the last clock edge
+        @(negedge clk);
+        #10;
+        
+        $display("\n==================================================================");
+        $display("SIMULATION SUMMARY");
+        $display("==================================================================");
+        
+        // Check p1y
+        if (stats1.errors_p1y > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d (p1y)", stats1.errors_p1y, stats1.errortime_p1y);
+        end
+        
+        // Check p2y
+        if (stats1.errors_p2y > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d (p2y)", stats1.errors_p2y, stats1.errortime_p2y);
+        end
+        
+        // Final overall check (Prioritizing the first overall error if any)
+        if (stats1.errors > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+        
+        $display("Total mismatched samples: %0d out of %0d samples.", stats1.errors, stats1.clocks);
+        $finish();
+    end
+
+endmodule
+[2026-05-15 10:56:23,645 - mage.agent - INFO] Revised tb:
+[2026-05-15 10:56:23,646 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- DUT Definition (Included for self-containment of the testbench) ---
+module TopModule (
+    input logic p1a,
+    input logic p1b,
+    input logic p1c,
+    input logic p1d,
+    input logic p1e,
+    input logic p1f,
+    input logic p2a,
+    input logic p2b,
+    input logic p2c,
+    input logic p2d,
+    output logic p1y,
+    output logic p2y
+);
+    // Intermediate wires for AND gates (following the instruction hint from the spec)
+    logic and1_out;
+    logic and2_out;
+    logic and3_out;
+    logic and4_out;
+
+    // p1y: OR of (p1a & p1b & p1c) and (p1d & p1e & p1f)
+    assign and1_out = p1a & p1b & p1c;
+    assign and2_out = p1d & p1e & p1f;
+    assign p1y = and1_out | and2_out;
+
+    // p2y: OR of (p2a & p2b) and (p2c & p2d)
+    assign and3_out = p2a & p2b;
+    assign and4_out = p2c & p2d;
+    assign p2y = and3_out | and4_out;
+endmodule
+
+// --- Stimulus Generator (Kept as is from golden testbench) ---
+module stimulus_gen (
+    input logic clk,
+    output logic p1a, p1b, p1c, p1d, p1e, p1f,
+    output logic p2a, p2b, p2c, p2d,
+    output logic[511:0] wavedrom_title,
+    output logic wavedrom_enable
+);
+
+    task wavedrom_start(input logic[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask
+
+    initial begin
+        int count; count = 0;
+        {p1a,p1b,p1c,p1d,p1e,p1f} <= 4'h0;
+        {p2a,p2b,p2c,p2d} <= 4'h0;
+        wavedrom_start();
+        repeat(20) @(posedge clk) begin
+            {p1a,p1b,p1c,p1d,p1e,p1f} <= {count[2:0], count[3:1]};
+            {p2a,p2b,p2c,p2d} <= count;
+            count = count + 1;
+        end
+        wavedrom_stop();
+
+        repeat(400) @(posedge clk,negedge clk) begin
+            {p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d} <= $random;
+        end
+        
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    // Helper structure to hold statistics and error details
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_p1y;
+        int errortime_p1y;
+        int errors_p2y;
+        int errortime_p2y;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    // Signal Declarations
+    logic[511:0] wavedrom_title;
+    logic wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    // Clock Generation
+    logic clk = 0;
+    initial forever
+        #5 clk = ~clk;
+
+    // DUT/Reference Signal Declarations (1-bit signals as per instantiation)
+    logic p1a, p1b, p1c, p1d, p1e, p1f;
+    logic p2a, p2b, p2c, p2d;
+    logic p1y_ref, p1y_dut;
+    logic p2y_ref, p2y_dut;
+
+    // Testbench Utilities
+    
+    // Task to display mismatch details (As required by prompt)
+    // Note: Inputs_val is 10 bits ({p1a..p2d})
+    task report_mismatch;
+        input string signal_name;
+        input logic dut_val;
+        input logic ref_val;
+        input logic[9:0] inputs_val;
+        
+        begin
+            $display("
+==================================================================");
+            $display("FIRST MISMATCH DETECTED at Time = %0t ps for Signal %s", $time, signal_name);
+            $display("------------------------------------------------------------------");
+            // Display Inputs (10 bits)
+            $display("Input Signals:  %b (%h)", inputs_val, inputs_val);
+            // Display Outputs (1 bit, showing both formats)
+            $display("Output Signals: DUT = %b (%h) | Expected = %b (%h)", dut_val, dut_val, ref_val, ref_val);
+            $display("==================================================================");
+        endtask
+    endtask
+
+    // --- Testbench Instantiations ---
+    
+    // 1. Stimulus Generator
+    stimulus_gen stim1 (
+        .clk, clk,
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .wavedrom_title, wavedrom_title,
+        .wavedrom_enable, wavedrom_enable
+    );
+    
+    // 2. Reference Module (Golden) - Assumed to exist and match logic
+    RefModule good1 (
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .p1y(p1y_ref),
+        .p2y(p2y_ref) 
+    );
+    
+    // 3. DUT Instantiation
+    TopModule top_module1 (
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .p1y(p1y_dut),
+        .p2y(p2y_dut) 
+    );
+
+    // Global state tracking for error reporting
+
+    // Verification Logic
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    // Verification: XOR comparison logic
+    assign tb_match = ( { p1y_ref, p2y_ref } === ( { p1y_ref, p2y_ref } ^ { p1y_dut, p2y_dut } ^ { p1y_ref, p2y_ref } ) );
+    
+    // Initial signal logging
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d,p1y_ref,p1y_dut,p2y_ref,p2y_dut );
+        $display("--- Starting Simulation ---");
+    end
+
+    // Clocked verification and error tracking
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Combine all inputs into one vector for display purposes
+        logic [9:0] all_inputs = {p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d};
+
+        // Check overall mismatch
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                // Report overall mismatch state
+                report_mismatch("Overall", p1y_dut, p2y_dut, all_inputs);
+            end
+            stats1.errors++;
+        end
+        
+        // Check p1y mismatch
+        if (p1y_ref !== ( p1y_ref ^ p1y_dut ^ p1y_ref ))
+        begin 
+            if (stats1.errors_p1y == 0) begin
+                stats1.errortime_p1y = $time;
+                // Report p1y mismatch state
+                report_mismatch("p1y", p1y_dut, p1y_ref, all_inputs);
+            end
+            stats1.errors_p1y = stats1.errors_p1y + 1'b1;
+        end
+        
+        // Check p2y mismatch
+        if (p2y_ref !== ( p2y_ref ^ p2y_dut ^ p2y_ref ))
+        begin 
+            if (stats1.errors_p2y == 0) begin
+                stats1.errortime_p2y = $time;
+                // Report p2y mismatch state
+                report_mismatch("p2y", p2y_dut, p2y_ref, all_inputs);
+            end
+            stats1.errors_p2y = stats1.errors_p2y + 1'b1;
+        end
+    end
+
+    // Timeout mechanism
+    initial begin
+        #1000000
+        $display("\n!!! TIMEOUT REACHED !!!");
+        $finish();
+    end
+
+    // Final Reporting Block
+    initial begin
+        // Wait for a stable state after the last clock edge
+        @(negedge clk);
+        #10;
+        
+        $display("\n==================================================================");
+        $display("SIMULATION SUMMARY");
+        $display("==================================================================");
+        
+        // Check p1y
+        if (stats1.errors_p1y > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d (p1y)", stats1.errors_p1y, stats1.errortime_p1y);
+        end
+        
+        // Check p2y
+        if (stats1.errors_p2y > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d (p2y)", stats1.errors_p2y, stats1.errortime_p2y);
+        end
+        
+        // Final overall check (Prioritizing the first overall error if any)
+        if (stats1.errors > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+        
+        $display("Total mismatched samples: %0d out of %0d samples.", stats1.errors, stats1.clocks);
+        $finish();
+    end
+
+endmodule
+
+[2026-05-15 10:57:54,398 - mage.agent - INFO] Revised tb:
+[2026-05-15 10:57:54,398 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- DUT Definition (Included for self-containment of the testbench) ---
+module TopModule (
+    input logic p1a,
+    input logic p1b,
+    input logic p1c,
+    input logic p1d,
+    input logic p1e,
+    input logic p1f,
+    input logic p2a,
+    input logic p2b,
+    input logic p2c,
+    input logic p2d,
+    output logic p1y,
+    output logic p2y
+);
+    // Intermediate wires for AND gates (following the instruction hint from the spec)
+    logic and1_out;
+    logic and2_out;
+    logic and3_out;
+    logic and4_out;
+
+    // p1y: OR of (p1a & p1b & p1c) and (p1d & p1e & p1f)
+    assign and1_out = p1a & p1b & p1c;
+    assign and2_out = p1d & p1e & p1f;
+    assign p1y = and1_out | and2_out;
+
+    // p2y: OR of (p2a & p2b) and (p2c & p2d)
+    assign and3_out = p2a & p2b;
+    assign and4_out = p2c & p2d;
+    assign p2y = and3_out | and4_out;
+endmodule
+
+// --- Stimulus Generator (Kept as is from golden testbench) ---
+module stimulus_gen (
+    input logic clk,
+    output logic p1a, p1b, p1c, p1d, p1e, p1f,
+    output logic p2a, p2b, p2c, p2d,
+    output logic[511:0] wavedrom_title,
+    output logic wavedrom_enable
+);
+
+    task wavedrom_start(input logic[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask
+    
+    initial begin
+        int count; count = 0;
+        {p1a,p1b,p1c,p1d,p1e,p1f} <= 4'h0;        
+        {p2a,p2b,p2c,p2d} <= 4'h0;        
+        wavedrom_start();
+        repeat(20) @(posedge clk) begin
+            {p1a,p1b,p1c,p1d,p1e,p1f} <= {count[2:0], count[3:1]};        
+            {p2a,p2b,p2c,p2d} <= count;        
+            count = count + 1;
+        end
+        wavedrom_stop();
+
+        repeat(400) @(posedge clk,negedge clk) begin
+            {p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d} <= $random;
+        end
+        
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    // Helper structure to hold statistics and error details
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_p1y;
+        int errortime_p1y;
+        int errors_p2y;
+        int errortime_p2y;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    // Signal Declarations
+    logic[511:0] wavedrom_title;
+    logic wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    // Clock Generation
+    logic clk = 0;
+    initial forever
+        #5 clk = ~clk;
+
+    // DUT/Reference Signal Declarations (1-bit signals as per instantiation)
+    logic p1a, p1b, p1c, p1d, p1e, p1f;
+    logic p2a, p2b, p2c, p2d;
+    logic p1y_ref, p1y_dut;
+    logic p2y_ref, p2y_dut;
+
+    // Testbench Utilities
+    
+    // Task to display mismatch details (As required by prompt)
+    task report_mismatch;
+        input string signal_name;
+        input logic dut_val;
+        input logic ref_val;
+        input logic[9:0] inputs_val;
+        
+        begin
+            $display("
+==================================================================");
+            $display("FIRST MISMATCH DETECTED at Time = %0t ps for Signal %s", $time, signal_name);
+            $display("------------------------------------------------------------------");
+            // Display Inputs (10 bits)
+            $display("Input Signals:  %b (%h)", inputs_val, inputs_val);
+            // Display Outputs (1 bit, showing both formats)
+            $display("Output Signals: DUT = %b (%h) | Expected = %b (%h)", dut_val, dut_val, ref_val, ref_val);
+            $display("==================================================================");
+        endtask
+    endtask
+
+    // --- Testbench Instantiations ---
+    
+    // 1. Stimulus Generator
+    stimulus_gen stim1 (
+        .clk, clk,
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .wavedrom_title, wavedrom_title,
+        .wavedrom_enable, wavedrom_enable
+    );
+    
+    // 2. Reference Module (Golden) - Assumed to exist and match logic
+    RefModule good1 (
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .p1y(p1y_ref),
+        .p2y(p2y_ref) 
+    );
+    
+    // 3. DUT Instantiation
+    TopModule top_module1 (
+        .p1a, p1a,
+        .p1b, p1b,
+        .p1c, p1c,
+        .p1d, p1d,
+        .p1e, p1e,
+        .p1f, p1f,
+        .p2a, p2a,
+        .p2b, p2b,
+        .p2c, p2c,
+        .p2d, p2d,
+        .p1y(p1y_dut),
+        .p2y(p2y_dut) 
+    );
+    
+    // Global state tracking for error reporting
+    
+    // Verification Logic
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    // Verification: XOR comparison logic
+    assign tb_match = ( { p1y_ref, p2y_ref } === ( { p1y_ref, p2y_ref } ^ { p1y_dut, p2y_dut } ^ { p1y_ref, p2y_ref } ) );
+    
+    // Initial signal logging
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d,p1y_ref,p1y_dut,p2y_ref,p2y_dut );
+        $display("--- Starting Simulation ---");
+    end
+
+    // Clocked verification and error tracking
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Combine all inputs into one vector for display purposes
+        logic [9:0] all_inputs = {p1a,p1b,p1c,p1d,p1e,p1f,p2a,p2b,p2c,p2d};
+        
+        // Check overall mismatch
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                // Report overall mismatch state
+                report_mismatch("Overall", p1y_dut, p2y_dut, all_inputs);
+            end
+            stats1.errors++;
+        end
+        
+        // Check p1y mismatch
+        if (p1y_ref !== ( p1y_ref ^ p1y_dut ^ p1y_ref ))
+        begin 
+            if (stats1.errors_p1y == 0) begin
+                stats1.errortime_p1y = $time;
+                // Report p1y mismatch state
+                report_mismatch("p1y", p1y_dut, p1y_ref, all_inputs);
+            end
+            stats1.errors_p1y = stats1.errors_p1y + 1'b1;
+        end
+        
+        // Check p2y mismatch
+        if (p2y_ref !== ( p2y_ref ^ p2y_dut ^ p2y_ref ))
+        begin 
+            if (stats1.errors_p2y == 0) begin
+                stats1.errortime_p2y = $time;
+                // Report p2y mismatch state
+                report_mismatch("p2y", p2y_dut, p2y_ref, all_inputs);
+            end
+            stats1.errors_p2y = stats1.errors_p2y + 1'b1;
+        end
+    end
+    
+    // Timeout mechanism
+    initial begin
+        #1000000
+        $display("
+!!! TIMEOUT REACHED !!!");
+        $finish();
+    end
+    
+    // Final Reporting Block
+    initial begin
+        // Wait for a stable state after the last clock edge
+        @(negedge clk);
+        #10;
+        
+        $display("
+==================================================================");
+        $display("SIMULATION SUMMARY");
+        $display("==================================================================");
+        
+        // Check p1y
+        if (stats1.errors_p1y > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d (p1y)", stats1.errors_p1y, stats1.errortime_p1y);
+        end else begin
+            $display("Output 'p1y' passed all checks.");
+        end
+        
+        // Check p2y
+        if (stats1.errors_p2y > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d (p2y)", stats1.errors_p2y, stats1.errortime_p2y);
+        end else begin
+            $display("Output 'p2y' passed all checks.");
+        end
+        
+        // Final overall check (Prioritizing the first overall error if any)
+        if (stats1.errors > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+        
+        $display("Total mismatched samples: %0d out of %0d samples.", stats1.errors, stats1.clocks);
+        $finish();
+    end
+
+endmodule

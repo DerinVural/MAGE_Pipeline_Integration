@@ -1,0 +1,1303 @@
+[2026-05-14 14:00:57,118 - mage.agent - INFO] Initial tb:
+[2026-05-14 14:00:57,120 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg [7:0] d, output areset,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+
+	reg reset;
+	assign areset = reset;
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+		
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+		
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+		srfail = !tb_match;
+		reset <= 0;
+		end
+		if (srfail)
+			s$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			s$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+		// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+		a functionality error than the reset being implemented asynchronously.
+		endtask
+	
+		
+		
+	initial begin
+		reset <= 1;
+		d <= $random;
+		@(negedge clk);
+		@(negedge clk);
+		wavedrom_start("Asynchronous active-high reset");
+		reset_test(1);
+		repeat(7) @(negedge clk) d <= $random;
+		@(posedge clk) reset <= 1;
+		@(negedge clk) reset <= 0; d <= $random;
+		repeat(2) @(negedge clk) d <= $random;
+		wavedrom_stop();
+
+
+		repeat(400) @(posedge clk, negedge clk) begin
+		reset <= !($random & 15);
+		d <= $random;
+		end
+		
+		#1 $finish;
+	end
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [7:0] d;
+	logic areset;
+	logic [7:0] q_ref;
+	logic [7:0] q_dut;
+
+	// Queue definitions for sequential logic testing (8-bit data, 1-bit reset)
+	// Max queue size set to 10 as per requirement, based on data width.
+	localparam MAX_QUEUE_SIZE = 10;
+	
+	reg [7:0] input_data_q [$] ; // Input D
+	reg [1:0] reset_q [$] ;     // Reset (since we track both posedge/negedge states if needed, but tracking 1 bit for simplicity matching logic)
+	reg [7:0] got_output_q [$] ; // Q_dut
+	reg [7:0] golden_output_q [$] ; // Q_ref
+
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb_mismatch ,clk,d,areset,q_ref,q_dut );
+	end
+
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		d, 
+		areset );
+	RefModule good1 (
+		.clk,
+		d,
+		areset,
+		.q(q_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		d,
+		areset,
+		.q(q_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+
+	// Initial state setup for queues and stats
+	initial begin
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_q = 0;
+		stats1.errortime_q = 0;
+		stats1.clocks = 0;
+		
+		// Initialize queues with a known state or wait for first cycle
+		end
+
+
+	// Queue and Mismatch Detection Logic (Sequential) 
+	always @(posedge clk, negedge clk) begin
+		
+		// --- Queue Management ---
+		if (input_data_q.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_data_q.delete(0);
+			got_output_q.delete(0);
+			golden_output_q.delete(0);
+			reset_q.delete(0);
+		end
+
+		// Store current state before checking for mismatch on the clock edge
+		input_data_q.push_back(d);
+		reset_q.push_back({areset, 1'b0}); // Storing areset (1 bit) and a dummy LSB
+		got_output_q.push_back(q_dut);
+		golden_output_q.push_back(q_ref);
+
+		// Update overall clock count
+		stats1.clocks++;
+		
+		// --- Mismatch Check ---
+		if (tb_mismatch) begin
+			
+			// Error Counting (Original Logic)
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			
+			// Queue Error Counting (Original Logic variant)
+			if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			stats1.errors_q = stats1.errors_q + 1'b1;
+			
+			// Check for first mismatch using the queue structure as required
+			if (stats1.errors_q == 1) begin
+				$display("\n====================================================");
+				$display("!!! FIRST MISMATCH DETECTED AT TIME %0t !!!", $time);
+				$display("====================================================");
+				$display("\nLast %0d cycles of simulation around the first mismatch:", input_data_q.size());
+
+				for (int i = 0; i < input_data_q.size(); i++) begin
+					// Check if this specific cycle was the mismatch cycle or prior to it
+					if (got_output_q[i] !== golden_output_q[i]) begin
+						$display("-> MISMATCH DETECTED AT CYCLE %0d", i);
+					end else begin
+						$display("-> Match at Cycle %0d", i);
+					end
+					
+					// Display data in HEX and BIN format if width <= 64
+					$display("Cycle %0d | Reset: %b | Input D: %h (%b) | Got Q: %h (%b) | Expected Q: %h (%b)",
+					
+i,
+					reset_q[i][0], // Only tracking the relevant reset bit
+					input_data_q[i],
+					input_data_q[i], // Binary representation of input
+					got_output_q[i],
+					got_output_q[i],
+					golden_output_q[i],
+					golden_output_q[i]);
+				
+				end
+					
+			end // End of queue error block
+			
+			// Reset error counter after first error is logged to maintain original behavior flow
+			stats1.errors_q = 0;
+			
+			
+		end // End of mismatch block
+		end
+
+
+	final begin
+		
+		// Final reporting logic based on total errors
+		if (stats1.errors == 0)
+			$display("\n========================================");
+			$display("SIMULATION PASSED");
+			$display("========================================");
+		else
+			$display("\n========================================");
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("========================================");
+		
+		$display("\nTotal mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 14:00:57,120 - mage.agent - INFO] Initial if:
+[2026-05-14 14:00:57,120 - mage.agent - INFO] module TopModule(
+    input clk,
+    input areset,
+    input [7:0] d,
+    output [7:0] q
+);
+endmodule
+[2026-05-14 14:00:57,127 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+ - input  d      (8 bits)
+ - output q      (8 bits)
+
+The module should include 8 D flip-flops with active high asynchronous
+reset. The output should be reset to 0. All DFFs should be triggered by
+the positive edge of clk.
+
+
+[2026-05-14 14:01:12,623 - mage.agent - INFO] Initial rtl:
+[2026-05-14 14:01:12,624 - mage.agent - INFO] module TopModule(
+    input  logic clk,
+    input  logic areset,
+    input  logic [7:0] d,
+    output logic [7:0] q
+);
+
+    // Internal register to hold the state of the DFFs
+    logic [7:0] q_reg;
+
+    // Initialize the register to 0 before simulation starts
+    initial begin
+        q_reg = 8'b0;
+    end
+
+    // Sequential logic for the 8 D flip-flops with active-high asynchronous reset
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            // Asynchronous reset: force output to 0
+            q_reg <= 8'b0;
+        end else begin
+            // Synchronous data loading on positive clock edge
+            q_reg <= d;
+        end
+    end
+
+    // Drive the output port from the internal register
+    assign q = q_reg;
+
+endmodule
+[2026-05-14 14:01:19,740 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 14:02:22,820 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:02:22,820 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Assuming RefModule and stimulus_gen are defined elsewhere or are placeholders as in the original TB structure.
+// For this response, we define minimal placeholder modules to allow compilation based on the golden testbench structure.
+
+module RefModule (
+    input clk,
+    input [7:0] d,
+    input areset,
+    output [7:0] q
+);
+    // Placeholder implementation: Q follows D synchronously, reset to 0
+    reg [7:0] q_r;
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            q_r <= 8'b0;
+        end else begin
+            q_r <= d;
+        end
+    end
+    assign q = q_r;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg [7:0] d, output areset,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    reg reset;
+    assign areset = reset;
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    
+    endtask
+
+    initial begin
+        reset <= 1;
+        d <= $random;
+        @(negedge clk);
+        @(negedge clk);
+        wavedrom_start("Asynchronous active-high reset");
+        reset_test(1);
+        repeat(7) @(negedge clk) d <= $random;
+        @(posedge clk) reset <= 1;
+        @(negedge clk) reset <= 0; d <= $random;
+        repeat(2) @(negedge clk) d <= $random;
+        wavedrom_stop();
+
+
+        repeat(400) @(posedge clk, negedge clk) begin
+            reset <= !($random & 15);
+            d <= $random;
+        end
+    
+        #1 $finish;
+    end
+    
+endmodule
+
+// DUT Module (Implementating the specification)
+module TopModule (
+    input  clk,
+    input  areset,
+    input  [7:0] d,
+    output [7:0] q
+);
+    // 8 D flip-flops with active high asynchronous reset. Output reset to 0.
+    reg [7:0] q_reg;
+
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            q_reg <= 8'b0;
+        end else begin
+            q_reg <= d;
+        end
+    end
+    
+    assign q = q_reg;
+endmodule
+
+// Improved Testbench
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+
+        int clocks;
+        // Variables to capture state at first mismatch
+        logic [7:0] d_mismatch_state;
+        logic areset_mismatch_state;
+        logic [7:0] q_ref_mismatch_state;
+        logic [7:0] q_dut_mismatch_state;
+    } stats;
+    
+    stats stats1;
+    
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [7:0] d;
+    logic areset;
+    logic [7:0] q_ref;
+    logic [7:0] q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        // Corrected dumpvars arguments to match actual signals
+        $dumpvars(1, tb);
+    end
+
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    // Instantiate stimulus_gen using the original golden testbench method
+    stimulus_gen stim1 (
+        .clk, 
+        .d, .areset, 
+        .wavedrom_title, .wavedrom_enable, 
+        .tb_match
+    );
+    
+    // Instantiate RefModule
+    RefModule good1 (
+        .clk, 
+        .d, 
+        .areset, 
+        .q(q_ref) 
+    );
+        
+    // Instantiate DUT
+    TopModule top_module1 (
+        .clk, 
+        .d, 
+        .areset, 
+        .q(q_dut) 
+    );
+
+    
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;  // Try to delay until the very end of the time step.
+            @(strobe);
+        end
+    endtask
+
+    // Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+    
+    // Mismatch detection and state tracking
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Track errors based on the original logic
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            // Capture state ONLY at the first mismatch
+            if (stats1.errors == 1)
+            begin
+                stats1.d_mismatch_state <= d;
+                stats1.areset_mismatch_state <= areset;
+                stats1.q_ref_mismatch_state <= q_ref;
+                stats1.q_dut_mismatch_state <= q_dut;
+            end
+        end
+        
+        // Original Q mismatch logic
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+        begin 
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q = stats1.errors_q+1'b1; 
+        end
+    end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+    // Final Reporting Block (Improved)
+    final begin
+        
+        // 1. Report on Q specific errors (Original Logic)
+        if (stats1.errors_q) 
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else 
+            $display("Hint: Output 'q' has no mismatches.");
+
+        // 2. Report on Total errors and Time (Required Output)
+        if (stats1.errors == 0)
+        begin
+            $display("SIMULATION PASSED");
+        end
+        else
+        begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d.", stats1.errors, stats1.errortime);
+
+            // 3. Detailed display for the FIRST mismatch
+            $display("\n--- FIRST MISMATCH DETAILS ---");
+            
+            // Display Inputs
+            $display("Inputs at Time %0d ps:", stats1.errortime);
+            $display("  d: HEX=%h, BIN=%b", stats1.d_mismatch_state, stats1.d_mismatch_state);
+            $display("  areset: %b", stats1.areset_mismatch_state);
+
+            // Display Outputs
+            $display("Outputs at Time %0d ps:", stats1.errortime);
+            $display("  q_ref (Expected): HEX=%h, BIN=%b", stats1.q_ref_mismatch_state, stats1.q_ref_mismatch_state);
+            $display("  q_dut (Actual): HEX=%h, BIN=%b", stats1.q_dut_mismatch_state, stats1.q_dut_mismatch_state);
+            
+            // Display tb_match status
+            $display("  tb_match status: %b", (stats1.q_ref_mismatch_state === stats1.q_dut_mismatch_state));
+        end
+        
+        $display("\n--- SUMMARY ---");
+        $display("Total mismatched samples: %1d out of %1d samples", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+    end
+
+endmodule
+
+[2026-05-14 14:03:53,247 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:03:53,247 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Placeholder for RefModule to satisfy golden testbench structure
+module RefModule (
+    input clk,
+    input [7:0] d,
+    input areset,
+    output [7:0] q
+);
+    // Placeholder implementation: Q follows D synchronously, reset to 0
+    reg [7:0] q_r;
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            q_r <= 8'b0;
+        end else begin
+            q_r <= d;
+        end
+    end
+    assign q = q_r;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg [7:0] d, output areset,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    reg reset;
+    assign areset = reset;
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask
+
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+        // Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+        // a functionality error than the reset being implemented asynchronously.
+    
+    endtask
+
+    
+    
+    initial begin
+        reset <= 1;
+        d <= $random;
+        @(negedge clk);
+        @(negedge clk);
+        wavedrom_start("Asynchronous active-high reset");
+        reset_test(1);
+        repeat(7) @(negedge clk) d <= $random;
+        @(posedge clk) reset <= 1;
+        @(negedge clk) reset <= 0; d <= $random;
+        repeat(2) @(negedge clk) d <= $random;
+        wavedrom_stop();
+
+
+        repeat(400) @(posedge clk, negedge clk) begin
+            reset <= !($random & 15);
+            d <= $random;
+        end
+    
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+
+        int clocks;
+        // Variables to capture state at first mismatch
+        logic [7:0] d_mismatch_state;
+        logic areset_mismatch_state;
+        logic [7:0] q_ref_mismatch_state;
+        logic [7:0] q_dut_mismatch_state;
+    } stats;
+    
+    stats stats1;
+    
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [7:0] d;
+    logic areset;
+    logic [7:0] q_ref;
+    logic [7:0] q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, tb);
+    end
+
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    // Instantiate stimulus_gen using the original golden testbench method
+    stimulus_gen stim1 (
+        .clk, 
+        .d, .areset, 
+        .wavedrom_title, .wavedrom_enable, 
+        .tb_match
+    );
+    
+    // Instantiate RefModule
+    RefModule good1 (
+        .clk, 
+        .d, 
+        .areset, 
+        .q(q_ref) 
+    );
+        
+    // Instantiate DUT
+    TopModule top_module1 (
+        .clk, 
+        .d, 
+        .areset, 
+        .q(q_dut) 
+    );
+
+    
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;  // Try to delay until the very end of the time step.
+            @(strobe);
+        end
+    endtask
+
+    
+    // Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+    
+    // Mismatch detection and state tracking
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Track errors based on the original logic
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            // Capture state ONLY at the first mismatch
+            if (stats1.errors == 1)
+            begin
+                stats1.d_mismatch_state <= d;
+                stats1.areset_mismatch_state <= areset;
+                stats1.q_ref_mismatch_state <= q_ref;
+                stats1.q_dut_mismatch_state <= q_dut;
+            end
+        end
+        
+        // Original Q mismatch logic
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+        begin 
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q = stats1.errors_q+1'b1; 
+        end
+    end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+    // Final Reporting Block (Improved)
+    final begin
+        
+        // 1. Report on Q specific errors (Original Logic)
+        if (stats1.errors_q) 
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else 
+            $display("Hint: Output 'q' has no mismatches.");
+
+        // 2. Report on Total errors and Time (Required Output)
+        if (stats1.errors == 0)
+        begin
+            $display("SIMULATION PASSED");
+        end
+        else
+        begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d.", stats1.errors, stats1.errortime);
+
+            // 3. Detailed display for the FIRST mismatch
+            $display("\n--- FIRST MISMATCH DETAILS ---");
+            
+            // Display Inputs
+            $display("Inputs at Time %0d ps:", stats1.errortime);
+            // d is 8 bits
+            $display("  d: HEX=%h, BIN=%b", stats1.d_mismatch_state, stats1.d_mismatch_state);
+            $display("  areset: %b", stats1.areset_mismatch_state);
+
+            // Display Outputs
+            $display("Outputs at Time %0d ps:", stats1.errortime);
+            // q_ref is 8 bits
+            $display("  q_ref (Expected): HEX=%h, BIN=%b", stats1.q_ref_mismatch_state, stats1.q_ref_mismatch_state);
+            // q_dut is 8 bits
+            $display("  q_dut (Actual): HEX=%h, BIN=%b", stats1.q_dut_mismatch_state, stats1.q_dut_mismatch_state);
+            
+            // Display tb_match status
+            $display("  tb_match status: %b", (stats1.q_ref_mismatch_state === stats1.q_dut_mismatch_state));
+        end
+        
+        $display("\n--- SUMMARY ---");
+        $display("Total mismatched samples: %1d out of %1d samples", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+    end
+
+endmodule
+
+[2026-05-14 14:04:54,725 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:04:54,726 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Placeholder for RefModule to satisfy golden testbench structure
+module RefModule (
+    input clk,
+    input [7:0] d,
+    input areset,
+    output [7:0] q
+);
+    // Placeholder implementation: Q follows D synchronously, reset to 0
+    reg [7:0] q_r;
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            q_r <= 8'b0;
+        end else begin
+            q_r <= d;
+        end
+    end
+    assign q = q_r;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg [7:0] d, output areset,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    reg reset;
+    assign areset = reset;
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+        // Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+        // a functionality error than the reset being implemented asynchronously.
+    
+    endtask
+
+    
+    initial begin
+        reset <= 1;
+        d <= $random;
+        @(negedge clk);
+        @(negedge clk);
+        wavedrom_start("Asynchronous active-high reset");
+        reset_test(1);
+        repeat(7) @(negedge clk) d <= $random;
+        @(posedge clk) reset <= 1;
+        @(negedge clk) reset <= 0; d <= $random;
+        repeat(2) @(negedge clk) d <= $random;
+        wavedrom_stop();
+
+
+        repeat(400) @(posedge clk, negedge clk) begin
+            reset <= !($random & 15);
+            d <= $random;
+        end
+    
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+
+        int clocks;
+        // Variables to capture state at first mismatch
+        logic [7:0] d_mismatch_state;
+        logic areset_mismatch_state;
+        logic [7:0] q_ref_mismatch_state;
+        logic [7:0] q_dut_mismatch_state;
+    } stats;
+    
+    stats stats1;
+    
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [7:0] d;
+    logic areset;
+    logic [7:0] q_ref;
+    logic [7:0] q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, tb);
+    end
+
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk, 
+        .d, .areset, 
+        .wavedrom_title, .wavedrom_enable, 
+        .tb_match
+    );
+    
+    RefModule good1 (
+        .clk, 
+        .d, 
+        .areset, 
+        .q(q_ref) 
+    );
+        
+    TopModule top_module1 (
+        .clk, 
+        .d, 
+        .areset, 
+        .q(q_dut) 
+    );
+
+    
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;  // Try to delay until the very end of the time step.
+            @(strobe);
+        end
+    endtask
+
+    
+    final begin
+        
+        // 1. Report on Q specific errors (Original Logic)
+        if (stats1.errors_q) 
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else 
+            $display("Hint: Output 'q' has no mismatches.");
+
+        // 2. Report on Total errors and Time (Required Output)
+        if (stats1.errors == 0)
+        begin
+            $display("SIMULATION PASSED");
+        end
+        else
+        begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d.", stats1.errors, stats1.errortime);
+
+            // 3. Detailed display for the FIRST mismatch
+            $display("\n--- FIRST MISMATCH DETAILS ---");
+            
+            // Display Inputs
+            $display("Inputs at Time %0d ps:", stats1.errortime);
+            // d is 8 bits
+            $display("  d: HEX=%h, BIN=%b", stats1.d_mismatch_state, stats1.d_mismatch_state);
+            $display("  areset: %b", stats1.areset_mismatch_state);
+            
+            // Display Outputs
+            $display("Outputs at Time %0d ps:", stats1.errortime);
+            // q_ref is 8 bits
+            $display("  q_ref (Expected): HEX=%h, BIN=%b", stats1.q_ref_mismatch_state, stats1.q_ref_mismatch_state);
+            // q_dut is 8 bits
+            $display("  q_dut (Actual): HEX=%h, BIN=%b", stats1.q_dut_mismatch_state, stats1.q_dut_mismatch_state);
+            
+            // Display tb_match status
+            $display("  tb_match status: %b", (stats1.q_ref_mismatch_state === stats1.q_dut_mismatch_state));
+        end
+        
+        $display("\n--- SUMMARY ---");
+        $display("Total mismatched samples: %1d out of %1d samples", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+    end
+    
+    // Mismatch detection and state tracking
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Track errors based on the original logic
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            // Capture state ONLY at the first mismatch
+            if (stats1.errors == 1)
+            begin
+                stats1.d_mismatch_state <= d;
+                stats1.areset_mismatch_state <= areset;
+                stats1.q_ref_mismatch_state <= q_ref;
+                stats1.q_dut_mismatch_state <= q_dut;
+            end
+        end
+        
+        // Original Q mismatch logic
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+        begin 
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q = stats1.errors_q+1'b1; 
+        end
+    end
+
+    // add timeout after 100K cycles
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+endmodule
+[2026-05-14 14:06:00,614 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:06:00,614 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Placeholder for RefModule to satisfy golden testbench structure
+module RefModule (
+    input clk,
+    input [7:0] d,
+    input areset,
+    output [7:0] q
+);
+    // Placeholder implementation: Q follows D synchronously, reset to 0
+    reg [7:0] q_r;
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            q_r <= 8'b0;
+        end else begin
+            q_r <= d;
+        end
+    end
+    assign q = q_r;
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg [7:0] d, output areset,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    reg reset;
+    assign areset = reset;
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    
+    endtask
+
+    
+
+    initial begin
+        reset <= 1;
+        d <= $random;
+        @(negedge clk);
+        @(negedge clk);
+        wavedrom_start("Asynchronous active-high reset");
+        reset_test(1);
+        repeat(7) @(negedge clk) d <= $random;
+        @(posedge clk) reset <= 1;
+        @(negedge clk) reset <= 0; d <= $random;
+        repeat(2) @(negedge clk) d <= $random;
+        wavedrom_stop();
+
+
+        repeat(400) @(posedge clk, negedge clk) begin
+            reset <= !($random & 15);
+            d <= $random;
+        end
+    
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_q;
+        int errortime_q;
+
+        int clocks;
+        // Variables to capture state at first mismatch
+        logic [7:0] d_mismatch_state;
+        logic areset_mismatch_state;
+        logic [7:0] q_ref_mismatch_state;
+        logic [7:0] q_dut_mismatch_state;
+    } stats;
+    
+    stats stats1;
+    
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [7:0] d;
+    logic areset;
+    logic [7:0] q_ref;
+    logic [7:0] q_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, tb);
+    end
+
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk, 
+        .d, .areset, 
+        .wavedrom_title, .wavedrom_enable, 
+        .tb_match
+    );
+    
+    RefModule good1 (
+        .clk, 
+        .d, 
+        .areset, 
+        .q(q_ref) 
+    );
+        
+    TopModule top_module1 (
+        .clk, 
+        .d, 
+        .areset, 
+        .q(q_dut) 
+    );
+
+    
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;  // Try to delay until the very end of the time step.
+            @(strobe);
+        end
+    endtask
+
+    
+    // Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+    assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+    
+    // Mismatch detection and state tracking
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Track errors based on the original logic
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            // Capture state ONLY at the first mismatch
+            if (stats1.errors == 1)
+            begin
+                stats1.d_mismatch_state <= d;
+                stats1.areset_mismatch_state <= areset;
+                stats1.q_ref_mismatch_state <= q_ref;
+                stats1.q_dut_mismatch_state <= q_dut;
+            end
+        end
+        
+        // Original Q mismatch logic
+        if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+        begin 
+            if (stats1.errors_q == 0) stats1.errortime_q = $time;
+            stats1.errors_q = stats1.errors_q+1'b1; 
+        end
+    end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+    // Final Reporting Block (Improved)
+    final begin
+        
+        // 1. Report on Q specific errors (Original Logic)
+        if (stats1.errors_q) 
+            $display("Hint: Output 'q' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_q, stats1.errortime_q);
+        else 
+            $display("Hint: Output 'q' has no mismatches.");
+
+        // 2. Report on Total errors and Time (Required Output)
+        if (stats1.errors == 0)
+        begin
+            $display("SIMULATION PASSED");
+        end
+        else
+        begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d.", stats1.errors, stats1.errortime);
+
+            // 3. Detailed display for the FIRST mismatch
+            $display("\n--- FIRST MISMATCH DETAILS ---");
+            
+            // Display Inputs
+            $display("Inputs at Time %0d ps:", stats1.errortime);
+            // d is 8 bits
+            $display("  d: HEX=%h, BIN=%b", stats1.d_mismatch_state, stats1.d_mismatch_state);
+            $display("  areset: %b", stats1.areset_mismatch_state);
+            
+            // Display Outputs
+            $display("Outputs at Time %0d ps:", stats1.errortime);
+            // q_ref is 8 bits
+            $display("  q_ref (Expected): HEX=%h, BIN=%b", stats1.q_ref_mismatch_state, stats1.q_ref_mismatch_state);
+            // q_dut is 8 bits
+            $display("  q_dut (Actual): HEX=%h, BIN=%b", stats1.q_dut_mismatch_state, stats1.q_dut_mismatch_state);
+            
+            // Display tb_match status
+            $display("  tb_match status: %b", (stats1.q_ref_mismatch_state === stats1.q_dut_mismatch_state));
+        end
+        
+        $display("\n--- SUMMARY ---");
+        $display("Total mismatched samples: %1d out of %1d samples", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+    end
+
+endmodule

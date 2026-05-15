@@ -1,0 +1,607 @@
+[2026-05-14 15:08:39,699 - mage.agent - INFO] Initial tb:
+[2026-05-14 15:08:39,700 - mage.agent - INFO] `timescale 1 ps/1 ps
+
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic resetn,
+	output logic x, y
+);
+
+	initial begin
+		resetn = 0;
+		x = 0;
+		y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		resetn = 1;
+		repeat(500) @(negedge clk) begin
+			resetn <= ($random & 31) != 0;
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+
+endmodule
+
+// Assuming RefModule and TopModule exist and are correctly implemented elsewhere
+// For the testbench to compile, we define placeholders for them.
+module RefModule (
+    input logic clk,
+    input logic resetn,
+    input logic x,
+    input logic y,
+    output logic f,
+    output logic g
+);
+// Placeholder implementation
+assign f = 0;
+assign g = 0;
+endmodule
+
+module TopModule (
+    input logic clk,
+    input logic resetn,
+    input logic x,
+    input logic y,
+    output logic f,
+    output logic g
+);
+// Placeholder implementation
+assign f = 0;
+assign g = 0;
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_f;
+		int errortime_f;
+		int errors_g;
+		int errortime_g;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// --- Queue Definitions for Mismatch Reporting ---
+	// Maximum queue size constraint: NEVER set MAX_QUEUE_SIZE > 10.
+	localparam MAX_QUEUE_SIZE = 10;
+	
+	reg [1:0] input_clk_queue [$];
+	reg [1:0] input_resetn_queue [$];
+	reg [1:0] input_x_queue [$];
+	reg [1:0] input_y_queue [$];
+	reg [1:0] got_f_queue [$];
+	reg [1:0] got_g_queue [$];
+	reg [1:0] golden_f_queue [$];
+	reg [1:0] golden_g_queue [$];
+	reg reset_queue [$];
+
+	// --- Original Testbench Signals ---
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		halfperiod_clk_gen: #5 clk = ~clk;
+
+	logic resetn;
+	logic x;
+	logic y;
+	logic f_ref;
+	logic f_dut;
+	logic g_ref;
+	logic g_dut;
+
+	// --- Testbench Setup ---
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,resetn,x,y,f_ref,f_dut,g_ref,g_dut );
+	end
+
+	wire tb_match; // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate Stimulus Generator
+	stimulus_gen stim1 (
+		.clk, 
+		.resetn, 
+		x, 
+		y );
+	
+	// Instantiate Reference Model	
+	RefModule good1 (
+		.clk, 
+		.resetn, 
+		x, 
+		y, 
+		f(f_ref), 
+		g(g_ref) );
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		.clk, 
+		.resetn, 
+		x, 
+		y, 
+		f(f_dut), 
+		g(g_dut) );
+
+	// --- Timing Task (Kept for functional compatibility) ---
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+task
+
+	// --- Mismatch Queueing and Verification Logic ---
+	// We need a flag to track if the first mismatch has already been reported
+	reg mismatch_reported = 0;
+
+	always @(posedge clk, negedge clk) begin
+		// 1. Queue Management: Shift and Push
+		if (input_clk_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_clk_queue.delete(0);
+			input_resetn_queue.delete(0);
+			input_x_queue.delete(0);
+			input_y_queue.delete(0);
+			got_f_queue.delete(0);
+			got_g_queue.delete(0);
+			golden_f_queue.delete(0);
+			golden_g_queue.delete(0);
+			reset_queue.delete(0);
+		end
+
+		// Push current cycle values
+		input_clk_queue.push_back(clk);
+		input_resetn_queue.push_back(resetn);
+		input_x_queue.push_back(x);
+		input_y_queue.push_back(y);
+		got_f_queue.push_back(f_dut);
+		got_g_queue.push_back(g_dut);
+		golden_f_queue.push_back(f_ref);
+		golden_g_queue.push_back(g_ref);
+		reset_queue.push_back(resetn);
+
+		// 2. Mismatch Detection (Original Logic Replacement)
+		// The original check: tb_match = ({ f_ref, g_ref } === ( { f_ref, g_ref } ^ { f_dut, g_dut } ^ { f_ref, g_ref } ));
+		// Simplified match check: {f_ref, g_ref} === {f_dut, g_dut}
+		tb_match = ( { f_ref, g_ref } === { f_dut, g_dut } );
+
+		// 3. Error Counting (Original Logic Maintained)
+		stats1.clocks++;
+		
+		// Count general mismatches
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		
+		// Count f mismatches
+		if (f_ref !== f_dut) 
+		begin 
+			if (stats1.errors_f == 0) stats1.errortime_f = $time;
+			stats1.errors_f = stats1.errors_f+1'b1;
+		end
+		
+		// Count g mismatches
+		if (g_ref !== g_dut) 
+		begin 
+			if (stats1.errors_g == 0) stats1.errortime_g = $time;
+			stats1.errors_g = stats1.errors_g+1'b1;
+		end
+		
+		// 4. First Mismatch Reporting (Queue Display)
+		if (!tb_match && mismatch_reported == 0) begin
+			mismatch_reported = 1;
+			$display("====================================================================");
+			$display("!!! FIRST MISMATCH DETECTED AT TIME %0t !!!", $time);
+			$display("--- Displaying Last %d Cycles of History ---", input_clk_queue.size());
+			
+			// Display loop (Note: Iterating backwards from current size-1 to 0 shows history correctly if size is MAX_QUEUE_SIZE)
+			for (int i = 0; i < input_clk_queue.size(); i++) begin
+				// Determine index relative to the end of the stored data for clear history viewing
+				int history_idx = input_clk_queue.size() - 1 - i;
+				
+				$display("Cycle Index %d (Time T-%0d):", history_idx, input_clk_queue.size() - 1 - history_idx);
+				$display("  Reset Signal (resetn): %b", reset_queue[history_idx]);
+				$display("  Inputs (x, y): %b, %b", input_x_queue[history_idx], input_y_queue[history_idx]);
+				$display("  DUT Output (f, g): %b, %b", got_f_queue[history_idx], got_g_queue[history_idx]);
+				$display("  Golden Output (f, g): %b, %b", golden_f_queue[history_idx], golden_g_queue[history_idx]);
+				
+				// Display in HEX if width <= 64
+				if (input_x_queue[history_idx] <= 64) $display("    Inputs (x, y) HEX: %h, %h", input_x_queue[history_idx], input_y_queue[history_idx]);
+				if (got_f_queue[history_idx] <= 64) $display("    DUT Output (f, g) HEX: %h, %h", got_f_queue[history_idx], got_g_queue[history_idx]);
+				if (golden_f_queue[history_idx] <= 64) $display("    Golden Output (f, g) HEX: %h, %h", golden_f_queue[history_idx], golden_g_queue[history_idx]);
+				
+			end
+			$display("====================================================================");
+		end
+	end
+
+	// --- Simulation Control and Final Reporting ---
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT REACHED.");
+		$finish();
+	end
+
+	// Final reporting block (replaces old final block)
+	final begin
+		if (stats1.errors == 0) begin
+			$display("\n========================================");
+			$display("SIMULATION PASSED");
+			$display("========================================");
+		end else begin
+			$display("\n========================================");
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+			$display("========================================");
+		end
+		$display("Simulation finished at %0d ps", $time);
+	end
+
+endmodule
+[2026-05-14 15:08:39,701 - mage.agent - INFO] Initial if:
+[2026-05-14 15:08:39,701 - mage.agent - INFO] module TopModule (
+    input logic clk,
+    input logic resetn,
+    input logic x,
+    input logic y,
+    output logic f,
+    output logic g
+);
+// Module implementation is assumed to be here, matching the specification.
+endmodule
+[2026-05-14 15:08:39,707 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  resetn
+ - input  x
+ - input  y
+ - output f
+ - output g
+
+Consider a finite state machine that is used to control some type of
+motor. The FSM has inputs x and y, which come from the motor, and
+produces outputs f and g, which control the motor. There is also a clock
+input called clk and a reset input (synchronous, active low) called
+resetn. The FSM has to work as follows. As long as the reset input is
+asserted, the FSM stays in a beginning state, called state A. When the
+reset signal is de-asserted, then after the next clock edge the FSM has
+to set the output f to 1 for one clock cycle. Then, the FSM has to
+monitor the x input. When x has produced the values 1, 0, 1 in three
+successive clock cycles, then g should be set to 1 on the following clock
+cycle. While maintaining g = 1 the FSM has to monitor the y input. If y
+has the value 1 within at most two clock cycles, then the FSM should
+maintain g = 1 permanently (that is, until reset). But if y does not
+become 1 within two clock cycles, then the FSM should set g = 0
+permanently (until reset). Assume all sequential logic is triggered on
+the positive edge of the clock.
+
+
+[2026-05-14 15:12:42,645 - mage.agent - INFO] Initial rtl:
+[2026-05-14 15:12:42,645 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic resetn,
+    input  logic x,
+    input  logic y,
+    output logic f,
+    output logic g
+);
+
+    // --- State Definitions (Using integer mapping) ---
+    localparam STATE_A         = 4'b0000; // Initial state / Reset
+    localparam STATE_B         = 4'b0001; // F=1 pulse cycle
+    localparam STATE_X1        = 4'b0010; // Saw x=1 (Start sequence)
+    localparam STATE_X0        = 4'b0011; // Saw x=0 (after x=1)
+    localparam STATE_X1_Done   = 4'b0100; // Saw x=1, 0, 1. G=1 next cycle.
+    localparam STATE_Y_WAIT_1  = 4'b0101; // G=1, waiting for y=1 (Cycle 1)
+    localparam STATE_Y_WAIT_2  = 4'b0110; // G=1, waiting for y=1 (Cycle 2)
+    localparam STATE_Y_PERM_HIGH = 4'b0111; // G=1 permanently
+    localparam STATE_Y_PERM_LOW  = 4'b1000; // G=0 permanently
+
+    // --- Registers ---
+    logic [3:0] state_reg;
+    logic [3:0] state_next;
+
+    // Initialize state register to the reset state (STATE_A)
+    initial begin
+        state_reg = STATE_A;
+    end
+
+    // --- Sequential Logic (State Register) ---
+    always @(posedge clk)
+    begin
+        if (!resetn) begin
+            state_reg <= STATE_A;
+        end else begin
+            state_reg <= state_next;
+        end
+    end
+
+    // --- Combinational Logic (Next State Logic) ---
+    always @(*)
+    begin
+        state_next = state_reg;
+
+        case (state_reg)
+            STATE_A: begin
+                if (resetn) begin
+                    // Transition to F pulse state upon reset de-assertion
+                    state_next = STATE_B;
+                end
+            end
+
+            STATE_B: begin
+                // F pulse done, start monitoring X sequence
+                state_next = STATE_X1; 
+            end
+
+            STATE_X1: begin // Last seen x=1
+                if (x == 1'b1) begin
+                    state_next = STATE_X1; // 1 -> 1
+                end else begin // x=0
+                    state_next = STATE_X0; // 1 -> 0
+                end
+            end
+
+            STATE_X0: begin // Last seen x=0
+                if (x == 1'b1) begin
+                    // Sequence 1, 0, 1 complete. G=1 on next cycle.
+                    state_next = STATE_X1_Done;
+                end else begin // x=0
+                    // Sequence broken. Restart sequence check, last seen x=0
+                    state_next = STATE_X0;
+                end
+            end
+
+            STATE_X1_Done: begin
+                // X sequence complete. G=1 next cycle. Start monitoring Y.
+                state_next = STATE_Y_WAIT_1;
+            end
+
+            STATE_Y_WAIT_1: begin // G=1 active. Cycle 1 of 2.
+                if (y == 1'b1) begin
+                    state_next = STATE_Y_PERM_HIGH; // Y found early
+                end else begin
+                    state_next = STATE_Y_WAIT_2; // Continue waiting
+                end
+            end
+
+            STATE_Y_WAIT_2: begin // G=1 active. Cycle 2 of 2.
+                if (y == 1'b1) begin
+                    state_next = STATE_Y_PERM_HIGH; // Y found within 2 cycles
+                end else begin
+                    state_next = STATE_Y_PERM_LOW; // Y not found within 2 cycles
+                end
+            end
+
+            STATE_Y_PERM_HIGH: begin
+                state_next = STATE_Y_PERM_HIGH; // Stay high
+            end
+
+            STATE_Y_PERM_LOW: begin
+                state_next = STATE_Y_PERM_LOW; // Stay low
+            end
+
+            default: begin
+                state_next = STATE_A; // Safety default
+            end
+        endcase
+    end
+
+    // --- Output Logic ---
+    // f is high only for one cycle after reset de-assertion
+    assign f = (state_reg == STATE_B) ? 1'b1 : 1'b0;
+
+    // g is high during the X_Done state transition (next cycle), and while in Y_WAIT_1/2 or Y_PERM_HIGH
+    assign g = (state_reg == STATE_X1_Done) || 
+                 (state_reg == STATE_Y_WAIT_1) || 
+                 (state_reg == STATE_Y_WAIT_2) || 
+                 (state_reg == STATE_Y_PERM_HIGH) ? 1'b1 : 1'b0;
+
+endmodule
+[2026-05-14 15:12:47,968 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 15:13:53,128 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:13:53,128 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// Stimulus Generator (Kept as is, as per requirement 1 & 2)
+module stimulus_gen (
+	input clk,
+	output logic resetn,
+	output logic x, y
+);
+		initial begin
+			resetn = 0;
+			x = 0;
+			y = 0;
+			@(posedge clk);
+			@(posedge clk);
+			resetn = 1;
+			repeat(500) @(negedge clk) begin
+				resetn <= ($random & 31) != 0;
+				{x,y} <= $random;
+			end
+			
+			#1 $finish;
+		end
+	endmodule
+
+module tb();
+		typedef struct packed {
+			int errors;
+			int errortime;
+			int errors_f;
+			int errortime_f;
+			int errors_g;
+			int errortime_g;
+			int clocks;
+		} stats;
+		
+		stats stats1;
+		
+		// Signal storage for first error logging
+		logic log_clk, log_resetn, log_x, log_y, log_f_ref, log_f_dut, log_g_ref, log_g_dut;
+		
+		wire[511:0] wavedrom_title;
+		wire wavedrom_enable;
+		int wavedrom_hide_after_time;
+		
+		reg clk=0;
+		initial forever
+			#5 clk = ~clk;
+
+		logic resetn;
+		logic x;
+		logic y;
+		logic f_ref;
+		logic f_dut;
+		logic g_ref;
+		logic g_dut;
+
+		initial begin 
+			$dumpfile("wave.vcd");
+			// Added all signals for comprehensive dumping
+			$dumpvars(1, stim1.clk, tb, clk, resetn, x, y, f_ref, f_dut, g_ref, g_dut, log_clk, log_resetn, log_x, log_y, log_f_ref, log_f_dut, log_g_ref, log_g_dut );
+		end
+
+		wire tb_match;
+		wire tb_mismatch = ~tb_match;
+		
+		stimulus_gen stim1 (
+			.clk, 
+			.resetn, // Note: Golden TB used .* here, but explicit mapping is safer
+			.x, 
+			.y 
+		);
+		RefModule good1 (
+			.clk, 
+			.resetn,
+			.x,
+			.y,
+			.f(f_ref),
+			.g(g_ref) );
+		
+		TopModule top_module1 (
+			.clk,
+			.resetn,
+			.x,
+			.y,
+			.f(f_dut),
+			.g(g_dut) );
+
+		
+		bit strobe = 0;
+		task wait_for_end_of_timestep;
+			repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+			end
+		endtask
+
+		// Task to log state when the first mismatch occurs
+		task log_mismatch_state;
+		begin
+			log_clk = clk;
+			log_resetn = resetn;
+			log_x = x;
+			log_y = y;
+			log_f_ref = f_ref;
+			log_f_dut = f_dut;
+			log_g_ref = g_ref;
+			log_g_dut = g_dut;
+		end
+		endtask
+
+		final begin
+			$display("=======================================================");
+			$display("SIMULATION SUMMARY");
+			$display("=======================================================");
+			
+			if (stats1.errors == 0) begin
+				$display("SIMULATION PASSED");
+			end else begin
+				$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errortime);
+				$display("\n--- STATE AT FIRST MISMATCH (TIME %0d ps) ---", stats1.errortime);
+				$display("Inputs: clk=%b, resetn=%b, x=%b, y=%b", log_clk, log_resetn, log_x, log_y);
+				$display("Outputs: f_expected=%b, f_actual=%b, g_expected=%b, g_actual=%b", log_f_ref, log_f_dut, log_g_ref, log_g_dut);
+				$display("-------------------------------------------------------");
+			end
+			
+			$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+			$display("Simulation finished at %0d ps", $time);
+		end
+
+		// Verification Logic
+		// Original XOR assignment (kept for functionality integrity)
+		assign tb_match = ( { f_ref, g_ref } === ( { f_ref, g_ref } ^ { f_dut, g_dut } ^ { f_ref, g_ref } ) );
+		
+		// State monitoring and error counting
+		always @(posedge clk, negedge clk) begin
+			// Resetting logs on reset pulse (if we were to implement a proper state reset, but following original structure)
+			if (!resetn) begin
+				stats1.clocks = 0;
+				stats1.errors = 0;
+				stats1.errors_f = 0;
+				stats1.errors_g = 0;
+				stats1.errortime = 0;
+				stats1.errortime_f = 0;
+				stats1.errortime_g = 0;
+				end
+			else begin
+				stats1.clocks++;
+				
+				// Overall Mismatch Check
+				if (!tb_match) begin
+					if (stats1.errors == 0) stats1.errortime = $time; // Record time of FIRST mismatch
+					// Log current state if this is the first error detected
+					if (stats1.errors == 0) log_mismatch_state();
+				stats1.errors++;
+				end
+				
+				// F Output Check
+			if (f_ref !== ( f_ref ^ f_dut ^ f_ref ))
+				begin 
+					if (stats1.errors_f == 0) stats1.errortime_f = $time;
+					// Log current state if this is the first F error detected
+					if (stats1.errors_f == 0) log_mismatch_state(); 
+				stats1.errors_f = stats1.errors_f+1'b1; 
+				end
+				
+				// G Output Check
+			if (g_ref !== ( g_ref ^ g_dut ^ g_ref ))
+				begin 
+					if (stats1.errors_g == 0) stats1.errortime_g = $time;
+					// Log current state if this is the first G error detected
+					if (stats1.errors_g == 0) log_mismatch_state();
+				stats1.errors_g = stats1.errors_g+1'b1; 
+				end
+			end
+		end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("\nTIMEOUT REACHED. Forcing simulation end.");
+     $finish();
+   end
+
+endmodule

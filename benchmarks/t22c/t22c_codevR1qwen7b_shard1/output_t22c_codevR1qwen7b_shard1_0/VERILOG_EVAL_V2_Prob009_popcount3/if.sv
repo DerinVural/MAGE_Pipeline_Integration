@@ -1,0 +1,2 @@
+module stimulus_gen (input clk, output logic [2:0] in); ... endmodule
+module tb(); reg clk; logic [2:0] in; logic [1:0] out_ref; logic [1:0] out_dut; TopModule top_module1 (.in(in), .out(out_dut)); ... endmodule

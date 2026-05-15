@@ -1,0 +1,6 @@
+module stimulus_gen (
+    input clk,
+    output logic a,
+    output logic b,
+    output logic q
+); // Note: The original testbench had multiple outputs, but per input_spec it's a, b as inputs. However, the golden testbench's stimulus_gen has outputs a and b as logic. So interface must follow golden's. Original inputs and outputs might have different names. The interface in SystemVerilog would have the ports as per the testbench's stimulus_gen module declaration. The actual TopModule is instantiated, but the interface here refers to the testbench's modules. But the user asks for the module interface exactly matching input_spec, so TopModule's ports. However, the golden testbench's stimulus_gen has a and b as outputs. This is a contradiction. Need to follow golden testbench as per instruction 2. So the stimulus_gen has a and b as outputs. So the IO interface of the module stimulus_gen is as per the golden testbench. The user's input_spec says inputs and outputs, but the golden testbench's modules have different declarations. Must adhere to golden testbench's interface.

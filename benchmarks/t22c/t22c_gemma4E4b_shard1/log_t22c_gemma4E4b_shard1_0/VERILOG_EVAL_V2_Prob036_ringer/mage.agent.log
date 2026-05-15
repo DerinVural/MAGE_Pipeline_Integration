@@ -1,0 +1,962 @@
+[2026-05-14 17:34:15,072 - mage.agent - INFO] Initial tb:
+[2026-05-14 17:34:15,074 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generator (Kept as is, matching golden testbench)
+module stimulus_gen (
+	input clk,
+	output reg ring,
+	vibrate_mode,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{vibrate_mode,ring} <= 1'b0;
+		wavedrom_start();
+		repeat(10) @(posedge clk)
+			{vibrate_mode,ring} <= count++;
+		wavedrom_stop();
+		
+		#1 $finish;
+	end
+	endmodule
+
+// DUT Definition (For completeness, assuming it's not provided, but required for simulation)
+module TopModule (
+    input ring,
+    input vibrate_mode,
+    output ringer,
+    output motor
+);
+    // Combinational logic based on spec:
+    // If ring is high:
+    //   If vibrate_mode is 1, motor=1, ringer=0
+    //   Else, ringer=1, motor=0
+    // If ring is low, both outputs should likely be 0 (implied)
+    assign ringer = ring && !vibrate_mode;
+    assign motor = ring && vibrate_mode;
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_ringer;
+		int errortime_ringer;
+		int errors_motor;
+		int errortime_motor;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic ring;
+	logic vibrate_mode;
+	logic ringer_ref;
+	logic ringer_dut;
+	logic motor_ref;
+	logic motor_dut;
+
+	// --- Queue Definitions for Mismatch Display (Combinational Logic) ---
+	// Since the DUT is combinational, we capture the state *when* the mismatch is detected.
+	// MAX_QUEUE_SIZE set small as we only need context at the point of failure.
+	localparam MAX_QUEUE_SIZE = 3;
+	
+	// Store inputs
+	logic input_ring_queue [MAX_QUEUE_SIZE];
+	logic input_vibrate_queue [MAX_QUEUE_SIZE];
+
+	// Store outputs	
+	logic got_ringer_queue [MAX_QUEUE_SIZE];
+	logic golden_ringer_queue [MAX_QUEUE_SIZE];
+	logic got_motor_queue [MAX_QUEUE_SIZE];
+	logic golden_motor_queue [MAX_QUEUE_SIZE];
+
+	// Index to track the position in the queue (0 to MAX_QUEUE_SIZE-1)
+	reg [$clog2(MAX_QUEUE_SIZE)-1:0] queue_idx = 0;
+	
+	// --- End Queue Definitions ---
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch, ring, vibrate_mode, ringer_ref, ringer_dut, motor_ref, motor_dut );
+	end
+
+
+	wire tb_match;         // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.ring,
+		.vibrate_mode );
+	RefModule good1 (
+		.ring,
+		.vibrate_mode,
+		ringer(ringer_ref),
+		.motor(motor_ref) );
+	
+	TopModule top_module1 (
+		.ring,
+		.vibrate_mode,
+		ringer(ringer_dut),
+		.motor(motor_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	// Logic to detect and display mismatch upon first occurrence
+	always @(posedge clk)
+	begin
+		// Only run this display logic once upon the very first mismatch
+		if (tb_mismatch && stats1.errors == 0)
+		begin
+			$display("============================================================================");
+			$display("!!! FIRST MISMATCH DETECTED AT TIME %0t !!!", $time);
+			$display("============================================================================");
+			$display("--- Input Signals ---");
+			$display("Ring:       %b (Hex: %h)", ring, ring);
+			$display("Vibrate Mode: %b (Hex: %h)", vibrate_mode, vibrate_mode);
+			$display("--- DUT Outputs ---");
+			$display("Ringer (Got): %b (Hex: %h)", ringer_dut, ringer_dut);
+			$display("Motor (Got):  %b (Hex: %h)", motor_dut, motor_dut);
+			$display("--- Golden Outputs ---");
+			$display("Ringer (Exp): %b (Hex: %h)", ringer_ref, ringer_ref);
+			$display("Motor (Exp):  %b (Hex: %h)", motor_ref, motor_ref);
+			$display("============================================================================");
+		end
+		
+		// Update queues for potential debugging/historical view (though combinational check is instantaneous)
+		input_ring_queue[queue_idx] <= ring;
+		input_vibrate_queue[queue_idx] <= vibrate_mode;
+		got_ringer_queue[queue_idx] <= ringer_dut;
+		golden_ringer_queue[queue_idx] <= ringer_ref;
+		got_motor_queue[queue_idx] <= motor_dut;
+		golden_motor_queue[queue_idx] <= motor_ref;
+		queue_idx <= (queue_idx + 1) % MAX_QUEUE_SIZE;
+	end
+
+	// Original statistics update logic, runs every clock cycle
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+		if (ringer_ref !== ( ringer_ref ^ ringer_dut ^ ringer_ref ))
+		begin if (stats1.errors_ringer == 0) stats1.errortime_ringer = $time;
+			sstats1.errors_ringer = stats1.errors_ringer+1'b1; end
+		if (motor_ref !== ( motor_ref ^ motor_dut ^ motor_ref ))
+		begin if (stats1.errors_motor == 0) stats1.errortime_motor = $time;
+			sstats1.errors_motor = stats1.errors_motor+1'b1; end
+	end
+
+
+	final begin
+		if (stats1.errors_ringer) $display("Hint: Output 'ringer' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_ringer, stats1.errortime_ringer);
+		else $display("Hint: Output 'ringer' has no mismatches.");
+		if (stats1.errors_motor) $display("Hint: Output 'motor' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_motor, stats1.errortime_motor);
+		else $display("Hint: Output 'motor' has no mismatches.");
+
+		// Final Pass/Fail Check
+		if (stats1.errors == 0) begin
+			s$display("SIMULATION PASSED");
+		end else begin
+			s$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 17:34:15,074 - mage.agent - INFO] Initial if:
+[2026-05-14 17:34:15,074 - mage.agent - INFO] module TopModule (
+    input ring,
+    input vibrate_mode,
+    output ringer,
+    output motor
+);
+endmodule
+[2026-05-14 17:34:15,080 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  ring
+ - input  vibrate_mode
+ - output ringer
+ - output motor
+
+The module should implement a circuit to control a cellphone's ringer and
+vibration motor. Whenever the phone needs to ring from an incoming call
+(input ring), your circuit must either turn on the ringer (output ringer
+= 1) or the motor (output motor = 1), but not both. If the phone is in
+vibrate mode (input vibrate_mode = 1), turn on the motor. Otherwise, turn
+on the ringer.
+
+
+[2026-05-14 17:34:28,364 - mage.agent - INFO] Initial rtl:
+[2026-05-14 17:34:28,365 - mage.agent - INFO] module TopModule (
+    input  logic ring,
+    input  logic vibrate_mode,
+    output logic ringer,
+    output logic motor
+);
+
+    // Logic implementation:
+    // If ring is active (1):
+    //   If vibrate_mode is 1, motor=1, ringer=0.
+    //   If vibrate_mode is 0, ringer=1, motor=0.
+    // If ring is inactive (0), both outputs must be 0 (implicitly handled by AND gates).
+
+    // Ringer is active only when ring is high AND vibrate_mode is low.
+    assign ringer = ring & ~vibrate_mode;
+
+    // Motor is active only when ring is high AND vibrate_mode is high.
+    assign motor = ring & vibrate_mode;
+
+endmodule
+[2026-05-14 17:34:36,525 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 17:35:35,493 - mage.agent - INFO] Revised tb:
+[2026-05-14 17:35:35,493 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg ring,
+	output reg vibrate_mode,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+endtask
+	
+	task wavedrom_stop;
+		#1;
+endtask
+
+
+	initial begin
+		int count; count = 0;
+		{vibrate_mode,ring} <= 1'b0;
+		wavedrom_start();
+		repeat(10) @(posedge clk)
+			{vibrate_mode,ring} <= count++;
+		wavedrom_stop();
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_ringer;
+		int errortime_ringer;
+		int errors_motor;
+		int errortime_motor;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic ring;
+	logic vibrate_mode;
+	logic ringer_ref;
+	logic ringer_dut;
+	logic motor_ref;
+	logic motor_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,ring,vibrate_mode,ringer_ref,ringer_dut,motor_ref,motor_dut );
+	end
+
+
+	wire tb_match;	// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* , // Relies on the golden testbench structure
+		.ring,
+		vibrate_mode );
+	RefModule good1 (
+		.ring,
+		vibrate_mode,
+		ringer(ringer_ref),
+		.motor(motor_ref) );
+	
+	TopModule top_module1 (
+		.ring,
+		vibrate_mode,
+		ringer(ringer_dut),
+		.motor(motor_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+
+
+	// Function to display signals in required format
+	task display_signals;
+		input logic r_in, vm_in, r_ref_out, m_ref_out, r_dut_out, m_dut_out;
+		$display("\n========================================================================");
+		$display("*** MISMATCH DETECTED *** (Time: %0t ps)", $time);
+		$display("------------------------------------------------------------------------");
+		$display("Inputs: ring=%b (HEX: %h), vibrate_mode=%b (HEX: %h)", r_in, r_in, vm_in, vm_in);
+		$display("Expected Outputs: ringer=%b (HEX: %h), motor=%b (HEX: %h)", r_ref_out, r_ref_out, m_ref_out, m_ref_out);
+		$display("Actual Outputs: ringer=%b (HEX: %h), motor=%b (HEX: %h)", r_dut_out, r_dut_out, m_dut_out, m_dut_out);
+		$display("========================================================================");
+	endtask
+
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { ringer_ref, motor_ref } === ( { ringer_ref, motor_ref } ^ { ringer_dut, motor_dut } ^ { ringer_ref, motor_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		
+		// --- Overall Mismatch Check ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			s
+			stats1.errors++;
+			// Display detailed info for the first overall mismatch
+			if (stats1.errors == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+
+		// --- Ringer Mismatch Check ---
+		if (ringer_ref !== ( ringer_ref ^ ringer_dut ^ ringer_ref ))
+		begin 
+			if (stats1.errors_ringer == 0) stats1.errortime_ringer = $time;
+			s
+			s
+			s
+			s
+			s
+			// Display detailed info for the first ringer mismatch
+			if (stats1.errors_ringer == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+			stats1.errors_ringer = stats1.errors_ringer+1'b1;
+		end
+		
+		// --- Motor Mismatch Check ---
+		if (motor_ref !== ( motor_ref ^ motor_dut ^ motor_ref ))
+		begin 
+			if (stats1.errors_motor == 0) stats1.errortime_motor = $time;
+			s
+			stats1.errors_motor = stats1.errors_motor+1'b1;
+			// Display detailed info for the first motor mismatch
+			if (stats1.errors_motor == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+		end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT: Simulation terminated prematurely.");
+     $finish();
+   end
+
+endmodule
+[2026-05-14 17:36:34,136 - mage.agent - INFO] Revised tb:
+[2026-05-14 17:36:34,137 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg ring,
+	output reg vibrate_mode,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask
+
+
+	initial begin
+		int count; count = 0;
+		{vibrate_mode,ring} <= 1'b0;
+		wavedrom_start();
+		repeat(10) @(posedge clk)
+			{vibrate_mode,ring} <= count++;
+		wavedrom_stop();
+		
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_ringer;
+		int errortime_ringer;
+		int errors_motor;
+		int errortime_motor;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic ring;
+	logic vibrate_mode;
+	logic ringer_ref;
+	logic ringer_dut;
+	logic motor_ref;
+	logic motor_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,ring,vibrate_mode,ringer_ref,ringer_dut,motor_ref,motor_dut );
+	end
+
+
+	wire tb_match;	// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* , // Relies on the golden testbench structure
+		.ring,
+		vibrate_mode );
+	RefModule good1 (
+		.ring,
+		vibrate_mode,
+		ringer(ringer_ref),
+		.motor(motor_ref) );
+	
+	TopModule top_module1 (
+		.ring,
+		vibrate_mode,
+		ringer(ringer_dut),
+		.motor(motor_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+	endtask
+
+	// Function to display signals in required format
+	task display_signals;
+		input logic r_in, vm_in, r_ref_out, m_ref_out, r_dut_out, m_dut_out;
+		
+		$display("
+========================================================================");
+		$display("*** MISMATCH DETECTED *** (Time: %0t ps)", $time);
+		$display("------------------------------------------------------------------------");
+		// Display Inputs
+		$display("Inputs: ring=%b (HEX: %h), vibrate_mode=%b (HEX: %h)", r_in, r_in, vm_in, vm_in);
+		// Display Expected Outputs
+		$display("Expected Outputs: ringer=%b (HEX: %h), motor=%b (HEX: %h)", r_ref_out, r_ref_out, m_ref_out, m_ref_out);
+		// Display Actual Outputs
+		$display("Actual Outputs: ringer=%b (HEX: %h), motor=%b (HEX: %h)", r_dut_out, r_dut_out, m_dut_out, m_dut_out);
+		$display("========================================================================");
+	endtask
+
+
+	// Initialize stats
+	initial begin
+		stats1 = '{default: 0};
+	end
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk)
+	begin
+		
+		stats1.clocks++;
+		
+		// --- Overall Mismatch Check ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			// Display detailed info for the first overall mismatch
+			if (stats1.errors == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+		
+		// --- Ringer Mismatch Check ---
+		if (ringer_ref !== ringer_dut) begin // Simplified check for 1-bit signals
+			if (stats1.errors_ringer == 0) stats1.errortime_ringer = $time;
+			stats1.errors_ringer++;
+			// Display detailed info for the first ringer mismatch
+			if (stats1.errors_ringer == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+		
+		// --- Motor Mismatch Check ---
+		if (motor_ref !== motor_dut) begin // Simplified check for 1-bit signals
+			if (stats1.errors_motor == 0) stats1.errortime_motor = $time;
+			stats1.errors_motor++;
+			// Display detailed info for the first motor mismatch
+			if (stats1.errors_motor == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+	endmodule
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT: Simulation terminated prematurely.");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 17:37:44,938 - mage.agent - INFO] Revised tb:
+[2026-05-14 17:37:44,938 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg ring,
+	output reg vibrate_mode,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask
+
+	initial begin
+		int count; count = 0;
+		{vibrate_mode,ring} <= 1'b0;
+		wavedrom_start();
+		repeat(10) @(posedge clk)
+		{vibrate_mode,ring} <= count++;
+		wavedrom_stop();
+		
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+	
+typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_ringer;
+		int errortime_ringer;
+		int errors_motor;
+		int errortime_motor;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+
+logic ring;
+logic vibrate_mode;
+logic ringer_ref;
+logic ringer_dut;
+logic motor_ref;
+logic motor_dut;
+
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,ring,vibrate_mode,ringer_ref,ringer_dut,motor_ref,motor_dut );
+end
+
+
+wire tb_match;	// Verification
+wire tb_mismatch = ~tb_match;
+	
+
+stimulus_gen stim1 (
+		.clk,
+		.* , // Relies on the golden testbench structure
+		.ring,
+		vibrate_mode );
+RefModule good1 (
+		.ring,
+		vibrate_mode,
+		ringer(ringer_ref),
+		.motor(motor_ref) );
+	
+TopModule top_module1 (
+		.ring,
+		vibrate_mode,
+		ringer(ringer_dut),
+		.motor(motor_dut) );
+
+
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	end
+task endtask
+
+	
+// Function to display signals in required format
+task display_signals;
+	input logic r_in, vm_in, r_ref_out, m_ref_out, r_dut_out, m_dut_out;
+		
+		$display("
+========================================================================");
+		$display("*** MISMATCH DETECTED *** (Time: %0t ps)", $time);
+		$display("------------------------------------------------------------------------");
+		
+		// Display Inputs
+		$display("Inputs: ring=%b (HEX: %h), vibrate_mode=%b (HEX: %h)", r_in, r_in, vm_in, vm_in);
+		// Display Expected Outputs
+		$display("Expected Outputs: ringer=%b (HEX: %h), motor=%b (HEX: %h)", r_ref_out, r_ref_out, m_ref_out, m_ref_out);
+		// Display Actual Outputs
+		$display("Actual Outputs: ringer=%b (HEX: %h), motor=%b (HEX: %h)", r_dut_out, r_dut_out, m_dut_out, m_dut_out);
+		$display("========================================================================");
+	endisplay_signals
+
+	
+// Initialize stats
+	initial begin
+		stats1 = '{default: 0};
+	end
+	
+
+// Use explicit sensitivity list here.
+always @(posedge clk) begin
+		
+		stats1.clocks++;
+		
+		// --- Overall Mismatch Check ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			// Display detailed info for the first overall mismatch
+			if (stats1.errors == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+		
+		// --- Ringer Mismatch Check ---
+		if (ringer_ref !== ringer_dut) begin // Simplified check for 1-bit signals
+			if (stats1.errors_ringer == 0) stats1.errortime_ringer = $time;
+			sstats1.errors_ringer++;
+			// Display detailed info for the first ringer mismatch
+			if (stats1.errors_ringer == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+		
+		// --- Motor Mismatch Check ---
+		if (motor_ref !== motor_dut) begin // Simplified check for 1-bit signals
+			if (stats1.errors_motor == 0) stats1.errortime_motor = $time;
+			sstats1.errors_motor++;
+			// Display detailed info for the first motor mismatch
+			if (stats1.errors_motor == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT: Simulation terminated prematurely.");
+		$finish();
+	end
+
+	endmodule
+
+[2026-05-14 17:38:42,310 - mage.agent - INFO] Revised tb:
+[2026-05-14 17:38:42,311 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg ring,
+	output reg vibrate_mode,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+endtask
+	
+	task wavedrom_stop;
+		#1;
+endtask	
+
+	initial begin
+	int count; count = 0;
+	{vibrate_mode,ring} <= 1'b0;
+	wavedrom_start();
+	repeat(10) @(posedge clk)
+		{vibrate_mode,ring} <= count++;
+	wavedrom_stop();
+	
+	#1 $finish;
+end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_ringer;
+		int errortime_ringer;
+		int errors_motor;
+		int errortime_motor;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+	
+	reg clk=0;
+
+	initial forever
+		#5 clk = ~clk;
+
+
+logic ring;
+logic vibrate_mode;
+logic ringer_ref;
+logic ringer_dut;
+logic motor_ref;
+logic motor_dut;
+
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,ring,vibrate_mode,ringer_ref,ringer_dut,motor_ref,motor_dut );
+end
+
+
+wire tb_match;	// Verification
+wire tb_mismatch = ~tb_match;
+	
+
+stimulus_gen stim1 (
+		.clk,
+		.* , 
+		.ring,
+		vibrate_mode );
+RefModule good1 (
+		.ring,
+		vibrate_mode,
+		ringer(ringer_ref),
+		.motor(motor_ref) );
+
+TopModule top_module1 (
+		.ring,
+		vibrate_mode,
+		ringer(ringer_dut),
+		.motor(motor_dut) );
+
+
+
+
+	// Function to display signals in required format
+	task display_signals;
+		input logic r_in, vm_in, r_ref_out, m_ref_out, r_dut_out, m_dut_out;
+		
+		$display("
+========================================================================");
+		$display("*** MISMATCH DETECTED *** (Time: %0t ps)", $time);
+		$display("------------------------------------------------------------------------");
+		
+		// Display Inputs
+		$display("Inputs: ring=%b (HEX: %h), vibrate_mode=%b (HEX: %h)", r_in, r_in, vm_in, vm_in);
+		// Display Expected Outputs
+		$display("Expected Outputs: ringer=%b (HEX: %h), motor=%b (HEX: %h)", r_ref_out, r_ref_out, m_ref_out, m_ref_out);
+		// Display Actual Outputs
+		$display("Actual Outputs: ringer=%b (HEX: %h), motor=%b (HEX: %h)", r_dut_out, r_dut_out, m_dut_out, m_dut_out);
+		$display("========================================================================");
+	endtask
+
+
+
+	// Initialize stats
+	initial begin
+		stats1 = '{default: 0};
+	end
+
+
+// Use explicit sensitivity list here.
+always @(posedge clk) begin
+	
+		stats1.clocks++;
+	
+		// --- Overall Mismatch Check ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			// Display detailed info for the first overall mismatch
+			if (stats1.errors == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+	
+		// --- Ringer Mismatch Check ---
+		if (ringer_ref !== ringer_dut) begin // Simplified check for 1-bit signals
+			if (stats1.errors_ringer == 0) stats1.errortime_ringer = $time;
+			sstats1.errors_ringer++;
+			// Display detailed info for the first ringer mismatch
+			if (stats1.errors_ringer == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+	
+		// --- Motor Mismatch Check ---
+		if (motor_ref !== motor_dut) begin // Simplified check for 1-bit signals
+			if (stats1.errors_motor == 0) stats1.errortime_motor = $time;
+			sstats1.errors_motor++;
+			// Display detailed info for the first motor mismatch
+			if (stats1.errors_motor == 1) begin
+				display_signals(ring, vibrate_mode, ringer_ref, motor_ref, ringer_dut, motor_dut);
+			end
+		end
+	endmodule
+
+
+// add timeout after 100K cycles
+initial begin
+	#1000000
+	$display("TIMEOUT: Simulation terminated prematurely.");
+	$finish();
+end
+
+endmodule

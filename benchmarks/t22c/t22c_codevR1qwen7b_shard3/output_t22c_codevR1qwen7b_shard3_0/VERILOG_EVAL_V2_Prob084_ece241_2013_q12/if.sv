@@ -1,0 +1,1 @@
+module TopModule (clk, enable, S, A, B, C, Z); input clk; input enable; input S; input A; input B; input C; output Z; endmodule

@@ -1,0 +1,1 @@
+module TopModule (input clk, input reset, input in, output logic disc, output logic flag, output logic err);

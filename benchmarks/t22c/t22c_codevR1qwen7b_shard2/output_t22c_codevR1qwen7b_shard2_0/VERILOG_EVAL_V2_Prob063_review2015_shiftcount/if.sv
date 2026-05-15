@@ -1,0 +1,1 @@
+module TopModule(clk, shift_ena, count_ena, data, q); input clk; input shift_ena; input count_ena; input data; output logic [3:0] q; endmodule

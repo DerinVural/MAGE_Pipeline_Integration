@@ -1,0 +1,346 @@
+[2026-05-13 17:19:37,005 - mage.agent - INFO] Initial tb:
+[2026-05-13 17:19:37,007 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic resetn,
+    output logic [2:0] r,
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable,
+    input tb_match
+);
+    reg reset;
+    assign resetn = ~reset;
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        reset <= 1;
+        r <= 0;
+        @(posedge clk);
+        
+        r <= 1;
+        reset_test();
+        
+        r <= 0;
+        wavedrom_start("");
+        @(posedge clk) r <= 0;
+        @(posedge clk) r <= 7;
+        @(posedge clk) r <= 7;
+        @(posedge clk) r <= 7;
+        @(posedge clk) r <= 6;
+        @(posedge clk) r <= 6;
+        @(posedge clk) r <= 6;
+        @(posedge clk) r <= 4;
+        @(posedge clk) r <= 4;
+        @(posedge clk) r <= 4;
+        @(posedge clk) r <= 0;
+        @(posedge clk) r <= 0;
+        @(posedge clk) r <= 4;
+        @(posedge clk) r <= 6;
+        @(posedge clk) r <= 7;
+        @(posedge clk) r <= 7;
+        @(posedge clk) r <= 7;
+        @(negedge clk);
+        wavedrom_stop();
+        
+        @(posedge clk);
+        reset <= 0;
+        @(posedge clk);
+        @(posedge clk);
+        
+        repeat(500) @(negedge clk) begin
+            reset <= ($random & 63) == 0;
+            r <= $random;
+        end
+        
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_g;
+        int errortime_g;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic resetn;
+    logic [2:0] r;
+    logic [2:0] g_ref;
+    logic [2:0] g_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, clk, resetn, r, g_ref, g_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+
+    // Queues for mismatch reporting
+    localparam MAX_QUEUE_SIZE = 10;
+    logic [2:0] r_q [$];
+    logic resetn_q [$];
+    logic [2:0] g_ref_q [$];
+    logic [2:0] g_dut_q [$];
+    bit first_mismatch_done = 0;
+
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .resetn,
+        .r
+    );
+
+    RefModule good1 (
+        .clk,
+        .resetn,
+        .r,
+        .g(g_ref)
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .resetn,
+        .r,
+        .g(g_dut)
+    );
+
+    assign tb_match = ( { g_ref } === ( { g_ref } ^ { g_dut } ^ { g_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        // Manage Queues
+        if (r_q.size() >= MAX_QUEUE_SIZE) begin
+            r_q.delete(0);
+            resetn_q.delete(0);
+            g_ref_q.delete(0);
+            g_dut_q.delete(0);
+        end
+        r_q.push_back(r);
+        resetn_q.push_back(resetn);
+        g_ref_q.push_back(g_ref);
+        g_dut_q.push_back(g_dut);
+
+        // Error Counting
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            // Mismatch Reporting
+            if (!first_mismatch_done) begin
+                $display("Mismatch detected at time %t", $time);
+                $display("\nLast %0d cycles of simulation:", r_q.size());
+                for (int i = 0; i < r_q.size(); i++) begin
+                    $display("Cycle %0d, resetn=%b, r=%h(%b), g_ref=%h(%b), g_dut=%h(%b)",
+                        i, resetn_q[i], r_q[i], r_q[i], g_ref_q[i], g_ref_q[i], g_dut_q[i], g_dut_q[i]);
+                end
+                first_mismatch_done = 1;
+            end
+        end
+
+        if (g_ref !== ( g_ref ^ g_dut ^ g_ref )) begin 
+            if (stats1.errors_g == 0) stats1.errortime_g = $time;
+            stats1.errors_g = stats1.errors_g + 1;
+        end
+    end
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_g) 
+            $display("Hint: Output 'g' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_g, stats1.errortime_g);
+        else 
+            $display("Hint: Output 'g' has no mismatches.");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+    initial begin
+        #1000000;
+        $display("TIMEOUT");
+        $finish();
+    end
+endmodule
+[2026-05-13 17:19:37,007 - mage.agent - INFO] Initial if:
+[2026-05-13 17:19:37,008 - mage.agent - INFO] module TopModule (
+    input  logic        clk,
+    input  logic        resetn,
+    input  logic [2:0]  r,
+    output logic [2:0]  g
+);
+[2026-05-13 17:19:37,014 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  resetn
+ - input  r (3 bits)
+ - output g (3 bits)
+
+The module should implement the FSM described by the state diagram shown
+below:
+
+  A        --r0=0,r1=0,r2=0--> A
+  A        -------r0=1-------> B
+  A        -----r0=0,r1=1----> C
+  A        --r0=0,r1=0,r2=0--> D
+  B (g0=1) -------r0=1-------> B
+  B (g0=1) -------r0=0-------> A
+  C (g1=1) -------r1=1-------> C
+  C (g1=1) -------r1=0-------> A
+
+Resetn is an active-low synchronous reset that resets into state A. This
+FSM acts as an arbiter circuit, which controls access to some type of
+resource by three requesting devices. Each device makes its request for
+the resource by setting a signal _r[i]_ = 1, where _r[i]_ is either
+_r[0]_, _r[1]_, or _r[2]_. Each r[i] is an input signal to the FSM, and
+represents one of the three devices. The FSM stays in state _A_ as long
+as there are no requests. When one or more request occurs, then the FSM
+decides which device receives a grant to use the resource and changes to
+a state that sets that device's _g[i]_ signal to 1. Each _g[i]_ is an
+output from the FSM. There is a priority system, in that device 0 has a
+higher priority than device 1, and device 2 has the lowest priority.
+Hence, for example, device 2 will only receive a grant if it is the only
+device making a request when the FSM is in state _A_. Once a device, _i_,
+is given a grant by the FSM, that device continues to receive the grant
+as long as its request, _r[i]_ = 1.
+
+Implement a module that represents this FSM. Use separate always blocks
+for the state table and the state flip-flops, as done in lectures.
+Describe the FSM outputs, _g[i]_, using either continuous assignment
+statement(s) or an always block (at your discretion). Assign any state
+codes that you wish to use. Assume all sequential logic is triggered on
+the positive edge of the clock.
+
+
+[2026-05-13 17:20:17,797 - mage.agent - INFO] Initial rtl:
+[2026-05-13 17:20:17,797 - mage.agent - INFO] module TopModule (
+    input  logic        clk,
+    input  logic        resetn,
+    input  logic [2:0]  r,
+    output logic [2:0]  g
+);
+
+    // State encoding
+    localparam STATE_A = 2'b00;
+    localparam STATE_B = 2'b01;
+    localparam STATE_C = 2'b10;
+    localparam STATE_D = 2'b11;
+
+    // State registers
+    logic [1:0] state;
+    logic [1:0] state_next;
+
+    // Initialize state to avoid X in simulation
+    initial begin
+        state = STATE_A;
+    end
+
+    // Sequential logic: State Flip-Flops
+    always @(posedge clk) begin
+        if (!resetn) begin
+            state <= STATE_A;
+        end else begin
+            state <= state_next;
+        end
+    end
+
+    // Combinational logic: Next State Logic
+    always @(*) begin
+        state_next = state;
+        case (state)
+            STATE_A:
+                if (r[0])
+                    state_next = STATE_B;
+                else if (r[1])
+                    state_next = STATE_C;
+                else if (r[2])
+                    state_next = STATE_D;
+                else
+                    state_next = STATE_A;
+            
+            STATE_B:
+                if (r[0])
+                    state_next = STATE_B;
+                else
+                    state_next = STATE_A;
+            
+            STATE_C:
+                if (r[1])
+                    state_next = STATE_C;
+                else
+                    state_next = STATE_A;
+            
+            STATE_D:
+                if (r[2])
+                    state_next = STATE_D;
+                else
+                    state_next = STATE_A;
+            
+            default:
+                state_next = STATE_A;
+        endcase
+    end
+
+    // Combinational logic: Output Logic
+    always @(*) begin
+        g = 3'b000;
+        case (state)
+            STATE_B:
+                g[0] = 1'b1;
+            STATE_C:
+                g[1] = 1'b1;
+            STATE_D:
+                g[2] = 1'b1;
+            default:
+                g = 3'b000;
+        endcase
+    end
+
+endmodule

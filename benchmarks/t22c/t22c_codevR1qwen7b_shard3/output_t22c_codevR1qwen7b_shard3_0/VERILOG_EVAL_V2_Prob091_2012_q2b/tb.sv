@@ -1,0 +1,1 @@
+The testbench should instantiate TopModule, have clk, y, w, Y1, Y3. The golden's tb_match logic. The initial block generates stimuli with posedge/negedge clk. The queue tracks up to 8 entries. On mismatch, display queue entries starting from error. After simulation, if no errors, display PASSED; else, FAILED.

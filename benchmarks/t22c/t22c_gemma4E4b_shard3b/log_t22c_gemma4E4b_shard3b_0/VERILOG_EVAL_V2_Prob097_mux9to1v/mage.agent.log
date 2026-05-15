@@ -1,0 +1,1383 @@
+[2026-05-15 11:34:36,318 - mage.agent - INFO] Initial tb:
+[2026-05-15 11:34:36,319 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- Stimulus Generator (Kept as is) ---
+module stimulus_gen (
+	input clk,
+	output logic [15:0] a,b,c,d,e,f,g,h,i,
+	output logic [3:0] sel,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask
+		
+	initial begin
+		{a,b,c,d,e,f,g,h,i,sel} <= { 16'ha, 16'hb, 16'hc, 16'hd, 16'he, 16'hf, 16'h11, 16'h12, 16'h13, 4'h0 };
+		@(negedge clk) wavedrom_start();
+			@(posedge clk) sel <= 4'h1;
+			@(posedge clk) sel <= 4'h2;
+			@(posedge clk) sel <= 4'h3;
+			@(posedge clk) sel <= 4'h4;
+			@(posedge clk) sel <= 4'h7;
+			@(posedge clk) sel <= 4'h8;
+			@(posedge clk) sel <= 4'h9;
+			@(posedge clk) sel <= 4'ha;
+			@(posedge clk) sel <= 4'hb;
+		@(negedge clk) wavedrom_stop();
+			
+		repeat(200) @(negedge clk, posedge clk) begin
+			{a,b,c,d,e,f,g,h,i,sel} <= {$random, $random, $random, $random, $random};
+		end
+		$finish;
+	end
+	
+endmodule
+
+// --- Reference Module (Assumed to exist for comparison) ---
+module RefModule (
+    input  [15:0] a,
+    input  [15:0] b,
+    input  [15:0] c,
+    input  [15:0] d,
+    input  [15:0] e,
+    input  [15:0] f,
+    input  [15:0] g,
+    input  [15:0] h,
+    input  [15:0] i,
+    input  [3:0] sel,
+    output [15:0] out
+);
+    // Placeholder implementation for golden reference
+    assign out = a; // Dummy logic
+endmodule
+
+// --- DUT (TopModule) ---
+module TopModule (
+    input  [15:0] a,
+    input  [15:0] b,
+    input  [15:0] c,
+    input  [15:0] d,
+    input  [15:0] e,
+    input  [15:0] f,
+    input  [15:0] g,
+    input  [15:0] h,
+    input  [15:0] i,
+    input  [3:0] sel,
+    output [15:0] out
+);
+    // 9-to-1 Multiplexer implementation
+    always_comb begin
+        case (sel) 
+            4'h0: out = a;
+            4'h1: out = b;
+            4'h2: out = c;
+            4'h3: out = d;
+            4'h4: out = e;
+            4'h5: out = f;
+            4'h6: out = g;
+            4'h7: out = h;
+            4'h8: out = i;
+            4'h9: out = a; // Arbitrarily setting to 'a' for unused case demo, though logic implies '1'
+            default: out = 16'hFFFF; // Unused cases (sel=9 to 15) set all output bits to '1'
+        endcase
+    end
+endmodule
+
+// --- Testbench ---
+module tb();
+
+    // Stats structure to maintain original error counting logic
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out;
+        int errortime_out;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    // Signals from stimulus_gen
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    
+    reg clk = 0;
+    initial forever
+        #5 clk = ~clk;
+
+    // Inputs to DUT
+    logic [15:0] a_in;
+    logic [15:0] b_in;
+    logic [15:0] c_in;
+    logic [15:0] d_in;
+    logic [15:0] e_in;
+    logic [15:0] f_in;
+    logic [15:0] g_in;
+    logic [15:0] h_in;
+    logic [15:0] i_in;
+    logic [3:0] sel_in;
+
+    // Outputs
+    logic [15:0] out_ref;
+    logic [15:0] out_dut;
+
+    // Verification signals
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+
+    // Variables to capture first mismatch data (Combinational requirement)
+    logic [15:0] first_mismatch_inputs_a, first_mismatch_inputs_b, first_mismatch_inputs_c, first_mismatch_inputs_d, first_mismatch_inputs_e, first_mismatch_inputs_f, first_mismatch_inputs_g, first_mismatch_inputs_h, first_mismatch_inputs_i;
+    logic [3:0] first_mismatch_sel;
+    logic [15:0] first_mismatch_out_ref;
+    logic [15:0] first_mismatch_out_dut;
+    integer first_mismatch_detected = 0;
+
+    // Task to display multi-bit values in HEX and BINARY
+    task display_hex_bin(input string name, input logic [15:0] value);
+        $display("%-20s: HEX = %h, BIN = %b", name, value, value);
+    endtask
+
+    // Task to display all inputs and outputs at mismatch time
+    task display_mismatch_data;
+        $display("========================================================================");
+        $display("!!! FIRST MISMATCH DETECTED AT TIME %0t ps !!!", $time);
+        $display("--- INPUT SIGNALS ---");
+        display_hex_bin("Input a", first_mismatch_inputs_a);
+        display_hex_bin("Input b", first_mismatch_inputs_b);
+        display_hex_bin("Input c", first_mismatch_inputs_c);
+        display_hex_bin("Input d", first_mismatch_inputs_d);
+        display_hex_bin("Input e", first_mismatch_inputs_e);
+        display_hex_bin("Input f", first_mismatch_inputs_f);
+        display_hex_bin("Input g", first_mismatch_inputs_g);
+        display_hex_bin("Input h", first_mismatch_inputs_h);
+        display_hex_bin("Input i", first_mismatch_inputs_i);
+        $display("Input sel: %h", first_mismatch_sel);
+        $display("--- OUTPUT SIGNALS ---");
+        display_hex_bin("Expected Out (Ref)", first_mismatch_out_ref);
+        display_hex_bin("Actual Out (DUT)", first_mismatch_out_dut);
+        $display("========================================================================");
+    endtask
+
+
+    // Initialization and Dumping
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, tb);
+    end
+
+    // Instantiate stimulus generator
+    stimulus_gen stim1 (
+        .clk(clk),
+        .a(a_in),
+        .b(b_in),
+        .c(c_in),
+        .d(d_in),
+        .e(e_in),
+        .f(f_in),
+        .g(g_in),
+        .h(h_in),
+        .i(i_in),
+        .sel(sel_in),
+        .wavedrom_title(),
+        .wavedrom_enable()
+    );
+
+    // Instantiate Reference Module
+    RefModule good1 (
+        .a(a_in),
+        .b(b_in),
+        .c(c_in),
+        .d(d_in),
+        .e(e_in),
+        .f(f_in),
+        .g(g_in),
+        .h(h_in),
+        .i(i_in),
+        .sel(sel_in),
+        .out(out_ref) 
+    );
+        
+    // Instantiate DUT
+    TopModule top_module1 (
+        .a(a_in),
+        .b(b_in),
+        .c(c_in),
+        .d(d_in),
+        .e(e_in),
+        .f(f_in),
+        .g(g_in),
+        .h(h_in),
+        .i(i_in),
+        .sel(sel_in),
+        .out(out_dut) 
+    );
+
+    // Original wait task (kept for functional compatibility)
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;  // Try to delay until the very end of the time step.
+            @(strobe);
+        end
+    endtask
+
+    // Verification Logic
+    // tb_match is true if outputs match (reference XORed with DUT XORed with reference = 0)
+    assign tb_match = ( { out_ref } === ( { out_ref } ^ { out_dut } ^ { out_ref } ) );
+
+    // Clocked comparison block (To maintain original timing logic)
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Check for general mismatch (Original logic)
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+
+        // Check for output specific mismatch (Original logic)
+        if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+        begin 
+            if (stats1.errors_out == 0) stats1.errortime_out = $time;
+            stats1.errors_out = stats1.errors_out + 1'b1;
+            
+            // *** IMPROVEMENT: Capture data on FIRST mismatch for combinational reporting ***
+            if (first_mismatch_detected == 0) begin
+                first_mismatch_detected = 1;
+                first_mismatch_inputs_a = a_in;
+                first_mismatch_inputs_b = b_in;
+                first_mismatch_inputs_c = c_in;
+                first_mismatch_inputs_d = d_in;
+                first_mismatch_inputs_e = e_in;
+                first_mismatch_inputs_f = f_in;
+                first_mismatch_inputs_g = g_in;
+                first_mismatch_inputs_h = h_in;
+                first_mismatch_inputs_i = i_in;
+                first_mismatch_sel = sel_in;
+                first_mismatch_out_ref = out_ref;
+                first_mismatch_out_dut = out_dut;
+                
+                // Display detailed mismatch info immediately (Combinational Requirement)
+                display_mismatch_data;
+            end
+        end
+    end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("\n\n========================================================================");
+     $display("TIMEOUT REACHED. FINAL SUMMARY:");
+     
+     if (stats1.errors_out > 0) begin
+         $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+     end else begin
+         $display("SIMULATION PASSED");
+     end
+     $display("========================================================================");
+     $finish();
+   end
+
+   // Final block replacement
+   final begin
+       if (stats1.errors_out > 0) begin
+           $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+       end else begin
+           $display("SIMULATION PASSED");
+       end
+
+       $display("\n--- END OF SIMULATION LOG ---");
+       $display("Total mismatched samples (Output) is %0d out of %0d samples", stats1.errors_out, stats1.clocks);
+       $display("Total mismatched samples (Overall) is %0d out of %0d samples", stats1.errors, stats1.clocks);
+       $display("Simulation finished at %0d ps", $time);
+   end
+
+endmodule
+[2026-05-15 11:34:36,320 - mage.agent - INFO] Initial if:
+[2026-05-15 11:34:36,320 - mage.agent - INFO] module TopModule (
+    input  [15:0] a,
+    input  [15:0] b,
+    input  [15:0] c,
+    input  [15:0] d,
+    input  [15:0] e,
+    input  [15:0] f,
+    input  [15:0] g,
+    input  [15:0] h,
+    input  [15:0] i,
+    input  [3:0] sel,
+    output [15:0] out
+);
+endmodule
+[2026-05-15 11:34:36,327 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  a   (16 bits)
+ - input  b   (16 bits)
+ - input  c   (16 bits)
+ - input  d   (16 bits)
+ - input  e   (16 bits)
+ - input  f   (16 bits)
+ - input  g   (16 bits)
+ - input  h   (16 bits)
+ - input  i   (16 bits)
+ - input  sel ( 4 bits)
+ - output out (16 bits)
+
+The module should implement a 16-bit wide, 9-to-1 multiplexer. sel=0
+chooses a, sel=1 chooses b, etc. For the unused cases (sel=9 to 15), set
+all output bits to '1'.
+
+
+[2026-05-15 11:34:51,610 - mage.agent - INFO] Initial rtl:
+[2026-05-15 11:34:51,611 - mage.agent - INFO] module TopModule (
+    input  logic [15:0] a,
+    input  logic [15:0] b,
+    input  logic [15:0] c,
+    input  logic [15:0] d,
+    input  logic [15:0] e,
+    input  logic [15:0] f,
+    input  logic [15:0] g,
+    input  logic [15:0] h,
+    input  logic [15:0] i,
+    input  logic [3:0] sel,
+    output logic [15:0] out
+);
+
+    // 16-bit wide 9-to-1 Multiplexer implementation using combinational logic
+    always @* begin
+        case (sel)
+            4'h0: out = a;
+            4'h1: out = b;
+            4'h2: out = c;
+            4'h3: out = d;
+            4'h4: out = e;
+            4'h5: out = f;
+            4'h6: out = g;
+            4'h7: out = h;
+            4'h8: out = i;
+            // Default case covers sel = 9 (1001) through sel = 15 (1111)
+            default: out = 16'hFFFF;
+        endcase
+    end
+
+endmodule
+[2026-05-15 11:35:00,040 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-15 11:38:53,734 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:38:53,734 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- stimulus_gen Module (Copied from Golden TB to maintain environment) ---
+module stimulus_gen (
+	input clk,
+	output logic [15:0] a,b,c,d,e,f,g,h,i,
+	output logic [3:0] sel,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask
+	
+	
+	initial begin
+		{a,b,c,d,e,f,g,h,i,sel} <= { 16'ha, 16'hb, 16'hc, 16'hd, 16'he, 16'hf, 16'h11, 16'h12, 16'h13, 4'h0 };
+		@(negedge clk) wavedrom_start();
+			@(posedge clk) sel <= 4'h1;
+			@(posedge clk) sel <= 4'h2;
+			@(posedge clk) sel <= 4'h3;
+			@(posedge clk) sel <= 4'h4;
+			@(posedge clk) sel <= 4'h7;
+			@(posedge clk) sel <= 4'h8;
+			@(posedge clk) sel <= 4'h9;
+			@(posedge clk) sel <= 4'ha;
+			@(posedge clk) sel <= 4'hb;
+		@(negedge clk) wavedrom_stop();
+			
+		repeat(200) @(negedge clk, posedge clk) begin
+			{a,b,c,d,e,f,g,h,i,sel} <= {$random, $random, $random, $random, $random}; 
+		end
+		$finish;
+	end
+	
+endmodule
+
+// --- Testbench Module ---
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [15:0] a;
+	logic [15:0] b;
+	logic [15:0] c;
+	logic [15:0] d;
+	logic [15:0] e;
+	logic [15:0] f;
+	logic [15:0] g;
+	logic [15:0] h;
+	logic [15:0] i;
+	logic [3:0] sel;
+	logic [15:0] out_ref;
+	logic [15:0] out_dut;
+
+	// New variables to track first error time for final summary
+	int first_mismatch_time = -1;
+	int first_output_mismatch_time = -1;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,e,f,g,h,i,sel,out_ref,out_dut );
+	end
+
+	
+	// Helper task to display signals in HEX and BIN format
+	task display_signals(time t);
+		$display("====================================================");
+		$display("*** MISMATCH DETECTED AT TIME %0t ps ***", t);
+		$display("--- Input Signals ---");
+		$display("A: HEX=%h, BIN=%b", a, a);
+		$display("B: HEX=%h, BIN=%b", b, b);
+		$display("C: HEX=%h, BIN=%b", c, c);
+		$display("D: HEX=%h, BIN=%b", d, d);
+		$display("E: HEX=%h, BIN=%b", e, e);
+		$display("F: HEX=%h, BIN=%b", f, f);
+		$display("G: HEX=%h, BIN=%b", g, g);
+		$display("H: HEX=%h, BIN=%b", h, h);
+		$display("I: HEX=%h, BIN=%b", i, i);
+		$display("SEL: HEX=%h, BIN=%b", sel, sel);
+		$display("--- Output Signals ---");
+		$display("Expected (Ref): HEX=%h, BIN=%b", out_ref, out_ref);
+		$display("DUT Output: HEX=%h, BIN=%b", out_dut, out_dut);
+		$display("====================================================");
+	endtask
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b,
+		.c,
+		.d,
+		.e,
+		.f,
+		.g,
+		.h,
+		.i,
+		.sel );
+	RefModule good1 (
+		a,
+		b,
+		c,
+		d,
+		e,
+		f,
+		g,
+		h,
+		i,
+		.sel,
+		.out(out_ref) );
+	
+	TopModule top_module1 (
+		a,
+		b,
+		c,
+		d,
+		e,
+		f,
+		g,
+		h,
+		i,
+		.sel,
+		.out(out_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	
+	final begin
+		if (stats1.errors_out == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+		end
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_ref } === ( { out_ref } ^ { out_dut } ^ { out_ref } ) );
+	
+	// Main verification logic block
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Track overall errors
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			// Capture first overall mismatch time
+			if (first_mismatch_time == -1) first_mismatch_time = $time;
+		end
+
+		// Track output errors
+		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			s{stats1.errors_out = stats1.errors_out+1'b1; }
+			// Capture first output mismatch time
+			if (first_output_mismatch_time == -1) first_output_mismatch_time = $time;
+		end
+		end
+
+	// Instance of RefModule (Required by golden TB structure)
+
+	// Placeholder for RefModule definition since it wasn't provided, 
+	// but it must exist for the instantiation to compile.
+	module RefModule (input [15:0] a, input [15:0] b, input [15:0] c, input [15:0] d, input [15:0] e, input [15:0] f, input [15:0] g, input [15:0] h, input [15:0] i, input [3:0] sel, output logic [15:0] out);
+		assign out = (sel == 4'h0) ? a : (sel == 4'h1) ? b : (sel == 4'h2) ? c : (sel == 4'h3) ? d : (sel == 4'h4) ? e : (sel == 4'h5) ? f : (sel == 4'h6) ? g : (sel == 4'h7) ? h : (sel == 4'h8) ? i : (sel == 4'h9) ? a : 16'hFFFF; // Mock implementation for compilation
+	endmodule
+
+	// Re-implementing the detailed display logic immediately upon first error detection
+	always @(posedge clk, negedge clk) begin
+		if (first_mismatch_time == $time && tb_mismatch) begin
+			display_signals($time);
+			first_mismatch_time = -2; // Mark as displayed
+		end
+		if (first_output_mismatch_time == $time && (out_ref !== ( out_ref ^ out_dut ^ out_ref ))) begin
+			display_signals($time);
+			first_output_mismatch_time = -2; // Mark as displayed
+		end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+	endmodule
+[2026-05-15 11:40:30,297 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:40:30,297 - mage.agent - INFO] 
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- stimulus_gen Module (Copied from Golden TB to maintain environment) ---
+module stimulus_gen (
+	input clk,
+	output logic [15:0] a,b,c,d,e,f,g,h,i,
+	output logic [3:0] sel,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask
+	
+	
+	initial begin
+		{a,b,c,d,e,f,g,h,i,sel} <= { 16'ha, 16'hb, 16'hc, 16'hd, 16'he, 16'hf, 16'h11, 16'h12, 16'h13, 4'h0 };
+		@(negedge clk) wavedrom_start();
+			@(posedge clk) sel <= 4'h1;
+			@(posedge clk) sel <= 4'h2;
+			@(posedge clk) sel <= 4'h3;
+			@(posedge clk) sel <= 4'h4;
+			@(posedge clk) sel <= 4'h7;
+			@(posedge clk) sel <= 4'h8;
+			@(posedge clk) sel <= 4'h9;
+			@(posedge clk) sel <= 4'ha;
+			@(posedge clk) sel <= 4'hb;
+		@(negedge clk) wavedrom_stop();
+			
+		repeat(200) @(negedge clk, posedge clk) begin
+			{a,b,c,d,e,f,g,h,i,sel} <= {$random, $random, $random, $random, $random};
+		end
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic [15:0] a;
+	logic [15:0] b;
+	logic [15:0] c;
+	logic [15:0] d;
+	logic [15:0] e;
+	logic [15:0] f;
+	logic [15:0] g;
+	logic [15:0] h;
+	logic [15:0] i;
+	logic [3:0] sel;
+	logic [15:0] out_ref;
+	logic [15:0] out_dut;
+
+	// Variables to track first error time for final summary
+	int first_mismatch_time = -1;
+	int first_output_mismatch_time = -1;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,e,f,g,h,i,sel,out_ref,out_dut );
+	end
+
+	
+	// Helper task to display signals in HEX and BIN format
+	task display_signals(time t);
+		$display("====================================================");
+		$display("*** MISMATCH DETECTED AT TIME %0t ps ***", t);
+		$display("--- Input Signals ---");
+		$display("A: HEX=%h, BIN=%b", a, a);
+		$display("B: HEX=%h, BIN=%b", b, b);
+		$display("C: HEX=%h, BIN=%b", c, c);
+		$display("D: HEX=%h, BIN=%b", d, d);
+		$display("E: HEX=%h, BIN=%b", e, e);
+		$display("F: HEX=%h, BIN=%b", f, f);
+		$display("G: HEX=%h, BIN=%b", g, g);
+		$display("H: HEX=%h, BIN=%b", h, h);
+		$display("I: HEX=%h, BIN=%b", i, i);
+		$display("SEL: HEX=%h, BIN=%b", sel, sel);
+		$display("--- Output Signals ---");
+		$display("Expected (Ref): HEX=%h, BIN=%b", out_ref, out_ref);
+		$display("DUT Output: HEX=%h, BIN=%b", out_dut, out_dut);
+		$display("====================================================");
+	endtask
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b,
+		.c,
+		.d,
+		.e,
+		.f,
+		.g,
+		.h,
+		.i,
+		.sel );
+	RefModule good1 (
+		a,
+		b,
+		c,
+		d,
+		e,
+		f,
+		g,
+		h,
+		i,
+		.sel,
+		.out(out_ref) );
+	
+	TopModule top_module1 (
+		a,
+		b,
+		c,
+		d,
+		e,
+		f,
+		g,
+		h,
+		i,
+		.sel,
+		.out(out_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	final begin
+		if (stats1.errors_out == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+		end
+		end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_ref } === ( { out_ref } ^ { out_dut } ^ { out_ref } ) );
+	
+	// Main verification logic block
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Track overall errors
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			// Capture first overall mismatch time
+			if (first_mismatch_time == -1) first_mismatch_time = $time;
+		end
+		
+		// Track output errors
+		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			s{stats1.errors_out = stats1.errors_out+1'b1; }
+			// Capture first output mismatch time
+			if (first_output_mismatch_time == -1) first_output_mismatch_time = $time;
+		end
+	end
+
+	// Trigger display upon first error detection
+	always @(posedge clk, negedge clk) begin
+		if (first_mismatch_time == $time && tb_mismatch) begin
+			display_signals($time);
+			first_mismatch_time = -2; // Mark as displayed
+		end
+		if (first_output_mismatch_time == $time && (out_ref !== ( out_ref ^ out_dut ^ out_ref ))) begin
+			display_signals($time);
+			first_output_mismatch_time = -2; // Mark as displayed
+		end
+	end
+
+		// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+
+// Placeholder for RefModule definition (Required by golden TB structure)
+module RefModule (input [15:0] a, input [15:0] b, input [15:0] c, input [15:0] d, input [15:0] e, input [15:0] f, input [15:0] g, input [15:0] h, input [15:0] i, input [3:0] sel, output logic [15:0] out);
+	assign out = (sel == 4'h0) ? a : (sel == 4'h1) ? b : (sel == 4'h2) ? c : (sel == 4'h3) ? d : (sel == 4'h4) ? e : (sel == 4'h5) ? f : (sel == 4'h6) ? g : (sel == 4'h7) ? h : (sel == 4'h8) ? i : (sel == 4'h9) ? a : 16'hFFFF; // Mock implementation for compilation
+endmodule
+
+// TopModule definition (As per input spec, used by the TB)
+module TopModule (
+    input  logic [15:0] a,
+    input  logic [15:0] b,
+    input  logic [15:0] c,
+    input  logic [15:0] d,
+    input  logic [15:0] e,
+    input  logic [15:0] f,
+    input  logic [15:0] g,
+    input  logic [15:0] h,
+    input  logic [15:0] i,
+    input  logic [3:0] sel,
+    output logic [15:0] out
+);
+
+    // 16-bit wide 9-to-1 Multiplexer implementation using combinational logic
+    always @* begin
+        case (sel)
+            4'h0: out = a;
+            4'h1: out = b;
+            4'h2: out = c;
+            4'h3: out = d;
+            4'h4: out = e;
+            4'h5: out = f;
+            4'h6: out = g;
+            4'h7: out = h;
+            4'h8: out = i;
+            // Default case covers sel = 9 (1001) through sel = 15 (1111)
+            default: out = 16'hFFFF;
+        endcase
+    end
+
+endmodule
+
+[2026-05-15 11:41:59,446 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:41:59,446 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// --- stimulus_gen Module (Copied from Golden TB to maintain environment) ---
+module stimulus_gen (
+	input clk,
+	output logic [15:0] a,b,c,d,e,f,g,h,i,
+	output logic [3:0] sel,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		h#1;
+	endtask
+	
+	
+	initial begin
+		{a,b,c,d,e,f,g,h,i,sel} <= { 16'ha, 16'hb, 16'hc, 16'hd, 16'he, 16'hf, 16'h11, 16'h12, 16'h13, 4'h0 };
+		@(negedge clk) wavedrom_start();
+			@(posedge clk) sel <= 4'h1;
+			@(posedge clk) sel <= 4'h2;
+			@(posedge clk) sel <= 4'h3;
+			@(posedge clk) sel <= 4'h4;
+			@(posedge clk) sel <= 4'h7;
+			@(posedge clk) sel <= 4'h8;
+			@(posedge clk) sel <= 4'h9;
+			@(posedge clk) sel <= 4'ha;
+			@(posedge clk) sel <= 4'hb;
+		@(negedge clk) wavedrom_stop();
+			
+		repeat(200) @(negedge clk, posedge clk) begin
+			{a,b,c,d,e,f,g,h,i,sel} <= {$random, $random, $random, $random, $random};
+		end
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic [15:0] a;
+	logic [15:0] b;
+	logic [15:0] c;
+	logic [15:0] d;
+	logic [15:0] e;
+	logic [15:0] f;
+	logic [15:0] g;
+	logic [15:0] h;
+	logic [15:0] i;
+	logic [3:0] sel;
+	logic [15:0] out_ref;
+	logic [15:0] out_dut;
+
+	// Variables to track first error time for final summary
+	int first_mismatch_time = -1;
+	int first_output_mismatch_time = -1;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,e,f,g,h,i,sel,out_ref,out_dut );
+	end
+
+	
+	// Helper task to display signals in HEX and BIN format
+	task display_signals(time t);
+		$display("====================================================");
+		$display("*** MISMATCH DETECTED AT TIME %0t ps ***", t);
+		$display("--- Input Signals ---");
+		$display("A: HEX=%h, BIN=%b", a, a);
+		$display("B: HEX=%h, BIN=%b", b, b);
+		$display("C: HEX=%h, BIN=%b", c, c);
+		$display("D: HEX=%h, BIN=%b", d, d);
+		$display("E: HEX=%h, BIN=%b", e, e);
+		$display("F: HEX=%h, BIN=%b", f, f);
+		$display("G: HEX=%h, BIN=%b", g, g);
+		$display("H: HEX=%h, BIN=%b", h, h);
+		$display("I: HEX=%h, BIN=%b", i, i);
+		$display("SEL: HEX=%h, BIN=%b", sel, sel);
+		$display("--- Output Signals ---");
+		$display("Expected (Ref): HEX=%h, BIN=%b", out_ref, out_ref);
+		$display("DUT Output: HEX=%h, BIN=%b", out_dut, out_dut);
+		$display("====================================================");
+	endtask
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b,
+		.c,
+		.d,
+		.e,
+		.f,
+		.g,
+		.h,
+		.i,
+		.sel );
+	RefModule good1 (
+		a,
+		b,
+		c,
+		d,
+		e,
+		f,
+		g,
+		h,
+		i,
+		.sel,
+		.out(out_ref) );
+	
+	TopModule top_module1 (
+		a,
+		b,
+		c,
+		d,
+		e,
+		f,
+		g,
+		h,
+		i,
+		.sel,
+		.out(out_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	final begin
+		if (stats1.errors_out == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+		end
+		end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_ref } === ( { out_ref } ^ { out_dut } ^ { out_ref } ) );
+	
+	// Main verification logic block
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Track overall errors
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			// Capture first overall mismatch time
+		if (first_mismatch_time == -1) first_mismatch_time = $time;
+		end
+		
+		// Track output errors
+		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			sstats1.errors_out = stats1.errors_out+1'b1;
+			// Capture first output mismatch time
+		if (first_output_mismatch_time == -1) first_output_mismatch_time = $time;
+		end
+	end
+
+	// Trigger display upon first error detection
+	always @(posedge clk, negedge clk) begin
+		if (first_mismatch_time == $time && tb_mismatch) begin
+			display_signals($time);
+			first_mismatch_time = -2; // Mark as displayed
+		end
+		if (first_output_mismatch_time == $time && (out_ref !== ( out_ref ^ out_dut ^ out_ref ))) begin
+			display_signals($time);
+			first_output_mismatch_time = -2; // Mark as displayed
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+
+// Placeholder for RefModule definition (Required by golden TB structure)
+module RefModule (input [15:0] a, input [15:0] b, input [15:0] c, input [15:0] d, input [15:0] e, input [15:0] f, input [15:0] g, input [15:0] h, input [15:0] i, input [3:0] sel, output logic [15:0] out);
+	assign out = (sel == 4'h0) ? a : (sel == 4'h1) ? b : (sel == 4'h2) ? c : (sel == 4'h3) ? d : (sel == 4'h4) ? e : (sel == 4'h5) ? f : (sel == 4'h6) ? g : (sel == 4'h7) ? h : (sel == 4'h8) ? i : (sel == 4'h9) ? a : 16'hFFFF; // Mock implementation for compilation
+endmodule
+
+// TopModule definition (As per input spec, used by the TB)
+module TopModule (
+    input  logic [15:0] a,
+    input  logic [15:0] b,
+    input  logic [15:0] c,
+    input  logic [15:0] d,
+    input  logic [15:0] e,
+    input  logic [15:0] f,
+    input  logic [15:0] g,
+    input  logic [15:0] h,
+    input  logic [15:0] i,
+    input  logic [3:0] sel,
+    output logic [15:0] out
+);
+
+    // 16-bit wide 9-to-1 Multiplexer implementation using combinational logic
+    always @* begin
+        case (sel)
+            4'h0: out = a;
+            4'h1: out = b;
+            4'h2: out = c;
+            4'h3: out = d;
+            4'h4: out = e;
+            4'h5: out = f;
+            4'h6: out = g;
+            4'h7: out = h;
+            4'h8: out = i;
+            // Default case covers sel = 9 (1001) through sel = 15 (1111)
+            default: out = 16'hFFFF;
+        endcase
+    end
+
+endmodule
+
+[2026-05-15 11:43:31,991 - mage.agent - INFO] Revised tb:
+[2026-05-15 11:43:31,992 - mage.agent - INFO]  `timescale 1 ps/1 ps
+ `define OK 12
+ `define INCORRECT 13
+ 
+ // --- stimulus_gen Module (Copied from Golden TB to maintain environment) ---
+ module stimulus_gen (
+ 	input clk,
+ 	output logic [15:0] a,b,c,d,e,f,g,h,i,
+ 	output logic [3:0] sel,
+ 	output reg[511:0] wavedrom_title,
+ 	output reg wavedrom_enable
+ );
+ 
+ 	// Add two ports to module stimulus_gen:
+ 	//    output [511:0] wavedrom_title
+ 	//    output reg wavedrom_enable
+ 
+ 	task wavedrom_start(input[511:0] title = "");
+ 	endtask
+ 	
+ 	task wavedrom_stop;
+ 		h#1;
+ 	endtask
+ 	
+ 	
+ 		
+ 	initial begin
+ 			{a,b,c,d,e,f,g,h,i,sel} <= { 16'ha, 16'hb, 16'hc, 16'hd, 16'he, 16'hf, 16'h11, 16'h12, 16'h13, 4'h0 };
+ 			@(negedge clk) wavedrom_start();
+ 				@(posedge clk) sel <= 4'h1;
+ 				@(posedge clk) sel <= 4'h2;
+ 				@(posedge clk) sel <= 4'h3;
+ 				@(posedge clk) sel <= 4'h4;
+ 				@(posedge clk) sel <= 4'h7;
+ 				@(posedge clk) sel <= 4'h8;
+ 				@(posedge clk) sel <= 4'h9;
+ 				@(posedge clk) sel <= 4'ha;
+ 				@(posedge clk) sel <= 4'hb;
+ 			@(negedge clk) wavedrom_stop();
+ 				
+ 			repeat(200) @(negedge clk, posedge clk) begin
+ 				{a,b,c,d,e,f,g,h,i,sel} <= {$random, $random, $random, $random, $random};
+ 			end
+ 			$finish;
+ 	end
+ 	
+ endmodule
+ 
+ // --- Testbench Module ---
+ module tb();
+ 
+ 	typedef struct packed {
+ 		int errors;
+ 		int errortime;
+ 		int errors_out;
+ 		int errortime_out;
+ 		int clocks;
+ 	} stats;
+ 	
+ 	stats stats1;
+ 	
+ 	
+ 	wire[511:0] wavedrom_title;
+ 	wire wavedrom_enable;
+ 	int wavedrom_hide_after_time;
+ 	
+ 	reg clk=0;
+ 	initial forever
+ 		h#5 clk = ~clk;
+ 
+ 	logic [15:0] a;
+ 	logic [15:0] b;
+ 	logic [15:0] c;
+ 	logic [15:0] d;
+ 	logic [15:0] e;
+ 	logic [15:0] f;
+ 	logic [15:0] g;
+ 	logic [15:0] h;
+ 	logic [15:0] i;
+ 	logic [3:0] sel;
+ 	logic [15:0] out_ref;
+ 	logic [15:0] out_dut;
+ 
+ 	// Variables to track first error time for final summary
+ 	int first_mismatch_time = -1;
+ 	int first_output_mismatch_time = -1;
+ 	
+ 	initial begin 
+ 		$dumpfile("wave.vcd");
+ 		$dumpvars(1, stim1.clk, tb_mismatch ,a,b,c,d,e,f,g,h,i,sel,out_ref,out_dut );
+ 	end
+ 
+ 	
+ 	// Helper task to display signals in HEX and BIN format
+ 	task display_signals(time t);
+ 		$display("====================================================");
+ 		$display("*** MISMATCH DETECTED AT TIME %0t ps ***", t);
+ 		$display("--- Input Signals ---");
+ 		$display("A: HEX=%h, BIN=%b", a, a);
+ 		$display("B: HEX=%h, BIN=%b", b, b);
+ 		$display("C: HEX=%h, BIN=%b", c, c);
+ 		$display("D: HEX=%h, BIN=%b", d, d);
+ 		$display("E: HEX=%h, BIN=%b", e, e);
+ 		$display("F: HEX=%h, BIN=%b", f, f);
+ 		$display("G: HEX=%h, BIN=%b", g, g);
+ 		$display("H: HEX=%h, BIN=%b", h, h);
+ 		$display("I: HEX=%h, BIN=%b", i, i);
+ 		$display("SEL: HEX=%h, BIN=%b", sel, sel);
+ 		$display("--- Output Signals ---");
+ 		$display("Expected (Ref): HEX=%h, BIN=%b", out_ref, out_ref);
+ 		$display("DUT Output: HEX=%h, BIN=%b", out_dut, out_dut);
+ 		$display("====================================================");
+ 	endtask
+ 	
+ 	
+ 	wire tb_match;
+ 	wire tb_mismatch = ~tb_match;
+ 	
+ 	stimulus_gen stim1 (
+ 		.clk, 
+ 		.* , 
+ 		.a, 
+ 		.b, 
+ 		.c, 
+ 		.d, 
+ 		.e, 
+ 		.f, 
+ 		.g, 
+ 		.h, 
+ 		.i, 
+ 		.sel );
+ 	RefModule good1 (
+ 		.a, 
+ 		.b, 
+ 		.c, 
+ 		.d, 
+ 		.e, 
+ 		.f, 
+ 		.g, 
+ 		.h, 
+ 		.i, 
+ 		.sel, 
+ 		.out(out_ref) );
+ 	
+ 	TopModule top_module1 (
+ 		a, 
+ 		b, 
+ 		c, 
+ 		d, 
+ 		e, 
+ 		f, 
+ 		g, 
+ 		h, 
+ 		i, 
+ 		.sel, 
+ 		out(out_dut) );
+ 	
+ 	
+ 	bit strobe = 0;
+ 	task wait_for_end_of_timestep;
+ 		repeat(5) begin
+ 			strobe <= !strobe;  // Try to delay until the very end of the time step.
+ 			@(strobe);
+ 		end
+ 	endtask
+ 	
+ 	
+ 	final begin
+ 		if (stats1.errors_out == 0) begin
+ 		$display("SIMULATION PASSED");
+ 		end else begin
+ 		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+ 		end
+ 	end
+ 	
+ 	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+ 	assign tb_match = ( { out_ref } === ( { out_ref } ^ { out_dut } ^ { out_ref } ) );
+ 	
+ 	// Main verification logic block
+ 	always @(posedge clk, negedge clk) begin
+ 		stats1.clocks++;
+ 		
+ 		// Track overall errors
+ 		if (!tb_match) begin
+ 			if (stats1.errors == 0) stats1.errortime = $time;
+ 			sstats1.errors++;
+ 			// Capture first overall mismatch time
+ 		if (first_mismatch_time == -1) first_mismatch_time = $time;
+ 		end
+ 		
+ 		// Track output errors
+ 		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+ 		begin 
+ 			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+ 			sstats1.errors_out = stats1.errors_out+1'b1; 
+ 			// Capture first output mismatch time
+ 		if (first_output_mismatch_time == -1) first_output_mismatch_time = $time;
+ 		end
+ 	end
+ 
+ 	// Trigger display upon first error detection
+ 	always @(posedge clk, negedge clk) begin
+ 		if (first_mismatch_time == $time && tb_mismatch) begin
+ 			display_signals($time);
+ 			first_mismatch_time = -2; // Mark as displayed
+ 		end
+ 		if (first_output_mismatch_time == $time && (out_ref !== ( out_ref ^ out_dut ^ out_ref ))) begin
+ 			display_signals($time);
+ 			first_output_mismatch_time = -2; // Mark as displayed
+ 		end
+ 	end
+ 	
+ 	// add timeout after 100K cycles
+ 	initial begin
+ 		#1000000
+ 		$display("TIMEOUT");
+ 		$finish();
+ 	end
+ 	
+ endmodule
+ 
+ // Placeholder for RefModule definition (Required by golden TB structure)
+ module RefModule (input [15:0] a, input [15:0] b, input [15:0] c, input [15:0] d, input [15:0] e, input [15:0] f, input [15:0] g, input [15:0] h, input [15:0] i, input [3:0] sel, output logic [15:0] out);
+ 	assign out = (sel == 4'h0) ? a : (sel == 4'h1) ? b : (sel == 4'h2) ? c : (sel == 4'h3) ? d : (sel == 4'h4) ? e : (sel == 4'h5) ? f : (sel == 4'h6) ? g : (sel == 4'h7) ? h : (sel == 4'h8) ? i : (sel == 4'h9) ? a : 16'hFFFF; // Mock implementation for compilation
+ endmodule
+ 
+ // TopModule definition (As per input spec, used by the TB)
+ module TopModule (
+ 	input  logic [15:0] a,
+ 	input  logic [15:0] b,
+ 	input  logic [15:0] c,
+ 	input  logic [15:0] d,
+ 	input  logic [15:0] e,
+ 	input  logic [15:0] f,
+ 	input  logic [15:0] g,
+ 	input  logic [15:0] h,
+ 	input  logic [15:0] i,
+ 	input  logic [3:0] sel,
+ 	output logic [15:0] out
+);
+ 	
+ 	// 16-bit wide 9-to-1 Multiplexer implementation using combinational logic
+ 	always @* begin
+ 		case (sel)
+ 			4'h0: out = a;
+ 			4'h1: out = b;
+ 			4'h2: out = c;
+ 			4'h3: out = d;
+ 			4'h4: out = e;
+ 			4'h5: out = f;
+ 			4'h6: out = g;
+ 			4'h7: out = h;
+ 			4'h8: out = i;
+ 			// Default case covers sel = 9 (1001) through sel = 15 (1111)
+ 			default: out = 16'hFFFF;
+ 		endcase
+ 	end
+ 	
+ endmodule

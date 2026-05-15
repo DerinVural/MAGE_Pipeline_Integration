@@ -1,0 +1,910 @@
+[2026-05-13 13:20:14,456 - mage.agent - INFO] Initial tb:
+[2026-05-13 13:20:14,458 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic cpu_overheated, arrived, gas_tank_empty,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	logic [2:0] s = 3'b010;
+	assign {cpu_overheated, arrived, gas_tank_empty} = s;
+
+	initial begin
+		@(negedge clk) wavedrom_start("");
+		@(posedge clk) s <= 3'b010;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b001;
+		@(posedge clk) s <= 3'b000;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b110;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		wavedrom_stop();
+		repeat(100) @(posedge clk, negedge clk)
+			s <= $urandom;
+		$finish;
+	end
+	
+endmodule
+
+module RefModule (
+    input  logic cpu_overheated,
+    input  logic arrived,
+    input  logic gas_tank_empty,
+    output logic shut_off_computer,
+    output logic keep_driving
+);
+    always @(*) begin
+        shut_off_computer = cpu_overheated ? 1'b1 : 1'b0;
+        keep_driving = (~arrived) ? (~gas_tank_empty) : 1'b0;
+    end
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shut_off_computer;
+		int errortime_shut_off_computer;
+		int errors_keep_driving;
+		int errortime_keep_driving;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic cpu_overheated;
+	logic arrived;
+	logic gas_tank_empty;
+	logic shut_off_computer_ref;
+	logic shut_off_computer_dut;
+	logic keep_driving_ref;
+	logic keep_driving_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,cpu_overheated,arrived,gas_tank_empty,shut_off_computer_ref,shut_off_computer_dut,keep_driving_ref,keep_driving_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty );
+	RefModule good1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_ref),
+		.keep_driving(keep_driving_ref) );
+		
+	TopModule top_module1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_dut),
+		.keep_driving(keep_driving_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end;
+	endtask	
+
+	initial begin
+		stats1 = '{0, 0, 0, 0, 0, 0, 0};
+	end
+
+	assign tb_match = ( { shut_off_computer_ref, keep_driving_ref } === ( { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_dut, keep_driving_dut } ^ { shut_off_computer_ref, keep_driving_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			$display("Mismatch detected at time %t", $time);
+			$display("Inputs: cpu_overheated=%b, arrived=%b, gas_tank_empty=%b", cpu_overheated, arrived, gas_tank_empty);
+			$display("Got Output: shut_off_computer=%b, keep_driving=%b", shut_off_computer_dut, keep_driving_dut);
+			$display("Expected Output: shut_off_computer=%b, keep_driving=%b", shut_off_computer_ref, keep_driving_ref);
+		end
+
+		if (shut_off_computer_ref !== ( shut_off_computer_ref ^ shut_off_computer_dut ^ shut_off_computer_ref ))
+		begin 
+			if (stats1.errors_shut_off_computer == 0) stats1.errortime_shut_off_computer = $time;
+			stats1.errors_shut_off_computer = stats1.errors_shut_off_computer+1'b1; 
+		end
+
+		if (keep_driving_ref !== ( keep_driving_ref ^ keep_driving_dut ^ keep_driving_ref ))
+		begin 
+			if (stats1.errors_keep_driving == 0) stats1.errortime_keep_driving = $time;
+			stats1.errors_keep_driving = stats1.errors_keep_driving+1'b1; 
+		end
+	end
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_shut_off_computer) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "shut_off_computer", stats1.errors_shut_off_computer, stats1.errortime_shut_off_computer);
+		else $display("Hint: Output '%s' has no mismatches.", "shut_off_computer");
+		if (stats1.errors_keep_driving) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "keep_driving", stats1.errors_keep_driving, stats1.errortime_keep_driving);
+		else $display("Hint: Output '%s' has no mismatches.", "keep_driving");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 13:20:14,458 - mage.agent - INFO] Initial if:
+[2026-05-13 13:20:14,459 - mage.agent - INFO] module TopModule (
+    input  logic cpu_overheated,
+    output logic shut_off_computer,
+    input  logic arrived,
+    input  logic gas_tank_empty,
+    output logic keep_driving
+);
+[2026-05-13 13:20:14,464 - mage.agent - INFO] 
+Consider the following adder-subtractor with a zero flag:
+
+  module TopModule (
+      input      cpu_overheated,
+      output reg shut_off_computer,
+      input      arrived,
+      input      gas_tank_empty,
+      output reg keep_driving
+  );
+
+      always @(*) begin
+          if (cpu_overheated)
+             shut_off_computer = 1;
+      end
+
+      always @(*) begin
+          if (~arrived)
+             keep_driving = ~gas_tank_empty;
+      end
+
+  endmodule
+
+Unfortunately, this module has a bug. Implement a new version of this
+module that fixes the bug.
+
+
+[2026-05-13 13:20:34,067 - mage.agent - INFO] Initial rtl:
+[2026-05-13 13:20:34,067 - mage.agent - INFO] module TopModule (
+    input  logic cpu_overheated,
+    output logic shut_off_computer,
+    input  logic arrived,
+    input  logic gas_tank_empty,
+    output logic keep_driving
+);
+
+    // Combinational logic for shut_off_computer
+    // Fix: Ensure the signal is assigned in all cases to avoid latches
+    always @(*) begin
+        if (cpu_overheated) begin
+            shut_off_computer = 1'b1;
+        end else begin
+            shut_off_computer = 1'b0;
+        end
+    end
+
+    // Combinational logic for keep_driving
+    // Fix: Ensure the signal is assigned in all cases to avoid latches
+    always @(*) begin
+        if (~arrived) begin
+            keep_driving = ~gas_tank_empty;
+        end else begin
+            keep_driving = 1'b0;
+        end
+    end
+
+endmodule
+[2026-05-13 13:20:39,034 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 13:26:43,224 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:26:43,224 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic cpu_overheated, arrived, gas_tank_empty,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable    
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask    
+
+	logic [2:0] s = 3'b010;
+	assign {cpu_overheated, arrived, gas_tank_empty} = s;
+
+	initial begin
+		@(negedge clk) wavedrom_start("");
+		@(posedge clk) s <= 3'b010;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b001;
+		@(posedge clk) s <= 3'b000;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b110;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		wavedrom_stop();
+		repeat(100) @(posedge clk, negedge clk)
+			s <= $urandom;
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shut_off_computer;
+		int errortime_shut_off_computer;
+		int errors_keep_driving;
+		int errortime_keep_driving;
+
+		int clocks;
+	} stats_t;
+	
+	stats_t stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic cpu_overheated;
+	logic arrived;
+	logic gas_tank_empty;
+	logic shut_off_computer_ref;
+	logic shut_off_computer_dut;
+	logic keep_driving_ref;
+	logic keep_driving_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,cpu_overheated,arrived,gas_tank_empty,shut_off_computer_ref,shut_off_computer_dut,keep_driving_ref,keep_driving_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.*,
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty 
+	);
+
+	// Note: RefModule must be implemented to match the expected logic of the DUT
+	RefModule good1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_ref),
+		.keep_driving(keep_driving_ref) 
+	);
+		
+	TopModule top_module1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_dut),
+		.keep_driving(keep_driving_dut) 
+	);
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end
+	endtask    
+
+	assign tb_match = ( { shut_off_computer_ref, keep_driving_ref } === ( { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_dut, keep_driving_dut } ^ { shut_off_computer_ref, keep_driving_ref } ) );
+
+	// Detailed display for the FIRST mismatch
+	always @(posedge clk, negedge clk) begin
+		if (tb_mismatch && stats1.errors == 1) begin
+			$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+			$display("Inputs: cpu_overheated=%b, arrived=%b, gas_tank_empty=%b", cpu_overheated, arrived, gas_tank_empty);
+			$display("Expected Outputs: shut_off_computer=%b, keep_driving=%b", shut_off_computer_ref, keep_driving_ref);
+			$display("Actual Outputs:   shut_off_computer=%b, keep_driving=%b", shut_off_computer_dut, keep_driving_dut);
+		end
+	end
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (shut_off_computer_ref !== ( shut_off_computer_ref ^ shut_off_computer_dut ^ shut_off_computer_ref ))
+		begin 
+			if (stats1.errors_shut_off_computer == 0) stats1.errortime_shut_off_computer = $time;
+			stats1.errors_shut_off_computer = stats1.errors_shut_off_computer+1'b1; 
+		end
+		if (keep_driving_ref !== ( keep_driving_ref ^ keep_driving_dut ^ keep_driving_ref ))
+		begin 
+			if (stats1.errors_keep_driving == 0) stats1.errortime_keep_driving = $time;
+			stats1.errors_keep_driving = stats1.errors_keep_driving+1'b1; 
+		end
+	end
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end
+		if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_shut_off_computer) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "shut_off_computer", stats1.errors_shut_off_computer, stats1.errortime_shut_off_computer);
+		else $display("Hint: Output '%s' has no mismatches.", "shut_off_computer");
+		if (stats1.errors_keep_driving) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "keep_driving", stats1.errors_keep_driving, stats1.errortime_keep_driving);
+		else $display("Hint: Output '%s' has no mismatches.", "keep_driving");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 13:28:43,082 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:28:43,082 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic cpu_overheated, arrived, gas_tank_empty,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	logic [2:0] s = 3'b010;
+	assign {cpu_overheated, arrived, gas_tank_empty} = s;
+
+	initial begin
+		@(negedge clk) wavedrom_start("");
+		@(posedge clk) s <= 3'b010;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b001;
+		@(posedge clk) s <= 3'b000;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b110;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		wavedrom_stop();
+		repeat(100) @(posedge clk, negedge clk)
+			s <= $urandom;
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shut_off_computer;
+		int errortime_shut_off_computer;
+		int errors_keep_driving;
+		int errortime_keep_driving;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic cpu_overheated;
+	logic arrived;
+	logic gas_tank_empty;
+	logic shut_off_computer_ref;
+	logic shut_off_computer_dut;
+	logic keep_driving_ref;
+	logic keep_driving_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,cpu_overheated,arrived,gas_tank_empty,shut_off_computer_ref,shut_off_computer_dut,keep_driving_ref,keep_driving_dut );
+	end
+
+
+	wire tb_match;    // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty );
+	RefModule good1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_ref),
+		.keep_driving(keep_driving_ref) );
+		
+	TopModule top_module1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_dut),
+		.keep_driving(keep_driving_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	assign tb_match = ( { shut_off_computer_ref, keep_driving_ref } === ( { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_dut, keep_driving_dut } ^ { shut_off_computer_ref, keep_driving_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			// Display first mismatch details
+			if (stats1.errors == 1) begin
+				$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+				$display("Inputs: cpu_overheated=%b, arrived=%b, gas_tank_empty=%b", cpu_overheated, arrived, gas_tank_empty);
+				$display("Expected Outputs: shut_off_computer=%b, keep_driving=%b", shut_off_computer_ref, keep_driving_ref);
+				$display("Actual Outputs:   shut_off_computer=%b, keep_driving=%b", shut_off_computer_dut, keep_driving_dut);
+			end
+		endif
+
+		if (shut_off_computer_ref !== ( shut_off_computer_ref ^ shut_off_computer_dut ^ shut_off_computer_ref ))
+		begin if (stats1.errors_shut_off_computer == 0) stats1.errortime_shut_off_computer = $time;
+			stats1.errors_shut_off_computer = stats1.errors_shut_off_computer+1'b1; end
+		if (keep_driving_ref !== ( keep_driving_ref ^ keep_driving_dut ^ keep_driving_ref ))
+		begin if (stats1.errors_keep_driving == 0) stats1.errortime_keep_driving = $time;
+			stats1.errors_keep_driving = stats1.errors_keep_driving+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end
+		if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_shut_off_computer) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "shut_off_computer", stats1.errors_shut_off_computer, stats1.errortime_shut_off_computer);
+		else $display("Hint: Output '%s' has no mismatches.", "shut_off_computer");
+		if (stats1.errors_keep_driving) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "keep_driving", stats1.errors_keep_driving, stats1.errortime_keep_driving);
+		else $display("Hint: Output '%s' has no mismatches.", "keep_driving");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 13:30:22,639 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:30:22,639 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic cpu_overheated, arrived, gas_tank_empty,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	logic [2:0] s = 3'b010;
+	assign {cpu_overheated, arrived, gas_tank_empty} = s;
+
+	initial begin
+		@(negedge clk) wavedrom_start("");
+		@(posedge clk) s <= 3'b010;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b001;
+		@(posedge clk) s <= 3'b000;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b110;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		wavedrom_stop();
+		repeat(100) @(posedge clk, negedge clk)
+			s <= $urandom;
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shut_off_computer;
+		int errortime_shut_off_computer;
+		int errors_keep_driving;
+		int errortime_keep_driving;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic cpu_overheated;
+	logic arrived;
+	logic gas_tank_empty;
+	logic shut_off_computer_ref;
+	logic shut_off_computer_dut;
+	logic keep_driving_ref;
+	logic keep_driving_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch, cpu_overheated, arrived, gas_tank_empty, shut_off_computer_ref, shut_off_computer_dut, keep_driving_ref, keep_driving_dut );
+	end
+
+
+	wire tb_match;    // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty );
+	RefModule good1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_ref),
+		.keep_driving(keep_driving_ref) );
+		
+	TopModule top_module1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_dut),
+		.keep_driving(keep_driving_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	
+	assign tb_match = ( { shut_off_computer_ref, keep_driving_ref } === ( { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_dut, keep_driving_dut } ^ { shut_off_computer_ref, keep_driving_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			
+			// Display details for the FIRST mismatch
+			if (stats1.errors == 1) begin
+				$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+				$display("Inputs: cpu_overheated=%b, arrived=%b, gas_tank_empty=%b", cpu_overheated, arrived, gas_tank_empty);
+				$display("Expected Outputs: shut_off_computer=%b, keep_driving=%b", shut_off_computer_ref, keep_driving_ref);
+				$display("Actual Outputs:   shut_off_computer=%b, keep_driving=%b", shut_off_computer_dut, keep_driving_dut);
+			end
+		end;
+
+		if (shut_off_computer_ref !== ( shut_off_computer_ref ^ shut_off_computer_dut ^ shut_off_computer_ref ))
+		begin 
+			if (stats1.errors_shut_off_computer == 0) stats1.errortime_shut_off_computer = $time;
+			stats1.errors_shut_off_computer = stats1.errors_shut_off_computer+1'b1; 
+		end;
+
+		if (keep_driving_ref !== ( keep_driving_ref ^ keep_driving_dut ^ keep_driving_ref ))
+		begin 
+			if (stats1.errors_keep_driving == 0) stats1.errortime_keep_driving = $time;
+			stats1.errors_keep_driving = stats1.errors_keep_driving+1'b1; 
+		end;
+
+	end;
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_shut_off_computer) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "shut_off_computer", stats1.errors_shut_off_computer, stats1.errortime_shut_off_computer);
+		else $display("Hint: Output '%s' has no mismatches.", "shut_off_computer");
+		if (stats1.errors_keep_driving) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "keep_driving", stats1.errors_keep_driving, stats1.errortime_keep_driving);
+		else $display("Hint: Output '%s' has no mismatches.", "keep_driving");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 13:32:13,479 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:32:13,479 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic cpu_overheated, arrived, gas_tank_empty,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	logic [2:0] s = 3'b010;
+	assign {cpu_overheated, arrived, gas_tank_empty} = s;
+
+	initial begin
+		@(negedge clk) wavedrom_start("");
+		@(posedge clk) s <= 3'b010;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b001;
+		@(posedge clk) s <= 3'b000;
+		@(posedge clk) s <= 3'b100;
+		@(posedge clk) s <= 3'b110;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		@(posedge clk) s <= 3'b111;
+		wavedrom_stop();
+		repeat(100) @(posedge clk, negedge clk)
+			s <= $urandom;
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shut_off_computer;
+		int errortime_shut_off_computer;
+		int errors_keep_driving;
+		int errortime_keep_driving;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic cpu_overheated;
+	logic arrived;
+	logic gas_tank_empty;
+	logic shut_off_computer_ref;
+	logic shut_off_computer_dut;
+	logic keep_driving_ref;
+	logic keep_driving_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch, cpu_overheated, arrived, gas_tank_empty, shut_off_computer_ref, shut_off_computer_dut, keep_driving_ref, keep_driving_dut );
+	end
+
+	wire tb_match;    // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty );
+	RefModule good1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_ref),
+		.keep_driving(keep_driving_ref) );
+		
+	TopModule top_module1 (
+		.cpu_overheated,
+		.arrived,
+		.gas_tank_empty,
+		.shut_off_computer(shut_off_computer_dut),
+		.keep_driving(keep_driving_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end
+	endtask	
+
+	assign tb_match = ( { shut_off_computer_ref, keep_driving_ref } === ( { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_ref, keep_driving_ref } ^ { shut_off_computer_dut, keep_driving_dut } ^ { shut_off_computer_ref, keep_driving_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+
+			// Display first mismatch details
+			if (stats1.errors == 1) begin
+				$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+				$display("Inputs: cpu_overheated=%b, arrived=%b, gas_tank_empty=%b", cpu_overheated, arrived, gas_tank_empty);
+				$display("Expected Outputs: shut_off_computer=%b, keep_driving=%b", shut_off_computer_ref, keep_driving_ref);
+				$display("Actual Outputs:   shut_off_computer=%b, keep_driving=%b", shut_off_computer_dut, keep_driving_dut);
+			end
+		end
+
+		if (shut_off_computer_ref !== ( shut_off_computer_ref ^ shut_off_computer_dut ^ shut_off_computer_ref ))
+		begin 
+			if (stats1.errors_shut_off_computer == 0) stats1.errortime_shut_off_computer = $time;
+			stats1.errors_shut_off_computer = stats1.errors_shut_off_computer + 1;
+		end
+
+		if (keep_driving_ref !== ( keep_driving_ref ^ keep_driving_dut ^ keep_driving_ref ))
+		begin 
+			if (stats1.errors_keep_driving == 0) stats1.errortime_keep_driving = $time;
+			stats1.errors_keep_driving = stats1.errors_keep_driving + 1;
+		end
+	end
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_shut_off_computer) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "shut_off_computer", stats1.errors_shut_off_computer, stats1.errortime_shut_off_computer);
+		else $display("Hint: Output '%s' has no mismatches.", "shut_off_computer");
+		if (stats1.errors_keep_driving) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "keep_driving", stats1.errors_keep_driving, stats1.errortime_keep_driving);
+		else $display("Hint: Output '%s' has no mismatches.", "keep_driving");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule

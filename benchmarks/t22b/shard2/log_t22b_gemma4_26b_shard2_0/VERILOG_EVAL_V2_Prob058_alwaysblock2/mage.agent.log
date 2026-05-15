@@ -1,0 +1,990 @@
+[2026-05-13 13:23:39,339 - mage.agent - INFO] Initial tb:
+[2026-05-13 13:23:39,341 - mage.agent - INFO] `timescale 1 ps/1 ps
+
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b} <= 1'b0;
+		wavedrom_start("XOR gate");
+		repeat(10) @(posedge clk)
+			{a,b} <= count++;
+		wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{b,a} <= $urandom;
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input clk,
+	input a,
+	input b,
+	output logic out_assign,
+	output logic out_always_comb,
+	output logic out_always_ff
+);
+	logic ff_reg;
+	assign out_assign = a ^ b;
+	assign out_always_comb = a ^ b;
+	always @(posedge clk) begin
+		ff_reg <= a ^ b;
+	end
+	assign out_always_ff = ff_reg;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_always_comb;
+		int errortime_out_always_comb;
+		int errors_out_always_ff;
+		int errortime_out_always_ff;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_always_comb_ref;
+	logic out_always_comb_dut;
+	logic out_always_ff_ref;
+	logic out_always_ff_dut;
+
+	// Queues for mismatch display
+	logic a_q [$];
+	logic b_q [$];
+	logic out_a_dut_q [$];
+	logic out_comb_dut_q [$];
+	logic out_ff_dut_q [$];
+	logic out_a_ref_q [$];
+	logic out_comb_ref_q [$];
+	logic out_ff_ref_q [$];
+	localparam MAX_QUEUE_SIZE = 10;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,a,b,out_assign_ref,out_assign_dut,out_always_comb_ref,out_always_comb_dut,out_always_ff_ref,out_always_ff_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b );
+
+	RefModule good1 (
+		.clk,
+		.a,
+		.b,
+		.out_assign(out_assign_ref),
+		.out_always_comb(out_always_comb_ref),
+		.out_always_ff(out_always_ff_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.a,
+		.b,
+		.out_assign(out_assign_dut),
+		.out_always_comb(out_always_comb_dut),
+		.out_always_ff(out_always_ff_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end
+	endtask	
+
+	assign tb_match = ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } === ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ^ { out_assign_dut, out_always_comb_dut, out_always_ff_dut } ^ { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		// Maintain Queue
+		if (a_q.size() >= MAX_QUEUE_SIZE) begin
+			a_q.delete(0); b_q.delete(0); out_a_dut_q.delete(0); out_comb_dut_q.delete(0); out_ff_dut_q.delete(0);
+			out_a_ref_q.delete(0); out_comb_ref_q.delete(0); out_ff_ref_q.delete(0);
+		end
+		a_q.push_back(a);
+		b_q.push_back(b);
+		out_a_dut_q.push_back(out_assign_dut);
+		out_comb_dut_q.push_back(out_always_comb_dut);
+		out_ff_dut_q.push_back(out_always_ff_dut);
+		out_a_ref_q.push_back(out_assign_ref);
+		out_comb_ref_q.push_back(out_always_comb_ref);
+		out_ff_ref_q.push_back(out_always_ff_ref);
+
+		stats1.clocks++;
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+
+			// Display first mismatch queue content
+			if (stats1.errors == 1) begin
+				$display("Mismatch detected at time %t", $time);
+				$display("Queue content:");
+				for (int i = 0; i < a_q.size(); i++) begin
+					$display("Cycle %0d: a=%b, b=%b, out_assign_dut=%b, out_always_comb_dut=%b, out_always_ff_dut=%b | ref: assign=%b, comb=%b, ff=%b", 
+							i, a_q[i], b_q[i], out_a_dut_q[i], out_comb_dut_q[i], out_ff_dut_q[i], out_a_ref_q[i], out_comb_ref_q[i], out_ff_ref_q[i]);
+					end
+				end
+			end
+		end
+
+		if (out_assign_ref !== ( out_assign_ref ^ out_assign_dut ^ out_assign_ref )) begin 
+			if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+			stats1.errors_out_assign = stats1.errors_out_assign+1'b1; 
+		end
+		if (out_always_comb_ref !== ( out_always_comb_ref ^ out_always_comb_dut ^ out_always_comb_ref )) begin 
+			if (stats1.errors_out_always_comb == 0) stats1.errortime_out_always_comb = $time;
+			stats1.errors_out_always_comb = stats1.errors_out_always_comb+1'b1; 
+		end
+		if (out_always_ff_ref !== ( out_always_ff_ref ^ out_always_ff_dut ^ out_always_ff_ref )) begin 
+			if (stats1.errors_out_always_ff == 0) stats1.errortime_out_always_ff = $time;
+			stats1.errors_out_always_ff = stats1.errors_out_always_ff+1'b1; 
+		end
+	end
+
+	initial begin
+		#1000000;
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_out_assign) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_assign", stats1.errors_out_assign, stats1.errortime_out_assign);
+		else $display("Hint: Output '%s' has no mismatches.", "out_assign");
+		if (stats1.errors_out_always_comb) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_comb", stats1.errors_out_always_comb, stats1.errortime_out_always_comb);
+		else $display("Hint: Output '%s' has no mismatches.", "out_always_comb");
+		if (stats1.errors_out_always_ff) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_ff", stats1.errors_out_always_ff, stats1.errortime_out_always_ff);
+		else $display("Hint: Output '%s' has no mismatches.", "out_always_ff");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 13:23:39,341 - mage.agent - INFO] Initial if:
+[2026-05-13 13:23:39,341 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic a,
+    input  logic b,
+    output logic out_assign,
+    output logic out_always_comb,
+    output logic out_always_ff
+);
+
+[2026-05-13 13:23:39,347 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  a
+ - input  b
+ - output out_assign
+ - output out_always_comb
+ - output out_always_ff
+
+The module should implement an XOR gate three ways, using an assign
+statement (output out_assign), a combinational always block (output
+out_always_comb), and a clocked always block (output out_always_ff). Note
+that the clocked always block produces a different circuit from the other
+two: There is a flip- flop so the output is delayed. Assume all
+sequential logic is triggered on the positive edge of the clock.
+
+
+[2026-05-13 13:23:53,968 - mage.agent - INFO] Initial rtl:
+[2026-05-13 13:23:53,968 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic a,
+    input  logic b,
+    output logic out_assign,
+    output logic out_always_comb,
+    output logic out_always_ff
+);
+
+    // 1. Continuous assignment for XOR
+    assign out_assign = a ^ b;
+
+    // 2. Combinational always block for XOR
+    always @(*) begin
+        out_always_comb = a ^ b;
+    end
+
+    // 3. Clocked always block for registered XOR
+    // We use an internal logic signal to act as the flip-flop
+    always @(posedge clk) begin
+        out_always_ff <= a ^ b;
+    end
+
+endmodule
+[2026-05-13 13:23:59,550 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 13:25:31,438 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:25:31,438 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output reg a, b,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        int count; count = 0;
+        {a,b} <= 1'b0;
+        wavedrom_start("XOR gate");
+        repeat(10) @(posedge clk)
+            {a,b} <= count++;        
+        wavedrom_stop();
+        
+        repeat(200) @(posedge clk, negedge clk)
+            {b,a} <= $urandom;
+            
+        #1 $finish;
+    end
+endmodule
+
+module RefModule (
+    input clk,
+    input a,
+    input b,
+    output logic out_assign,
+    output logic out_always_comb,
+    output logic out_always_ff
+);
+    assign out_assign = a ^ b;
+    always_comb out_always_comb = a ^ b;
+    always_ff @(posedge clk) out_always_ff <= a ^ b;
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out_assign;
+        int errortime_out_assign;
+        int errors_out_always_comb;
+        int errortime_out_always_comb;
+        int errors_out_always_ff;
+        int errortime_out_always_ff;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic a;
+    logic b;
+    logic out_assign_ref;
+    logic out_assign_dut;
+    logic out_always_comb_ref;
+    logic out_always_comb_dut;
+    logic out_always_ff_ref;
+    logic out_always_ff_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,clk,a,b,out_assign_ref,out_assign_dut,out_always_comb_ref,out_always_comb_dut,out_always_ff_ref,out_always_ff_dut );
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .a,
+        .b 
+    );
+
+    RefModule good1 (
+        .clk,
+        .a,
+        .b,
+        .out_assign(out_assign_ref),
+        .out_always_comb(out_always_comb_ref),
+        .out_always_ff(out_always_ff_ref) 
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .a,
+        .b,
+        .out_assign(out_assign_dut),
+        .out_always_comb(out_always_comb_dut),
+        .out_always_ff(out_always_ff_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } === ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ^ { out_assign_dut, out_always_comb_dut, out_always_ff_dut } ^ { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ) );
+
+    // Error detection and display logic
+    always @(posedge clk, negedge clk) begin
+        if (tb_mismatch && !tb_match) begin
+            // This block executes when a mismatch is detected
+            // Note: We use a small delay or check to ensure we capture the values at the moment of error
+        end
+    end
+
+    // Improved mismatch reporting
+    always @(tb_mismatch) begin
+        if (tb_mismatch && !tb_match) begin
+             $display("Mismatch detected at time %0t:", $time);
+             $display("Inputs: a=%b, b=%b", a, b);
+             $display("Outputs (DUT): out_assign=%b, out_always_comb=%b, out_always_ff=%b", out_assign_dut, out_always_comb_dut, out_always_ff_dut);
+             $display("Outputs (REF): out_assign=%b, out_always_comb=%b, out_always_ff=%b", out_assign_ref, out_always_comb_ref, out_always_ff_ref);
+        end
+    end
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (out_assign_ref !== ( out_assign_ref ^ out_assign_dut ^ out_assign_ref )) begin 
+            if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+            stats1.errors_out_assign = stats1.errors_out_assign+1'b1; 
+        end
+        if (out_always_comb_ref !== ( out_always_comb_ref ^ out_always_comb_dut ^ out_always_comb_ref )) begin 
+            if (stats1.errors_out_always_comb == 0) stats1.errortime_out_always_comb = $time;
+            stats1.errors_out_always_comb = stats1.errors_out_always_comb+1'b1; 
+        end
+        if (out_always_ff_ref !== ( out_always_ff_ref ^ out_always_ff_dut ^ out_always_ff_ref )) begin 
+            if (stats1.errors_out_always_ff == 0) stats1.errortime_out_always_ff = $time;
+            stats1.errors_out_always_ff = stats1.errors_out_always_ff+1'b1; 
+        end
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_out_assign) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_assign", stats1.errors_out_assign, stats1.errortime_out_assign);
+        else $display("Hint: Output '%s' has no mismatches.", "out_assign");
+        if (stats1.errors_out_always_comb) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_comb", stats1.errors_out_always_comb, stats1.errortime_out_always_comb);
+        else $display("Hint: Output '%s' has no mismatches.", "out_always_comb");
+        if (stats1.errors_out_always_ff) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_ff", stats1.errors_out_always_ff, stats1.errortime_out_always_ff);
+        else $display("Hint: Output '%s' has no mismatches.", "out_always_ff");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+endmodule
+[2026-05-13 13:27:18,352 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:27:18,352 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b} <= 1'b0;
+		wavedrom_start("XOR gate");
+		repeat(10) @(posedge clk)
+			{a,b} <= count++;		
+		wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{b,a} <= $urandom;
+			
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input clk,
+	input a,
+	input b,
+	output logic out_assign,
+	output logic out_always_comb,
+	output logic out_always_ff
+);
+	assign out_assign = a ^ b;
+	always_comb out_always_comb = a ^ b;
+	always_ff @(posedge clk) out_always_ff <= a ^ b;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_always_comb;
+		int errortime_out_always_comb;
+		int errors_out_always_ff;
+		int errortime_out_always_ff;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_always_comb_ref;
+	logic out_always_comb_dut;
+	logic out_always_ff_ref;
+	logic out_always_ff_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,a,b,out_assign_ref,out_assign_dut,out_always_comb_ref,out_always_comb_dut,out_always_ff_ref,out_always_ff_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b );
+	RefModule good1 (
+		.clk,
+		.a,
+		.b,
+		.out_assign(out_assign_ref),
+		.out_always_comb(out_always_comb_ref),
+		.out_always_ff(out_always_ff_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.a,
+		.b,
+		.out_assign(out_assign_dut),
+		.out_always_comb(out_always_comb_dut),
+		.out_always_ff(out_always_ff_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	
+	assign tb_match = ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } === ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ^ { out_assign_dut, out_always_comb_dut, out_always_ff_dut } ^ { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ) );
+	
+	// Display the first mismatch
+	always @(tb_mismatch) begin
+		if (tb_mismatch && stats1.errors == 0) begin
+			$display("Mismatch detected at time %0t:", $time);
+			$display("Inputs: a=%b, b=%b", a, b);
+			$display("Outputs (DUT): out_assign=%b, out_always_comb=%b, out_always_ff=%b", out_assign_dut, out_always_comb_dut, out_always_ff_dut);
+			$display("Outputs (REF): out_assign=%b, out_always_comb=%b, out_always_ff=%b", out_assign_ref, out_always_comb_ref, out_always_ff_ref);
+		end
+	end
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (out_assign_ref !== ( out_assign_ref ^ out_assign_dut ^ out_assign_ref ))
+		begin if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+			stats1.errors_out_assign = stats1.errors_out_assign+1'b1; end
+		if (out_always_comb_ref !== ( out_always_comb_ref ^ out_always_comb_dut ^ out_always_comb_ref ))
+		begin if (stats1.errors_out_always_comb == 0) stats1.errortime_out_always_comb = $time;
+			stats1.errors_out_always_comb = stats1.errors_out_always_comb+1'b1; end
+		if (out_always_ff_ref !== ( out_always_ff_ref ^ out_always_ff_dut ^ out_always_ff_ref ))
+		begin if (stats1.errors_out_always_ff == 0) stats1.errortime_out_always_ff = $time;
+			stats1.errors_out_always_ff = stats1.errors_out_always_ff+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_out_assign) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_assign", stats1.errors_out_assign, stats1.errortime_out_assign);
+		else $display("Hint: Output '%s' has no mismatches.", "out_assign");
+		if (stats1.errors_out_always_comb) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_comb", stats1.errors_out_always_comb, stats1.errortime_out_always_comb);
+		else $display("Hint: Output '%s' has no mismatches.", "out_always_comb");
+		if (stats1.errors_out_always_ff) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_ff", stats1.errors_out_always_ff, stats1.errortime_out_always_ff);
+		else $display("Hint: Output '%s' has no mismatches.", "out_always_ff");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+end
+
+endmodule
+[2026-05-13 13:28:52,848 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:28:52,848 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output reg a, b,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable
+);
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    initial begin
+        int count; count = 0;
+        {a,b} <= 1'b0;
+        wavedrom_start("XOR gate");
+        repeat(10) @(posedge clk)
+            {a,b} <= count++;        
+        wavedrom_stop();
+        
+        repeat(200) @(posedge clk, negedge clk)
+            {b,a} <= $urandom;
+            
+        #1 $finish;
+    end
+endmodule
+
+module RefModule (
+    input clk,
+    input a,
+    input b,
+    output logic out_assign,
+    output logic out_always_comb,
+    output logic out_always_ff
+);
+    assign out_assign = a ^ b;
+    always_comb out_always_comb = a ^ b;
+    always_ff @(posedge clk) out_always_ff <= a ^ b;
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out_assign;
+        int errortime_out_assign;
+        int errors_out_always_comb;
+        int errortime_out_always_comb;
+        int errors_out_always_ff;
+        int errortime_out_always_ff;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic a;
+    logic b;
+    logic out_assign_ref;
+    logic out_assign_dut;
+    logic out_always_comb_ref;
+    logic out_always_comb_dut;
+    logic out_always_ff_ref;
+    logic out_always_ff_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,clk,a,b,out_assign_ref,out_assign_dut,out_always_comb_ref,out_always_comb_dut,out_always_ff_ref,out_always_ff_dut );
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .a,
+        .b 
+    );
+
+    RefModule good1 (
+        .clk,
+        .a,
+        .b,
+        .out_assign(out_assign_ref),
+        .out_always_comb(out_always_comb_ref),
+        .out_always_ff(out_always_ff_ref) 
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .a,
+        .b,
+        .out_assign(out_assign_dut),
+        .out_always_comb(out_always_comb_dut),
+        .out_always_ff(out_always_ff_dut) 
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } === ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ^ { out_assign_dut, out_always_comb_dut, out_always_ff_dut } ^ { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ) );
+
+    // Display the first mismatch
+    always @(tb_mismatch) begin
+        if (tb_mismatch && stats1.errors == 0) begin
+            $display("Mismatch detected at time %0t:", $time);
+            $display("Inputs: a=%b, b=%b", a, b);
+            $display("Outputs (DUT): out_assign=%b, out_always_comb=%b, out_always_ff=%b", out_assign_dut, out_always_comb_dut, out_always_ff_dut);
+            $display("Outputs (REF): out_assign=%b, out_always_comb=%b, out_always_ff=%b", out_assign_ref, out_always_comb_ref, out_always_ff_ref);
+        end
+    end
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+        if (out_assign_ref !== ( out_assign_ref ^ out_assign_dut ^ out_assign_ref )) begin 
+            if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+            stats1.errors_out_assign = stats1.errors_out_assign + 1;
+        end
+        if (out_always_comb_ref !== ( out_always_comb_ref ^ out_always_comb_dut ^ out_always_comb_ref )) begin 
+            if (stats1.errors_out_always_comb == 0) stats1.errortime_out_always_comb = $time;
+            stats1.errors_out_always_comb = stats1.errors_out_always_comb + 1;
+        end
+        if (out_always_ff_ref !== ( out_always_ff_ref ^ out_always_ff_dut ^ out_always_ff_ref )) begin 
+            if (stats1.errors_out_always_ff == 0) stats1.errortime_out_always_ff = $time;
+            stats1.errors_out_always_ff = stats1.errors_out_always_ff + 1;
+        end
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_out_assign) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_assign", stats1.errors_out_assign, stats1.errortime_out_assign);
+        else $display("Hint: Output '%s' has no mismatches.", "out_assign");
+        if (stats1.errors_out_always_comb) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_comb", stats1.errors_out_always_comb, stats1.errortime_out_always_comb);
+        else $display("Hint: Output '%s' has no mismatches.", "out_always_comb");
+        if (stats1.errors_out_always_ff) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_ff", stats1.errors_out_always_ff, stats1.errortime_out_always_ff);
+        else $display("Hint: Output '%s' has no mismatches.", "out_always_ff");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+endmodule
+[2026-05-13 13:30:34,143 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:30:34,143 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b} <= 1'b0;
+		wavedrom_start("XOR gate");
+		repeat(10) @(posedge clk)
+			{a,b} <= count++;		
+		wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{b,a} <= $urandom;
+			
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input clk,
+	input a,
+	input b,
+	output logic out_assign,
+	output logic out_always_comb,
+	output logic out_always_ff
+);
+	assign out_assign = a ^ b;
+	always_comb out_always_comb = a ^ b;
+	always_ff @(posedge clk) out_always_ff <= a ^ b;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_always_comb;
+		int errortime_out_always_comb;
+		int errors_out_always_ff;
+		int errortime_out_always_ff;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_always_comb_ref;
+	logic out_always_comb_dut;
+	logic out_always_ff_ref;
+	logic out_always_ff_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,a,b,out_assign_ref,out_assign_dut,out_always_comb_ref,out_always_comb_dut,out_always_ff_ref,out_always_ff_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b );
+	RefModule good1 (
+		.clk,
+		.a,
+		.b,
+		.out_assign(out_assign_ref),
+		.out_always_comb(out_always_comb_ref),
+		.out_always_ff(out_always_ff_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.a,
+		.b,
+		.out_assign(out_assign_dut),
+		.out_always_comb(out_always_comb_dut),
+		.out_always_ff(out_always_ff_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+	
+	assign tb_match = ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } === ( { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ^ { out_assign_dut, out_always_comb_dut, out_always_ff_dut } ^ { out_assign_ref, out_always_comb_ref, out_always_ff_ref } ) );
+
+	// Display the first mismatch
+	always @(tb_mismatch) begin
+		if (tb_mismatch && stats1.errors == 0) begin
+			$display("Mismatch detected at time %0t:", $time);
+			$display("Inputs: a=%b, b=%b", a, b);
+			$display("Outputs (DUT): out_assign=%b, out_always_comb=%b, out_always_ff=%b", out_assign_dut, out_always_comb_dut, out_always_ff_dut);
+			$display("Outputs (REF): out_assign=%b, out_always_comb=%b, out_always_ff=%b", out_assign_ref, out_always_comb_ref, out_always_ff_ref);
+		end;
+	end;
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end;
+		if (out_assign_ref !== ( out_assign_ref ^ out_assign_dut ^ out_assign_ref ))
+		begin if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+			stats1.errors_out_assign = stats1.errors_out_assign+1'b1; end
+		if (out_always_comb_ref !== ( out_always_comb_ref ^ out_always_comb_dut ^ out_always_comb_ref ))
+		begin if (stats1.errors_out_always_comb == 0) stats1.errortime_out_always_comb = $time;
+			stats1.errors_out_always_comb = stats1.errors_out_always_comb+1'b1; end
+		if (out_always_ff_ref !== ( out_always_ff_ref ^ out_always_ff_dut ^ out_always_ff_ref ))
+		begin if (stats1.errors_out_always_ff == 0) stats1.errortime_out_always_ff = $time;
+			stats1.errors_out_always_ff = stats1.errors_out_always_ff+1'b1; end
+
+	end;
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_out_assign) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_assign", stats1.errors_out_assign, stats1.errortime_out_assign);
+		else $display("Hint: Output '%s' has no mismatches.", "out_assign");
+		if (stats1.errors_out_always_comb) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_comb", stats1.errors_out_always_comb, stats1.errortime_out_always_comb);
+		else $display("Hint: Output '%s' has no mismatches.", "out_always_comb");
+		if (stats1.errors_out_always_ff) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_always_ff", stats1.errors_out_always_ff, stats1.errortime_out_always_ff);
+		else $display("Hint: Output '%s' has no mismatches.", "out_always_ff");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule

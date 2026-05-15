@@ -1,0 +1,1 @@
+module TopModule(clk, resetn, x, y, f, g);  input logic clk;  input logic resetn;  input logic x;  input logic y;  output logic f;  output logic g; endmodule

@@ -1,0 +1,158 @@
+[2026-05-14 11:37:49,588 - mage.agent - INFO] Initial tb:
+[2026-05-14 11:37:49,590 - mage.agent - INFO] `timescale 1ps/1ps
+module tb();
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    wire [7:0] in;
+    wire parity_ref, parity_dut;
+    logic [7:0] in_tb;
+    logic parity_got;
+    reg [2:0] reset_count = 0;
+    reg [31:0] error_time_parity = 0;
+    reg error_parity = 0;
+    reg [31:0] error_time = 0;
+    reg error_count = 0;
+    reg [31:0] total_clocks = 0;
+    reg [31:0] sample_count = 0;
+    reg [7:0] in_queue [0:9];
+    reg [7:0] got_parity [0:9];
+    reg [7:0] exp_parity [0:9];
+    reg [3:0] reset_queue [0:9];
+    localparam MAX_QUEUE_SIZE = 8;
+
+    // Instantiate modules
+    TopModule top_module1 (.in(in), .parity(parity_dut));
+    RefModule golden_module (.in(in), .parity(parity_ref));
+
+    // Monitor signals
+    always @(posedge clk, negedge clk) begin
+        total_clocks++;
+        if (parity_ref !== parity_dut) begin
+            if (error_count == 0) error_time = $time;
+            error_count++;
+        end
+        if (parity_ref !== (parity_ref ^ parity_dut ^ parity_ref)) begin // Parity check condition for even parity
+            if (error_parity == 0) error_time_parity = $time;
+            error_parity = error_parity + 1;
+        end
+
+        // Store previous values for mismatch display
+        if ($time > 0) begin
+            in_queue[in_queue.size()] = in_tb;
+            exp_parity[exp_parity.size()] = parity_ref;
+            got_parity[got_parity.size()] = parity_dut;
+            reset_queue[reset_queue.size()] = reset_count;
+        end
+
+        // Queue management
+        if ($time > 0 && (in_queue.size() >= MAX_QUEUE_SIZE)) begin
+            in_queue.delete(0);
+            exp_parity.delete(0);
+            got_parity.delete(0);
+            reset_queue.delete(0);
+        end
+
+        // Check for first mismatch
+        if (parity_ref !== parity_dut && error_count == 1) begin
+            $display("Mismatch detected at time %t", $time);
+            $display("Last %0d cycles of simulation:", in_queue.size());
+            for (int i = 0; i < in_queue.size(); i++) begin
+                if (i == 0) $display("First Mismatch at");
+                else if (exp_parity[i] === got_parity[i]) $display("Got Match");
+                else $display("Got Mismatch");
+                $display("Cycle %0d, reset %b, in %h, got_parity %h, exp_parity %h",
+                    i, reset_queue[i], in_queue[i], got_parity[i], exp_parity[i]);
+            end
+            $finish;
+        end
+
+        // Update in_tb each cycle
+        in_tb = $urandom;
+    end
+
+    // Timeout after 100K cycles
+    initial #100000 $display("TIMEOUT"); $finish;
+
+    // Dump VCD if needed
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, tb);
+    end
+endmodule
+
+module RefModule(in);
+    input [7:0] in;
+    output parity;
+    assign parity = ^in; // Even parity: XOR of all bits
+endmodule
+[2026-05-14 11:37:49,590 - mage.agent - INFO] Initial if:
+[2026-05-14 11:37:49,590 - mage.agent - INFO] module TopModule (input [7:0] in, output logic parity);
+[2026-05-14 11:37:49,596 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  in     (8 bits)
+ - output parity
+
+Parity checking is often used as a simple method of detecting errors when
+transmitting data through an imperfect channel. The module should compute
+a parity bit for an 8-bit byte (which will add a 9th bit to the byte). We
+will use "even" parity, where the parity bit is just the XOR of all 8
+data bits.
+
+
+[2026-05-14 11:37:51,488 - mage.agent - INFO] Initial rtl:
+[2026-05-14 11:37:51,488 - mage.agent - INFO] module TopModule (input [7:0] in, output logic parity); assign parity = ^in; endmodule
+[2026-05-14 11:37:53,242 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 11:39:09,456 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:39:09,456 - mage.agent - INFO] `timescale 1ps/1ps
+
+module stimulus_gen(clk, in);
+    input clk;
+    output logic [7:0] in;
+    initial begin
+        repeat(100) @(posedge clk, negedge clk) in <= $random;
+        $finish;
+    end
+endmodule
+
+module tb();
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    logic [7:0] in;
+    logic parity_ref, parity_dut;
+    wire tb_match = ({parity_ref} === ({parity_ref} ^ {parity_dut} ^ {parity_ref}));
+
+    reg [15:0] errors = 0, errortime = 0, errors_parity = 0, errortime_parity = 0, clocks = 0;
+
+    stimulus_gen stim(.clk(clk), .in(in));
+    RefModule ref_mod(.in(in), .parity(parity_ref));
+    TopModule top_inst(.in(in), .parity(parity_dut));
+
+    always @(posedge clk) begin
+        clocks += 1;
+        if (!tb_match) begin
+            if (errors == 0) errortime = $time;
+            errors += 1;
+        end
+        if (parity_ref !== (parity_ref ^ parity_dut ^ parity_ref)) begin
+            if (errors_parity == 0) errortime_parity = $time;
+            errors_parity += 1;
+        end
+    end
+
+    initial begin
+        #1000000 $display("TIMEOUT"); $finish;
+    end
+
+    final begin
+        if (errors_parity) $display("Hint: Output 'parity' has %0d mismatches. First at time %0d", errors_parity, errortime_parity);
+        else $display("Hint: Output 'parity' no mismatches");
+        $display("Mismatches: %0d in %0d samples", errors, clocks);
+        $display("Simulation finished at %0t", $time);
+        if (errors) $display("SIMULATION FAILED - %0d MISMATCHES, FIRST AT %0t", errors, errortime);
+        else $display("SIMULATION PASSED");
+    end
+endmodule

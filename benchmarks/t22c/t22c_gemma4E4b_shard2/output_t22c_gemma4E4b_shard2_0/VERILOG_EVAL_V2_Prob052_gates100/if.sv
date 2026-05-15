@@ -1,0 +1,8 @@
+module TopModule (
+    input  logic [99:0] in,
+    output logic out_and,
+    output logic out_or,
+    output logic out_xor
+);
+// Module implementation goes here
+endmodule

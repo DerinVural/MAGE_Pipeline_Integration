@@ -1,0 +1,649 @@
+[2026-05-14 12:27:57,493 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:27:57,495 - mage.agent - INFO] module tb();
+    // Clock generation
+    reg clk = 0;
+    always #5 clk = ~clk;
+
+    // Stimulus Gen Interface
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    reg wavedrom_hide_after_time;
+
+    // DUT and Reference Modules
+    stimulus_gen stim1 (
+        .clk(clk),
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .wavedrom_hide_after_time(wavedrom_hide_after_time),
+        .tb_match(tb_match),
+        .tb_mismatch(tb_mismatch),
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d)
+    );
+
+    TopModule top_module1 (
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .out_sop(out_sop),
+        .out_pos(out_pos)
+    );
+
+    RefModule ref_module1 (
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .out_sop(ref_out_sop),
+        .out_pos(ref_out_pos)
+    );
+
+    // Statistics tracking
+    typedef struct {
+        int errors;
+        int errortime;
+        int errors_out_sop;
+        int errortime_out_sop;
+        int errors_out_pos;
+        int errortime_out_pos;
+        int clocks;
+    } stats;
+
+    stats stats1 = '0;
+
+    // Queue variables
+    localparam MAX_QUEUE_SIZE = 5;
+    reg [3:0] input_queue [0:MAX_QUEUE_SIZE-1];
+    reg got_sop_queue [0:MAX_QUEUE_SIZE-1];
+    reg got_pos_queue [0:MAX_QUEUE_SIZE-1];
+    reg ref_sop_queue [0:MAX_QUEUE_SIZE-1];
+    reg ref_pos_queue [0:MAX_QUEUE_SIZE-1];
+
+    // Update queues on clock edges
+    always @(posedge clk, negedge clk) begin
+        if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+            // Drop oldest entry
+            for (int i = 0; i < MAX_QUEUE_SIZE-1; i++) begin
+                input_queue[i] = input_queue[i+1];
+                got_sop_queue[i] = got_sop_queue[i+1];
+                got_pos_queue[i] = got_pos_queue[i+1];
+                ref_sop_queue[i] = ref_sop_queue[i+1];
+                ref_pos_queue[i] = ref_pos_queue[i+1];
+            end
+        end
+
+        // Push new data
+        input_queue[input_queue.size()] = {d, c, b, a}; // Assuming a is LSB
+        got_sop_queue[got_sop_queue.size()] = out_sop;
+        got_pos_queue[got_pos_queue.size()] = out_pos;
+        ref_sop_queue[ref_sop_queue.size()] = ref_out_sop;
+        ref_pos_queue[ref_pos_queue.size()] = ref_out_pos;
+
+        // Check for errors
+        if ({out_sop, out_pos} !== {ref_out_sop, ref_out_pos}) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+            // Output SOP error
+            if (out_sop !== ref_out_sop) begin
+                if (stats1.errors_out_sop == 0) stats1.errortime_out_sop = $time;
+                stats1.errors_out_sop++;
+            end
+            // Output POS error
+            if (out_pos !== ref_out_pos) begin
+                if (stats1.errors_out_pos == 0) stats1.errortime_out_pos = $time;
+                stats1.errors_out_pos++;
+            end
+        end
+
+        stats1.clocks++;
+    end
+
+    // Display first error
+    integer i;
+    reg [3:0] input_display [0:MAX_QUEUE_SIZE-1]; // Adjust size as needed
+    reg got_sop_display [0:MAX_QUEUE_SIZE-1];
+    reg got_pos_display [0:MAX_QUEUE_SIZE-1];
+    reg ref_sop_display [0:MAX_QUEUE_SIZE-1];
+    reg ref_pos_display [0:MAX_QUEUE_SIZE-1];
+
+    always @(posedge clk, negedge clk) begin
+        if (stats1.errors > 0) begin
+            // Display first mismatch
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+            $display("First Mismatch Inputs: %b %b %b %b", a, b, c, d);
+            $display("Outputs: got_sop=%b, got_pos=%b", out_sop, out_pos);
+            $display("Expected: ref_sop=%b, ref_pos=%b", ref_out_sop, ref_out_pos);
+            $finish;
+        end
+        else if (stats1.clocks >= 100000) begin
+            $display("SIMULATION PASSED");
+            $finish;
+        end
+    end
+endmodule
+
+// Reference Module (golden implementation)
+module RefModule (
+    input a,
+    input b,
+    input c,
+    input d,
+    output logic out_sop,
+    output logic out_pos
+);
+    // Implement the expected SOP and POS logic here
+    // Example SOP: out_sop = (a & ~b & c & d) | (~a & b & c & d) | (a & b & c & d);
+    // Example POS: out_pos = ... ;
+endmodule
+
+// Stimulus Gen Module
+module stimulus_gen (
+    input clk,
+    output reg [511:0] wavedrom_title,
+    output wavedrom_enable,
+    output wavedrom_hide_after_time,
+    input tb_match,
+    output tb_mismatch,
+    output logic a,
+    output logic b,
+    output logic c,
+    output logic d
+);
+    // Stimulus generation logic
+    task automatic wavedrom_start(input [511:0] title=""); endtask
+    task automatic wavedrom_stop(); endtask
+    reg fail = 0;
+    reg fail1 = 0;
+
+    initial begin
+        // Stimulus sequence
+        @(posedge clk); a=0; b=0; c=1; d=0; // Example input 2
+        @(posedge clk); a=0; b=1; c=1; d=1; // Input 7
+        @(posedge clk); {a,b,c,d} <= 15; // Input 15
+        @(posedge clk); fail1 = fail;
+        // Additional stimulus
+        repeat(50) @(posedge clk); // Generate random inputs
+        if (fail && ~fail1) $display("Hint: Circuit passes on required inputs but handles don't-care cases.");
+        $finish;
+    end
+endmodule
+[2026-05-14 12:27:57,495 - mage.agent - INFO] Initial if:
+[2026-05-14 12:27:57,495 - mage.agent - INFO] module TopModule (
+    input a,
+    input b,
+    input c,
+    input d,
+    output logic out_sop,
+    output logic out_pos
+);
+[2026-05-14 12:27:57,501 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+  - input  a
+  - input  b
+  - input  c
+  - input  d
+  - output out_sop
+  - output out_pos
+
+The module should implement a digital system with four inputs (a,b,c,d)
+that generates a logic-1 when 2, 7, or 15 appears on the inputs, and a
+logic-0 when 0, 1, 4, 5, 6, 9, 10, 13, or 14 appears. The input
+conditions for the numbers 3, 8, 11, and 12 never occur in this system.
+For example, 7 corresponds to a,b,c,d being set to 0,1,1,1, respectively.
+Determine the output out_sop in minimum sum-of-products form, and the
+output out_pos in minimum product-of-sums form.
+
+
+[2026-05-14 12:28:42,802 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:28:42,803 - mage.agent - INFO] module TopModule (
+    input a,
+    input b,
+    input c,
+    input d,
+    output logic out_sop,
+    output logic out_pos
+);
+
+    // SOP expression for output 1 at 2,7,15
+    assign out_sop = (~a & ~b & c & ~d) | // Minterm 2
+                     (~a & b & c & d)   | // Minterm 7
+                     (a & b & c & d);    // Minterm 15
+
+    // POS expression as the complement of SOP
+    assign out_pos = ~(out_sop);
+
+endmodule
+[2026-05-14 12:28:46,905 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 12:29:02,287 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:29:02,287 - mage.agent - INFO] `timescale 1ps/1ps
+
+module stimulus_gen(clk, a, b, c, d, wavedrom_title, wavedrom_enable);
+    input clk;
+    output logic a, b, c, d;
+    output reg [511:0] wavedrom_title;
+    output reg wavedrom_enable;
+    input tb_match;
+    task wavedrom_start(input [511:0] title = ""); endtask
+    task wavedrom_stop; #1; endtask
+    bit fail = 0, fail1 = 0;
+    always @(posedge clk, negedge clk) if (!tb_match) fail = 1;
+    initial begin
+        @(posedge clk) {a, b, c, d} = 0;
+        @(posedge clk) {a, b, c, d} = 1;
+        @(posedge clk) {a, b, c, d} = 2;
+        @(posedge clk) {a, b, c, d} = 4;
+        @(posedge clk) {a, b, c, d} = 5;
+        @(posedge clk) {a, b, c, d} = 6;
+        @(posedge clk) {a, b, c, d} = 7;
+        @(posedge clk) {a, b, c, d} = 9;
+        @(posedge clk) {a, b, c, d} = 10;
+        @(posedge clk) {a, b, c, d} = 13;
+        @(posedge clk) {a, b, c, d} = 14;
+        @(posedge clk) {a, b, c, d} = 15;
+        @(posedge clk) fail1 = fail;
+        for (int i=0; i<16; i++) @(posedge clk) {a, b, c, d} = i;
+        repeat(50) @(posedge clk) {a, b, c, d} = $random;
+        if (fail && !fail1) $display("Hint: Your circuit passes on the 12 required input combinations, but doesn't match the don't-care cases. Are you using minimal SOP and POS?" );
+        $finish;
+    end
+endmodule
+
+module tb;
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out_sop;
+        int errortime_out_sop;
+        int errors_out_pos;
+        int errortime_out_pos;
+        int clocks;
+    } stats;
+    stats stats1 = '{errors:0, errortime:0, errors_out_sop:0, errortime_out_sop:0, errors_out_pos:0, errortime_out_pos:0, clocks:0};
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic a, b, c, d;
+    logic out_sop_ref, out_pos_ref;
+    logic out_sop_dut, out_pos_dut;
+    wire tb_match = ~ ({out_sop_ref, out_pos_ref} === ({out_sop_ref, out_pos_ref} ^ {out_sop_dut, out_pos_dut} ^ {out_sop_ref, out_pos_ref}));
+    stimulus_gen stim1(clk, a, b, c, d, wavedrom_title, wavedrom_enable);
+    TopModule top_module1(a, b, c, d, out_sop_dut, out_pos_dut);
+    RefModule good1(a, b, c, d, out_sop_ref, out_pos_ref);
+    reg strobe = 0;
+    task wait_for_end_of_timestep; repeat(5) begin strobe <= !strobe; @(strobe); end endtask
+    final begin
+        if (stats1.errors_out_sop) $display("Hint: Output 'out_sop' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_sop, stats1.errortime_out_sop);
+        else $display("Hint: Output 'out_sop' has no mismatches");
+        if (stats1.errors_out_pos) $display("Hint: Output 'out_pos' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_pos, stats1.errortime_out_pos);
+        else $display("Hint: Output 'out_pos' has no mismatches");
+        $display("Simulation finished at %0d ps", $time);
+        if (stats1.errors) $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        else $display("SIMULATION PASSED");
+        $finish;
+    end
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin if (!stats1.errors) stats1.errortime = $time; stats1.errors++;
+            if (out_sop_ref !== (out_sop_ref ^ out_sop_dut ^ out_sop_ref)) begin
+                if (!stats1.errors_out_sop) stats1.errortime_out_sop = $time; stats1.errors_out_sop++;
+            end
+            if (out_pos_ref !== (out_pos_ref ^ out_pos_dut ^ out_pos_ref)) begin
+                if (!stats1.errors_out_pos) stats1.errortime_out_pos = $time; stats1.errors_out_pos++;
+            end
+        end
+    end
+    initial #1_000_000 $display("TIMEOUT");
+endmodule
+[2026-05-14 12:29:25,050 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:29:25,050 - mage.agent - INFO] `timescale 1ps/1ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic a,
+    output logic b,
+    output logic c,
+    output logic d,
+    output [511:0] wavedrom_title,
+    output wavedrom_enable,
+    input tb_match
+);
+    task wavedrom_start(input[511:0] title = ";"); endtask
+    task wavedrom_stop; #1; endtask
+    bit fail = 0;
+    bit fail1 = 0;
+    always @(posedge clk, negedge clk) if (!tb_match) fail = 1;
+    initial begin
+        @(posedge clk); {a, b, c, d} <= 0;
+        @(posedge clk); {a, b, c, d} <= 1;
+        @(posedge clk); {a, b, c, d} <= 2;
+        @(posedge clk); {a, b, c, d} <= 4;
+        @(posedge clk); {a, b, c, d} <= 5;
+        @(posedge clk); {a, b, c, d} <= 6;
+        @(posedge clk); {a, b, c, d} <= 7;
+        @(posedge clk); {a, b, c, d} <= 9;
+        @(posedge clk); {a, b, c, d} <= 10;
+        @(posedge clk); {a, b, c, d} <= 13;
+        @(posedge clk); {a, b, c, d} <= 14;
+        @(posedge clk); {a, b, c, d} <= 15;
+        @(posedge clk); fail1 = fail;
+        for (int i = 0; i < 16; i++) @(posedge clk) {a, b, c, d} <= i;
+        repeat(50) @(posedge clk) {a, b, c, d} <= $random;
+        if (fail && !fail1) $display("Hint: Your circuit passes on the 12 required input combinations, but doesn't match the don't-care cases. Are you using minimal SOP and POS?" );
+        $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out_sop;
+        int errortime_out_sop;
+        int errors_out_pos;
+        int errortime_out_pos;
+        int clocks;
+    } stats;
+    stats stats1 = '{errors:0, errortime:0, errors_out_sop:0, errortime_out_sop:0, errors_out_pos:0, errortime_out_pos:0, clocks:0};
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic a;
+    logic b;
+    logic c;
+    logic d;
+    logic out_sop_ref;
+    logic out_pos_ref;
+    logic out_sop_dut;
+    logic out_pos_dut;
+    wire tb_match = ~(({out_sop_ref, out_pos_ref} === ({out_sop_ref, out_pos_ref} ^ {out_sop_dut, out_pos_dut} ^ {out_sop_ref, out_pos_ref})));
+    stimulus_gen stim1 (
+        .clk(clk),
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .wavedrom_title(),
+        .wavedrom_enable()
+    );
+    TopModule top_module1 (
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .out_sop(out_sop_dut),
+        .out_pos(out_pos_dut)
+    );
+    RefModule good1 (
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .out_sop(out_sop_ref),
+        .out_pos(out_pos_ref)
+    );
+    reg strobe = 0;
+    task wait_for_end_of_timestep(); repeat(5) begin strobe <= !strobe; @(strobe); end endtask
+    final begin
+        if (stats1.errors_out_sop) $display("Hint: Output 'out_sop' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_sop, stats1.errortime_out_sop);
+        else $display("Hint: Output 'out_sop' has no mismatches");
+        if (stats1.errors_out_pos) $display("Hint: Output 'out_pos' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_pos, stats1.errortime_out_pos);
+        else $display("Hint: Output 'out_pos' has no mismatches");
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors) $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        else $display("SIMULATION PASSED");
+        $finish;
+    end
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+            if (out_sop_ref !== (out_sop_ref ^ out_sop_dut ^ out_sop_ref)) begin
+                if (stats1.errors_out_sop == 0) stats1.errortime_out_sop = $time;
+                stats1.errors_out_sop++;
+            end
+            if (out_pos_ref !== (out_pos_ref ^ out_pos_dut ^ out_pos_ref)) begin
+                if (stats1.errors_out_pos == 0) stats1.errortime_out_pos = $time;
+                stats1.errors_out_pos++;
+            end
+        end
+    end
+    initial begin
+        #1_000_000 $display("TIMEOUT");
+        $finish();
+    end
+endmodule
+[2026-05-14 12:29:53,129 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:29:53,130 - mage.agent - INFO] `timescale 1ps/1ps
+module stimulus_gen (
+    input clk,
+    output logic a,
+    output logic b,
+    output logic c,
+    output logic d,
+    output reg [511:0] wavedrom_title,
+    output reg wavedrom_enable
+);
+    task wavedrom_start(input [511:0] title = ""); endtask
+    task wavedrom_stop; #1; endtask
+    bit fail = 0;
+    bit fail1 = 0;
+    always @(posedge clk, negedge clk) if (!tb_match) fail = 1;
+    initial begin
+        @(posedge clk) {a, b, c, d} <= 0;
+        @(posedge clk) {a, b, c, d} <= 1;
+        @(posedge clk) {a, b, c, d} <= 2;
+        @(posedge clk) {a, b, c, d} <= 4;
+        @(posedge clk) {a, b, c, d} <= 5;
+        @(posedge clk) {a, b, c, d} <= 6;
+        @(posedge clk) {a, b, c, d} <= 7;
+        @(posedge clk) {a, b, c, d} <= 9;
+        @(posedge clk) {a, b, c, d} <= 10;
+        @(posedge clk) {a, b, c, d} <= 13;
+        @(posedge clk) {a, b, c, d} <= 14;
+        @(posedge clk) {a, b, c, d} <= 15;
+        @(posedge clk) fail1 = fail;
+        for (int i=0; i<16; i++) @(posedge clk) {a, b, c, d} <= i;
+        repeat(50) @(posedge clk) {a, b, c, d} <= $random;
+        if (fail && ~fail1) $display("Hint: Your circuit passes on the 12 required input combinations, but doesn't match the don't-care cases. Are you using minimal SOP and POS?");
+        $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out_sop;
+        int errortime_out_sop;
+        int errors_out_pos;
+        int errortime_out_pos;
+        int clocks;
+    } stats;
+    stats stats1;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic a, b, c, d;
+    logic out_sop_ref, out_pos_ref;
+    logic out_sop_dut, out_pos_dut;
+    wire tb_match = ~(({out_sop_ref, out_pos_ref} === ({out_sop_ref, out_pos_ref} ^ {out_sop_dut, out_pos_dut} ^ {out_sop_ref, out_pos_ref} )));
+    stimulus_gen stim1 (
+        .clk(clk),
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .wavedrom_title(),
+        .wavedrom_enable()
+    );
+    TopModule top_module1 (
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .out_sop(out_sop_dut),
+        .out_pos(out_pos_dut)
+    );
+    RefModule good1 (
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .out_sop(out_sop_ref),
+        .out_pos(out_pos_ref)
+    );
+    bit strobe = 0;
+    task wait_for_end_of_timestep(); repeat(5) begin strobe <= !strobe; @(strobe); end endtask
+    initial begin
+        @(posedge clk);
+        stats1.errors = 0;
+        stats1.errortime = 0;
+        stats1.errors_out_sop = 0;
+        stats1.errortime_out_sop = 0;
+        stats1.errors_out_pos = 0;
+        stats1.errortime_out_pos = 0;
+        stats1.clocks = 0;
+        #1000000 $display("TIMEOUT");
+        $finish;
+    end
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+            if (out_sop_ref !== (out_sop_ref ^ out_sop_dut ^ out_sop_ref)) begin
+                if (stats1.errors_out_sop == 0) stats1.errortime_out_sop = $time;
+                stats1.errors_out_sop++;
+            end
+            if (out_pos_ref !== (out_pos_ref ^ out_pos_dut ^ out_pos_ref)) begin
+                if (stats1.errors_out_pos == 0) stats1.errortime_out_pos = $time;
+                stats1.errors_out_pos++;
+            end
+        end
+    end
+    final begin
+        if (stats1.errors_out_sop) $display("Hint: Output 'out_sop' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_sop, stats1.errortime_out_sop);
+        else $display("Hint: Output 'out_sop' has no mismatches");
+        if (stats1.errors_out_pos) $display("Hint: Output 'out_pos' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_pos, stats1.errortime_out_pos);
+        else $display("Hint: Output 'out_pos' has no mismatches");
+        $display("Simulation finished at %0d ps", $time);
+        if (stats1.errors) $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        else $display("SIMULATION PASSED");
+        $finish;
+    end
+endmodule
+[2026-05-14 12:30:15,333 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:30:15,333 - mage.agent - INFO] module stimulus_gen(clk, a, b, c, d, wavedrom_title, wavedrom_enable, tb_match);
+    input clk;
+    output logic a, b, c, d;
+    output reg [511:0] wavedrom_title;
+    output reg wavedrom_enable;
+    input tb_match;
+    task wavedrom_start(input[511:0] title = ""); endtask
+    task wavedrom_stop; #1; endtask
+    bit fail = 0, fail1 = 0;
+    always @(posedge clk, negedge clk) if (!tb_match) fail = 1;
+    initial begin
+        @(posedge clk); {a, b, c, d} <= 0;
+        @(posedge clk); {a, b, c, d} <= 1;
+        @(posedge clk); {a, b, c, d} <= 2;
+        @(posedge clk); {a, b, c, d} <= 4;
+        @(posedge clk); {a, b, c, d} <= 5;
+        @(posedge clk); {a, b, c, d} <= 6;
+        @(posedge clk); {a, b, c, d} <= 7;
+        @(posedge clk); {a, b, c, d} <= 9;
+        @(posedge clk); {a, b, c, d} <= 10;
+        @(posedge clk); {a, b, c, d} <= 13;
+        @(posedge clk); {a, b, c, d} <= 14;
+        @(posedge clk); {a, b, c, d} <= 15;
+        @(posedge clk); fail1 = fail;
+        for (int i=0; i<16; i++) @(posedge clk) {a, b, c, d} <= i;
+        repeat(50) @(posedge clk) {a, b, c, d} <= $random;
+        if (fail && !fail1) $display("Hint: Your circuit passes on the 12 required input combinations, but doesn't match the don't-care cases. Are you using minimal SOP and POS?");
+        $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out_sop;
+        int errortime_out_sop;
+        int errors_out_pos;
+        int errortime_out_pos;
+        int clocks;
+    } stats;
+    stats stats1 = '{errors:0, errortime:0, errors_out_sop:0, errortime_out_sop:0, errors_out_pos:0, errortime_out_pos:0, clocks:0};
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic a, b, c, d;
+    logic out_sop_ref, out_pos_ref;
+    logic out_sop_dut, out_pos_dut;
+    wire tb_match = ~(({out_sop_ref, out_pos_ref} === ({out_sop_ref, out_pos_ref} ^ {out_sop_dut, out_pos_dut} ^ {out_sop_ref, out_pos_ref} )));
+    stimulus_gen stim1(
+        .clk(clk),
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .wavedrom_title(),
+        .wavedrom_enable(),
+        .tb_match(tb_match)
+    );
+    TopModule top_module1(
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .out_sop(out_sop_dut),
+        .out_pos(out_pos_dut)
+    );
+    RefModule good1(
+        .a(a),
+        .b(b),
+        .c(c),
+        .d(d),
+        .out_sop(out_sop_ref),
+        .out_pos(out_pos_ref)
+    );
+    initial begin
+        #1000000 $display("TIMEOUT");
+        $finish();
+    end
+    task wait_for_end_of_timestep(); repeat(5) begin strobe <= !strobe; @(strobe); end endtask
+    reg strobe = 0;
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+            if (out_sop_ref !== (out_sop_ref ^ out_sop_dut ^ out_sop_ref)) begin
+                if (stats1.errors_out_sop == 0) stats1.errortime_out_sop = $time;
+                stats1.errors_out_sop++;
+            end
+            if (out_pos_ref !== (out_pos_ref ^ out_pos_dut ^ out_pos_ref)) begin
+                if (stats1.errors_out_pos == 0) stats1.errortime_out_pos = $time;
+                stats1.errors_out_pos++;
+            end
+        end
+    end
+    final begin
+        if (stats1.errors_out_sop) $display("Hint: Output 'out_sop' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_sop, stats1.errortime_out_sop);
+        else $display("Hint: Output 'out_sop' has no mismatches");
+        if (stats1.errors_out_pos) $display("Hint: Output 'out_pos' has %0d mismatches. First mismatch occurred at time %0d", stats1.errors_out_pos, stats1.errortime_out_pos);
+        else $display("Hint: Output 'out_pos' has no mismatches");
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors) $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        else $display("SIMULATION PASSED");
+        $finish;
+    end
+endmodule

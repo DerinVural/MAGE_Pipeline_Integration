@@ -1,0 +1,1180 @@
+[2026-05-13 14:26:23,234 - mage.agent - INFO] Initial tb:
+[2026-05-13 14:26:23,235 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic resetn,
+	output logic x, y
+);
+
+	initial begin
+		resetn = 0;
+		x = 0;
+		y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		resetn = 1;
+		repeat(500) @(negedge clk) begin
+			resetn <= ($random & 31) != 0;
+			{x,y} <= $random;
+		end;
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_f;
+		int errortime_f;
+		int errors_g;
+		int errortime_g;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic resetn;
+	logic x;
+	logic y;
+	logic f_ref;
+	logic f_dut;
+	logic g_ref;
+	logic g_dut;
+
+	// Queue for mismatch reporting
+	logic clk_q [$];
+	logic resetn_q [$];
+	logic x_q [$];
+	logic y_q [$];
+	logic f_dut_q [$];
+	logic g_dut_q [$];
+	logic f_ref_q [$];
+	logic g_ref_q [$];
+	localparam MAX_QUEUE_SIZE = 10;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,resetn,x,y,f_ref,f_dut,g_ref,g_dut );
+	end
+
+	wire tb_match; // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.resetn,
+		.x,
+		.y );
+	RefModule good1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_ref),
+		.g(g_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_dut),
+		.g(g_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	assign tb_match = ( { f_ref, g_ref } === ( { f_ref, g_ref } ^ { f_dut, g_dut } ^ { f_ref, g_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		// Maintain Queue
+		if (clk_q.size() >= MAX_QUEUE_SIZE) begin
+			clk_q.delete(0);
+			resetn_q.delete(0);
+			x_q.delete(0);
+			y_q.delete(0);
+			f_dut_q.delete(0);
+			g_dut_q.delete(0);
+			f_ref_q.delete(0);
+			g_ref_q.delete(0);
+		endif
+
+		clk_q.push_back(clk);
+		resetn_q.push_back(resetn);
+		x_q.push_back(x);
+		y_q.push_back(y);
+		f_dut_q.push_back(f_dut);
+		g_dut_q.push_back(g_dut);
+		f_ref_q.push_back(f_ref);
+		g_ref_q.push_back(g_ref);
+
+		stats1.clocks++;
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			
+			// Display queue on first mismatch
+			if (stats1.errors == 1) begin
+				$display("Mismatch detected at time %t", $time);
+				$display("\nLast %d cycles of simulation:", clk_q.size());
+				for (int i = 0; i < clk_q.size(); i++) begin
+					$display("Cycle %d, reset %b, x %b, y %b, f_dut %b, g_dut %b, f_ref %b, g_ref %b",
+							i, resetn_q[i], x_q[i], y_q[i], f_dut_q[i], g_dut_q[i], f_ref_q[i], g_ref_q[i]);
+					end;
+			end
+		end
+
+		if (f_ref !== ( f_ref ^ f_dut ^ f_ref )) begin 
+			if (stats1.errors_f == 0) stats1.errortime_f = $time;
+			stats1.errors_f = stats1.errors_f+1'b1; 
+		end
+		if (g_ref !== ( g_ref ^ g_dut ^ g_ref )) begin 
+			if (stats1.errors_g == 0) stats1.errortime_g = $time;
+			stats1.errors_g = stats1.errors_g+1'b1; 
+		end
+	end
+
+	initial begin
+		#1000000;
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_f) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "f", stats1.errors_f, stats1.errortime_f);
+		else $display("Hint: Output '%s' has no mismatches.", "f");
+		if (stats1.errors_g) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "g", stats1.errors_g, stats1.errortime_g);
+		else $display("Hint: Output '%s' has no mismatches.", "g");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 14:26:23,236 - mage.agent - INFO] Initial if:
+[2026-05-13 14:26:23,236 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic resetn,
+    input  logic x,
+    input  logic y,
+    output logic f,
+    output logic g
+);
+
+[2026-05-13 14:26:23,241 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  resetn
+ - input  x
+ - input  y
+ - output f
+ - output g
+
+Consider a finite state machine that is used to control some type of
+motor. The FSM has inputs x and y, which come from the motor, and
+produces outputs f and g, which control the motor. There is also a clock
+input called clk and a reset input (synchronous, active low) called
+resetn. The FSM has to work as follows. As long as the reset input is
+asserted, the FSM stays in a beginning state, called state A. When the
+reset signal is de-asserted, then after the next clock edge the FSM has
+to set the output f to 1 for one clock cycle. Then, the FSM has to
+monitor the x input. When x has produced the values 1, 0, 1 in three
+successive clock cycles, then g should be set to 1 on the following clock
+cycle. While maintaining g = 1 the FSM has to monitor the y input. If y
+has the value 1 within at most two clock cycles, then the FSM should
+maintain g = 1 permanently (that is, until reset). But if y does not
+become 1 within two clock cycles, then the FSM should set g = 0
+permanently (until reset). Assume all sequential logic is triggered on
+the positive edge of the clock.
+
+
+[2026-05-13 14:28:28,707 - mage.agent - INFO] Initial rtl:
+[2026-05-13 14:28:28,707 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic resetn,
+    input  logic x,
+    input  logic y,
+    output logic f,
+    output logic g
+);
+
+    // State definitions
+    localparam STATE_A         = 3'd0;
+    localparam STATE_F_PULSE  = 3'd1;
+    localparam STATE_MON_X    = 3'd2;
+    localparam STATE_G_START  = 3'd3;
+    localparam STATE_MON_Y    = 3'd4;
+    localparam STATE_G_PERM_1 = 3'd5;
+    localparam STATE_G_PERM_0 = 3'd6;
+
+    logic [2:0] state;
+    logic [2:0] state_next;
+
+    // Pattern detection for x (1, 0, 1)
+    logic [2:0] x_shift;
+    // Timer for monitoring y
+    logic [1:0] y_timer;
+
+    // Sequential logic: State register
+    always @(posedge clk) begin
+        if (!resetn) begin
+            state <= STATE_A;
+        end else begin
+            state <= state_next;
+        end
+    end
+
+    // Sequential logic: Pattern and Timer registers
+    always @(posedge clk) begin
+        if (!resetn) begin
+            x_shift <= 3'b000;
+            y_timer <= 2'b00;
+        end else begin
+            // Update x shift register only in MON_X state
+            if (state == STATE_MON_X) begin
+                x_shift <= {x_shift[1:0], x};
+            end else if (state == STATE_A || state == STATE_F_PULSE) begin
+                x_shift <= 3'b000;
+            end
+
+            // Update y timer only in MON_Y state
+            if (state == STATE_MON_Y) begin
+                y_timer <= y_timer + 1'b1;
+            end else if (state == STATE_A || state == STATE_F_PULSE || state == STATE_MON_X || state == STATE_G_START) begin
+                y_timer <= 2'b00;
+            end
+        end
+    end
+
+    // Combinational logic: Next state
+    always @(*) begin
+        state_next = state;
+        case (state)
+            STATE_A:
+                state_next = STATE_F_PULSE;
+
+            STATE_F_PULSE:
+                state_next = STATE_MON_X;
+
+            STATE_MON_X:
+                begin
+                    // Check if the last three bits of x were 1, 0, 1
+                    // Since x_shift is updated on the clock edge, we look at the current x
+                    if ({x_shift[1:0], x} == 3'b101) begin
+                        state_next = STATE_G_START;
+                    end else begin
+                        state_next = STATE_MON_X;
+                    end
+                end
+
+            STATE_G_START:
+                state_next = STATE_MON_Y;
+
+            STATE_MON_Y:
+                begin
+                    if (y == 1'b1) begin
+                        state_next = STATE_G_PERM_1;
+                    end else if (y_timer == 2'd1) begin
+                        // After two cycles (timer 0 and 1) if y was not 1
+                        state_next = STATE_G_PERM_0;
+                    end else begin
+                        state_next = STATE_MON_Y;
+                    end
+                end
+
+            STATE_G_PERM_1:
+                state_next = STATE_G_PERM_1;
+
+            STATE_G_PERM_0:
+                state_next = STATE_G_PERM_0;
+
+            default:
+                state_next = STATE_A;
+        endcase
+    end
+
+    // Combinational logic: Outputs
+    always @(*) begin
+        f = 1'b0;
+        g = 1'b0;
+        case (state)
+            STATE_F_PULSE:  f = 1'b1;
+            STATE_G_START:  g = 1'b1;
+            STATE_MON_Y:    g = 1'b1;
+            STATE_G_PERM_1: g = 1'b1;
+            STATE_G_PERM_0: g = 1'b0;
+            default:        g = 1'b0;
+        endcase
+    end
+
+endmodule
+[2026-05-13 14:28:35,367 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 14:30:21,170 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:30:21,171 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic resetn,
+	output logic x, y
+);
+
+	initial begin
+		resetn = 0;
+		x = 0;
+		y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		resetn = 1;
+		repeat(500) @(negedge clk) begin
+			resetn <= ($random & 31) != 0;
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input clk,
+	input resetn,
+	input x,
+	input y,
+	output logic f,
+	output logic g
+);
+
+	typedef enum logic [1:0] {
+		STATE_A,
+		STATE_F_ON,
+		STATE_MONITOR_X,
+		STATE_G_ON,
+		STATE_G_PERM,
+		STATE_G_OFF
+	} state_t;
+
+	state_t state;
+	logic [2:0] x_reg;
+	logic [1:0] y_timer;
+	logic g_permanent;
+
+	always_ff @(posedge clk or negedge resetn) begin
+		if (!resetn) begin
+			state <= STATE_A;
+			f <= 0;
+			g <= 0;
+			x_reg <= 3'b000;
+			y_timer <= 0;
+			g_permanent <= 0;
+		end else begin
+			case (state)
+				STATE_A:
+					state <= STATE_F_ON;
+				STATE_F_ON:
+					begin
+						f <= 1;
+						state <= STATE_MONITOR_X;
+					end
+				STATE_MONITOR_X:
+					begin
+						f <= 0;
+						x_reg <= {x_reg[1:0], x};
+						if (x_reg == 3'b101 || {x_reg[1:0], x} == 3'b101) begin
+							state <= STATE_G_ON;
+							g <= 1;
+							y_timer <= 0;
+						end
+					end
+					STATE_G_ON:
+					begin
+						g <= 1;
+						if (y) begin
+							g_permanent <= 1;
+							state <= STATE_G_PERM;
+						end else begin
+							y_timer <= y_timer + 1;
+							if (y_timer == 2) begin
+								g_permanent <= 0;
+								state <= STATE_G_OFF;
+							end
+						end
+					end
+					STATE_G_PERM:
+					begin
+						g <= 1;
+					end
+					STATE_G_OFF:
+					begin
+						g <= 0;
+					end
+				end
+			end
+		end
+	end
+
+	// Overriding logic for permanent behavior as per spec
+	if (g_permanent) g <= 1;
+	if (state == STATE_G_OFF) g <= 0;
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_f;
+		int errortime_f;
+		int errors_g;
+		int errortime_g;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic resetn;
+	logic x;
+	logic y;
+	logic f_ref;
+	logic f_dut;
+	logic g_ref;
+	logic g_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,resetn,x,y,f_ref,f_dut,g_ref,g_dut );
+	end
+
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.resetn,
+		.x,
+		.y );
+	RefModule good1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_ref),
+		.g(g_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_dut),
+		.g(g_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_f) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "f", stats1.errors_f, stats1.errortime_f);
+		else $display("Hint: Output '%s' has no mismatches.", "f");
+		if (stats1.errors_g) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "g", stats1.errors_g, stats1.errortime_g);
+		else $display("Hint: Output '%s' has no mismatches.", "g");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { f_ref, g_ref } === ( { f_ref, g_ref } ^ { f_dut, g_dut } ^ { f_ref, g_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+
+			$display("Mismatch detected at time %0t:", $time);
+			$display("  Inputs: resetn=%b, x=%b, y=%b, clk=%b", resetn, x, y, clk);
+			$display("  Expected: f=%b, g=%b", f_ref, g_ref);
+			$display("  Actual:   f=%b, g=%b", f_dut, g_dut);
+		end
+
+		if (f_ref !== ( f_ref ^ f_dut ^ f_ref ))
+		begin 
+			if (stats1.errors_f == 0) stats1.errortime_f = $time;
+			stats1.errors_f = stats1.errors_f+1'b1; 
+		end
+		if (g_ref !== ( g_ref ^ g_dut ^ g_ref ))
+		begin 
+			if (stats1.errors_g == 0) stats1.errortime_g = $time;
+			stats1.errors_g = stats1.errors_g+1'b1; 
+		end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 14:32:03,932 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:32:03,933 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic resetn,
+	output logic x, y
+);
+
+	initial begin
+		resetn = 0;
+		x = 0;
+		y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		resetn = 1;
+		repeat(500) @(negedge clk) begin
+			resetn <= ($random & 31) != 0;
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input clk,
+	input resetn,
+	input x,
+	input y,
+	output logic f,
+	output logic g
+);
+
+	typedef enum logic [1:0] {
+		STATE_A,
+		STATE_F_ON,
+		STATE_MONITOR_X,
+		STATE_G_ON,
+		STATE_G_PERM,
+		STATE_G_OFF
+	} state_t;
+
+	state_t state;
+	logic [2:0] x_reg;
+	logic [1:0] y_timer;
+	logic g_permanent;
+
+	always_ff @(posedge clk or negedge resetn) begin
+		if (!resetn) begin
+			state <= STATE_A;
+			f <= 0;
+			g <= 0;
+			x_reg <= 3'b000;
+			y_timer <= 0;
+			g_permanent <= 0;
+		end else begin
+			case (state) 
+				STATE_A: begin
+					state <= STATE_F_ON;
+				end
+				STATE_F_ON: begin
+					f <= 1;
+					state <= STATE_MONITOR_X;
+				end
+				STATE_MONITOR_X: begin
+					f <= 0;
+					x_reg <= {x_reg[1:0], x};
+					if (x_reg == 3'b101 || {x_reg[1:0], x} == 3'b101) begin
+						state <= STATE_G_ON;
+						g <= 1;
+						y_timer <= 0;
+					end
+				end
+				STATE_G_ON: begin
+					g <= 1;
+					if (y) begin
+						g_permanent <= 1;
+						state <= STATE_G_PERM;
+					end else begin
+						y_timer <= y_timer + 1;
+						if (y_timer == 2) begin
+							g_permanent <= 0;
+							state <= STATE_G_OFF;
+						end
+					end
+				end
+				STATE_G_PERM: begin
+					g <= 1;
+				end
+				STATE_G_OFF: begin
+					g <= 0;
+				end
+				endcase
+			end
+		end
+
+	// Overriding logic for permanent behavior as per spec
+	if (g_permanent) g <= 1;
+	if (state == STATE_G_OFF) g <= 0;
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_f;
+		int errortime_f;
+		int errors_g;
+		int errortime_g;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic resetn;
+	logic x;
+	logic y;
+	logic f_ref;
+	logic f_dut;
+	logic g_ref;
+	logic g_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,resetn,x,y,f_ref,f_dut,g_ref,g_dut );
+	end
+
+
+	wire tb_match;    // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.resetn,
+		.x,
+		.y );
+	RefModule good1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_ref),
+		.g(g_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_dut),
+		.g(g_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_f) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "f", stats1.errors_f, stats1.errortime_f);
+		else $display("Hint: Output '%s' has no mismatches.", "f");
+		if (stats1.errors_g) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "g", stats1.errors_g, stats1.errortime_g);
+		else $display("Hint: Output '%s' has no mismatches.", "g");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { f_ref, g_ref } === ( { f_ref, g_ref } ^ { f_dut, g_dut } ^ { f_ref, g_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+
+			$display("Mismatch detected at time %0t:", $time);
+			$display("  Inputs: resetn=%b, x=%b, y=%b, clk=%b", resetn, x, y, clk);
+			$display("  Expected: f=%b, g=%b", f_ref, g_ref);
+			$display("  Actual:   f=%b, g=%b", f_dut, g_dut);
+		end
+		if (f_ref !== ( f_ref ^ f_dut ^ f_ref ))
+		begin if (stats1.errors_f == 0) stats1.errortime_f = $time;
+			stats1.errors_f = stats1.errors_f+1'b1; end
+		if (g_ref !== ( g_ref ^ g_dut ^ g_ref ))
+		begin if (stats1.errors_g == 0) stats1.errortime_g = $time;
+			stats1.errors_g = stats1.errors_g+1'b1; end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 14:33:48,807 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:33:48,809 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic resetn,
+	output logic x, y
+);
+
+	initial begin
+		resetn = 0;
+		x = 0;
+		y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		resetn = 1;
+		repeat(500) @(negedge clk) begin
+			resetn <= ($random & 31) != 0;
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input clk,
+	input resetn,
+	input x,
+	input y,
+	output logic f,
+	output logic g
+);
+
+	typedef enum logic [1:0] {
+		STATE_A,
+		STATE_F_ON,
+		STATE_MONITOR_X,
+		STATE_G_ON,
+		STATE_G_PERM,
+		STATE_G_OFF
+	} state_t;
+
+	state_t state;
+	logic [2:0] x_reg;
+	logic [1:0] y_timer;
+	logic g_permanent;
+
+	always_ff @(posedge clk or negedge resetn) begin
+		if (!resetn) begin
+			state <= STATE_A;
+			f <= 0;
+			g <= 0;
+			x_reg <= 3'b000;
+			y_timer <= 0;
+			g_permanent <= 0;
+		end else begin
+			case (state) 
+				STATE_A: begin
+					state <= STATE_F_ON;
+				end
+				STATE_F_ON: begin
+					f <= 1;
+					state <= STATE_MONITOR_X;
+				end
+				STATE_MONITOR_X: begin
+					f <= 0;
+					x_reg <= {x_reg[1:0], x};
+					if (x_reg == 3'b101 || {x_reg[1:0], x} == 3'b101) begin
+						state <= STATE_G_ON;
+						g <= 1;
+						y_timer <= 0;
+					end
+				end
+				STATE_G_ON: begin
+					g <= 1;
+					if (y) begin
+						g_permanent <= 1;
+						state <= STATE_G_PERM;
+					end else begin
+						y_timer <= y_timer + 1;
+						if (y_timer == 2) begin
+							g_permanent <= 0;
+							state <= STATE_G_OFF;
+						end
+					end
+					STATE_G_PERM: begin
+						g <= 1;
+					end
+					STATE_G_OFF: begin
+						g <= 0;
+					end
+				endcase
+			end
+		end
+
+	// Overriding logic for permanent behavior as per spec
+	if (g_permanent) g <= 1;
+	if (state == STATE_G_OFF) g <= 0;
+
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_f;
+		int errortime_f;
+		int errors_g;
+		int errortime_g;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic resetn;
+	logic x;
+	logic y;
+	logic f_ref;
+	logic f_dut;
+	logic g_ref;
+	logic g_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,resetn,x,y,f_ref,f_dut,g_ref,g_dut );
+	end
+
+
+	wire tb_match;    // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.resetn,
+		.x,
+		.y );
+	RefModule good1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_ref),
+		.g(g_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_dut),
+		.g(g_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_f) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "f", stats1.errors_f, stats1.errortime_f);
+		else $display("Hint: Output '%s' has no mismatches.", "f");
+		if (stats1.errors_g) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "g", stats1.errors_g, stats1.errortime_g);
+		else $display("Hint: Output '%s' has no mismatches.", "g");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { f_ref, g_ref } === ( { f_ref, g_ref } ^ { f_dut, g_dut } ^ { f_ref, g_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+
+			$display("Mismatch detected at time %0t:", $time);
+			$display("  Inputs: resetn=%b, x=%b, y=%b, clk=%b", resetn, x, y, clk);
+			$display("  Expected: f=%b, g=%b", f_ref, g_ref);
+			$display("  Actual:   f=%b, g=%b", f_dut, g_dut);
+		end
+		if (f_ref !== ( f_ref ^ f_dut ^ f_ref ))
+		begin if (stats1.errors_f == 0) stats1.errortime_f = $time;
+			stats1.errors_f = stats1.errors_f+1'b1; end
+		if (g_ref !== ( g_ref ^ g_dut ^ g_ref ))
+		begin if (stats1.errors_g == 0) stats1.errortime_g = $time;
+			stats1.errors_g = stats1.errors_g+1'b1; end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 14:35:07,904 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:35:07,904 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic resetn,
+	output logic x, y
+);
+
+	initial begin
+		resetn = 0;
+		x = 0;
+		y = 0;
+		@(posedge clk);
+		@(posedge clk);
+		resetn = 1;
+		repeat(500) @(negedge clk) begin
+			resetn <= ($random & 31) != 0;
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_f;
+		int errortime_f;
+		int errors_g;
+		int errortime_g;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic resetn;
+	logic x;
+	logic y;
+	logic f_ref;
+	logic f_dut;
+	logic g_ref;
+	logic g_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,resetn,x,y,f_ref,f_dut,g_ref,g_dut );
+	end
+
+
+	wire tb_match;    // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.resetn,
+		.x,
+		.y );
+	RefModule good1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_ref),
+		.g(g_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.resetn,
+		.x,
+		.y,
+		.f(f_dut),
+		.g(g_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_f) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "f", stats1.errors_f, stats1.errortime_f);
+		else $display("Hint: Output '%s' has no mismatches.", "f");
+		if (stats1.errors_g) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "g", stats1.errors_g, stats1.errortime_g);
+		else $display("Hint: Output '%s' has no mismatches.", "g");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { f_ref, g_ref } === ( { f_ref, g_ref } ^ { f_dut, g_dut } ^ { f_ref, g_ref } ) );
+	// Use explicit sensitivity list here. 
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+
+			$display("Mismatch detected at time %0t:", $time);
+			$display("  Inputs: resetn=%b, x=%b, y=%b, clk=%b", resetn, x, y, clk);
+			$display("  Expected: f=%b, g=%b", f_ref, g_ref);
+			$display("  Actual:   f=%b, g=%b", f_dut, g_dut);
+		end
+		if (f_ref !== ( f_ref ^ f_dut ^ f_ref ))
+		begin if (stats1.errors_f == 0) stats1.errortime_f = $time;
+			stats1.errors_f = stats1.errors_f+1'b1; end
+		if (g_ref !== ( g_ref ^ g_dut ^ g_ref ))
+		begin if (stats1.errors_g == 0) stats1.errortime_g = $time;
+			stats1.errors_g = stats1.errors_g+1'b1; end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule

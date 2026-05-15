@@ -1,0 +1,6 @@
+interface TopModule (
+    input clk,
+    input areset,
+    input x,
+    output z
+);

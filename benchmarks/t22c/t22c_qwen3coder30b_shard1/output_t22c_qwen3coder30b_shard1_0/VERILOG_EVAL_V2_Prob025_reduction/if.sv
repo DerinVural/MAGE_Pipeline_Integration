@@ -1,0 +1,4 @@
+interface TopModule (
+    input [7:0] in,
+    output parity
+);

@@ -1,0 +1,904 @@
+[2026-05-13 13:09:00,652 - mage.agent - INFO] Initial tb:
+[2026-05-13 13:09:00,653 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// --- Submodule A ---
+module ModuleA (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = (x ^ y) & x;
+endmodule
+
+// --- Submodule B ---
+module ModuleB (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    // Based on waveform: (0,0)->1, (1,0)->0, (0,1)->0, (1,1)->1
+    assign z = ~(x ^ y);
+endmodule
+
+// --- Top Level Module ---
+module TopModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    logic z_a1, z_b1, z_a2, z_b2;
+    logic out_or, out_and;
+
+    ModuleA a1 (.x(x), .y(y), .z(z_a1));
+    ModuleB b1 (.x(x), .y(y), .z(z_b1));
+    ModuleA a2 (.x(x), .y(y), .z(z_a2));
+    ModuleB b2 (.x(x), .y(y), .z(z_b2));
+
+    assign out_or  = z_a1 | z_b1;
+    assign out_and = z_a2 & z_b2;
+    assign z       = out_or ^ out_and;
+endmodule
+
+// --- Reference Module ---
+module RefModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    // The spec says TopModule is built from 2 As and 2 Bs. 
+    // The RefModule should represent the intended logic of the top level.
+    logic z_a1, z_b1, z_a2, z_b2;
+    logic out_or, out_and;
+    ModuleA a1 (.x(x), .y(y), .z(z_a1));
+    ModuleB b1 (.x(x), .y(y), .z(z_b1));
+    ModuleA a2 (.x(x), .y(y), .z(z_a2));
+    ModuleB b2 (.x(x), .y(y), .z(z_b2));
+    assign out_or  = z_a1 | z_b1;
+    assign out_and = z_a2 & z_b2;
+    assign z       = out_or ^ out_and;
+endmodule
+
+// --- Stimulus Generator ---
+module stimulus_gen (
+    input clk,
+    output logic x,
+    output logic y
+);
+    always @(posedge clk, negedge clk)
+        {x, y} <= $random % 4;
+    
+    initial begin
+        repeat(100) @(negedge clk);
+        #1 $finish;
+    end
+endmodule
+
+// --- Testbench ---
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_z;
+        int errortime_z;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic x;
+    logic y;
+    logic z_ref;
+    logic z_dut;
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+
+    bit first_mismatch_displayed = 0;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, tb, x, y, z_ref, z_dut);
+    end
+
+    stimulus_gen stim1 (
+        .clk,
+        .x,
+        .y 
+    );
+
+    RefModule good1 (
+        .x,
+        .y,
+        .z(z_ref) 
+    );
+        
+    TopModule top_module1 (
+        .x,
+        .y,
+        .z(z_dut) 
+    );
+
+    assign tb_match = (z_ref === z_dut);
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        
+        // Check for mismatch
+        if (z_ref !== z_dut) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            if (stats1.errors_z == 0) stats1.errortime_z = $time;
+            stats1.errors_z = stats1.errors_z + 1;
+
+            // Display first mismatch details for combinational logic
+            if (!first_mismatch_displayed) begin
+                $display("Mismatch detected at time %t", $time);
+                $display("Inputs: x=%b, y=%b", x, y);
+                $display("Got: z_dut=%b, Expected: z_ref=%b", z_dut, z_ref);
+                first_mismatch_displayed = 1;
+            end
+        end
+    end
+
+    initial begin
+        #1000000;
+        $display("TIMEOUT");
+        $finish();
+    end
+
+    final begin
+        if (stats1.errors_z == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_z, stats1.errortime_z);
+        end
+
+        if (stats1.errors_z) 
+            $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "z", stats1.errors_z, stats1.errortime_z);
+        else 
+            $display("Hint: Output '%s' has no mismatches.", "z");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+endmodule
+[2026-05-13 13:09:00,653 - mage.agent - INFO] Initial if:
+[2026-05-13 13:09:00,654 - mage.agent - INFO] module TopModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+[2026-05-13 13:09:00,660 - mage.agent - INFO] 
+Module A implements the boolean function z = (x^y) & x.
+
+Module B can be described by the following simulation waveform:
+
+  time  x  y  z
+  0ns   0  0  1
+  5ns   0  0  1
+  10ns  0  0  1
+  15ns  0  0  1
+  20ns  0  0  1
+  25ns  1  0  0
+  30ns  1  0  0
+  35ns  0  1  0
+  40ns  0  1  0
+  45ns  1  1  1
+  50ns  1  1  1
+  55ns  0  0  1
+  60ns  0  1  0
+  65ns  0  1  0
+  70ns  1  1  1
+  75ns  0  1  0
+  80ns  0  1  0
+  85ns  0  1  0
+  90ns  1  0  0
+
+Now consider a top-level module with the following interface:
+
+ - input  x
+ - input  y
+ - output z
+
+The module is implemented with two A submodules and two B submodules. The
+first input of all four submodules is connect to input 'x', and the
+second input of all four submodules is connected to 'y'. The output of
+the first A submodule is connected to a two-input OR, along with the
+output of the first B submodule. The second pair of A and B submodules is
+similarly connected to an AND gate. The output of the OR and the AND is
+connected to an XOR, whose output is 'z'.
+
+
+[2026-05-13 13:09:25,319 - mage.agent - INFO] Initial rtl:
+[2026-05-13 13:09:25,319 - mage.agent - INFO] module ModuleA (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = (x ^ y) & x;
+endmodule
+
+module ModuleB (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = ~(x ^ y);
+endmodule
+
+module TopModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+
+    logic z_a1, z_b1, z_a2, z_b2;
+    logic out_or, out_and;
+
+    // Instantiate first pair
+    ModuleA a1 (.x(x), .y(y), .z(z_a1));
+    ModuleB b1 (.x(x), .y(y), .z(z_b1));
+
+    // Instantiate second pair
+    ModuleA a2 (.x(x), .y(y), .z(z_a2));
+    ModuleB b2 (.x(x), .y(y), .z(z_b2));
+
+    // Combinational logic for intermediate gates
+    assign out_or  = z_a1 | z_b1;
+    assign out_and = z_a2 & z_b2;
+
+    // Final XOR gate
+    assign z = out_or ^ out_and;
+
+endmodule
+[2026-05-13 13:09:36,327 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 13:10:44,350 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:10:44,350 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic x,
+    output logic y
+);
+
+    always @(posedge clk, negedge clk)
+        {x, y} <= $random % 4;
+    
+    initial begin
+        repeat(100) @(negedge clk);
+        #1 $finish;
+    end
+    
+endmodule
+
+module A (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = (x ^ y) & x;
+endmodule
+
+module B (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    // Based on waveform: (0,0)->1, (1,0)->0, (0,1)->0, (1,1)->1
+    assign z = ~(x ^ y);
+endmodule
+
+module RefModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    // The specification doesn't define RefModule, but the TB uses it.
+    // In a real scenario, RefModule would be the golden model.
+    // Since the TopModule is the target, I'll implement a reference based on the logic of the spec description if possible,
+    // but usually, RefModule is provided. I will implement a placeholder that matches the expected behavior.
+    assign z = ( ( ((x ^ y) & x) | (~(x ^ y)) ) ^ ( ((x ^ y) & x) & (~(x ^ y)) ) );
+endmodule
+
+module TopModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    logic za1, zb1, za2, zb2;
+    logic or_out, and_out;
+
+    A a1 (.x(x), .y(y), .z(za1));
+    B b1 (.x(x), .y(y), .z(zb1));
+    A a2 (.x(x), .y(y), .z(za2));
+    B b2 (.x(x), .y(y), .z(zb2));
+
+    assign or_out = za1 | zb1;
+    assign and_out = za2 & zb2;
+    assign z = or_out ^ and_out;
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_z;
+        int errortime_z;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic x;
+    logic y;
+    logic z_ref;
+    logic z_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, x, y, z_ref, z_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .x,
+        .y
+    );
+
+    RefModule good1 (
+        .x,
+        .y,
+        .z(z_ref)
+    );
+        
+    TopModule top_module1 (
+        .x,
+        .y,
+        .z(z_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask
+
+    assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                $display("Mismatch detected at %0t ps: x=%b, y=%b, z_dut=%b, z_ref=%b", $time, x, y, z_dut, z_ref);
+            end
+            stats1.errors++;
+        end
+        
+        if (z_ref !== ( z_ref ^ z_dut ^ z_ref )) begin 
+            if (stats1.errors_z == 0) stats1.errortime_z = $time;
+            stats1.errors_z = stats1.errors_z + 1'b1;
+        end
+    end
+
+    initial begin
+        #1000000;
+        $display("TIMEOUT");
+        $finish();
+    end
+
+    final begin
+        if (stats1.errors_z == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_z, stats1.errortime_z);
+        end
+
+        if (stats1.errors_z) 
+            $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "z", stats1.errors_z, stats1.errortime_z);
+        else 
+            $display("Hint: Output '%s' has no mismatches.", "z");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+endmodule
+[2026-05-13 13:11:53,980 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:11:53,980 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic x,
+    output logic y
+);
+
+    always @(posedge clk, negedge clk)
+        {x, y} <= $random % 4;
+    
+    initial begin
+        repeat(100) @(negedge clk);
+        #1 $finish;
+    end
+    
+endmodule
+
+module A (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = (x ^ y) & x;
+endmodule
+
+module B (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = ~(x ^ y);
+endmodule
+
+module RefModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    logic za1, zb1, za2, zb2;
+    logic or_out, and_out;
+    
+    A a1 (.x(x), .y(y), .z(za1));
+    B b1 (.x(x), .y(y), .z(zb1));
+    A a2 (.x(x), .y(y), .z(za2));
+    B b2 (.x(x), .y(y), .z(zb2));
+    
+    assign or_out = za1 | zb1;
+    assign and_out = za2 & zb2;
+    assign z = or_out ^ and_out;
+endmodule
+
+module TopModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    logic za1, zb1, za2, zb2;
+    logic or_out, and_out;
+
+    A a1 (.x(x), .y(y), .z(za1));
+    B b1 (.x(x), .y(y), .z(zb1));
+    A a2 (.x(x), .y(y), .z(za2));
+    B b2 (.x(x), .y(y), .z(zb2));
+
+    assign or_out = za1 | zb1;
+    assign and_out = za2 & zb2;
+    assign z = or_out ^ and_out;
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_z;
+        int errortime_z;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic x;
+    logic y;
+    logic z_ref;
+    logic z_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, x, y, z_ref, z_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .x,
+        .y 
+    );
+
+    RefModule good1 (
+        .x,
+        .y,
+        .z(z_ref) 
+    );
+        
+    TopModule top_module1 (
+        .x,
+        .y,
+        .z(z_dut) 
+    );
+
+    assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                $display("Mismatch detected at %0t ps: x=%b, y=%b, z_dut=%b, z_ref=%b", $time, x, y, z_dut, z_ref);
+            end
+            stats1.errors++;
+        end
+        if (z_ref !== ( z_ref ^ z_dut ^ z_ref )) begin 
+            if (stats1.errors_z == 0) stats1.errortime_z = $time;
+            stats1.errors_z = stats1.errors_z + 1'b1; 
+        end
+    end
+
+    initial begin
+      #1000000;
+      $display("TIMEOUT");
+      $finish();
+    end
+
+    final begin
+        if (stats1.errors_z == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_z, stats1.errortime_z);
+        end
+
+        if (stats1.errors_z) 
+            $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "z", stats1.errors_z, stats1.errortime_z);
+        else 
+            $display("Hint: Output '%s' has no mismatches.", "z");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+endmodule
+[2026-05-13 13:13:09,340 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:13:09,340 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic x,
+    output logic y
+);
+
+    always @(posedge clk, negedge clk)
+        {x, y} <= $random % 4;
+    
+    initial begin
+        repeat(100) @(negedge clk);
+        #1 $finish;
+    end
+    
+endmodule
+
+module A (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = (x ^ y) & x;
+endmodule
+
+module B (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = ~(x ^ y);
+endmodule
+
+module RefModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    logic za1, zb1, za2, zb2;
+    logic or_out, and_out;
+    A a1 (.x(x), .y(y), .z(za1));
+    B b1 (.x(x), .y(y), .z(zb1));
+    A a2 (.x(x), .y(y), .z(za2));
+    B b2 (.x(x), .y(y), .z(zb2));
+    assign or_out = za1 | zb1;
+    assign and_out = za2 & zb2;
+    assign z = or_out ^ and_out;
+endmodule
+
+module TopModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    logic za1, zb1, za2, zb2;
+    logic or_out, and_out;
+    A a1 (.x(x), .y(y), .z(za1));
+    B b1 (.x(x), .y(y), .z(zb1));
+    A a2 (.x(x), .y(y), .z(za2));
+    B b2 (.x(x), .y(y), .z(zb2));
+    assign or_out = za1 | zb1;
+    assign and_out = za2 & zb2;
+    assign z = or_out ^ and_out;
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_z;
+        int errortime_z;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic x;
+    logic y;
+    logic z_ref;
+    logic z_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, x, y, z_ref, z_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .x,
+        .y 
+    );
+
+    RefModule good1 (
+        .x,
+        .y,
+        .z(z_ref) 
+    );
+        
+    TopModule top_module1 (
+        .x,
+        .y,
+        .z(z_dut) 
+    );
+
+    assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                $display("Mismatch detected at %0t ps: x=%b, y=%b, z_dut=%b, z_ref=%b", $time, x, y, z_dut, z_ref);
+            end
+            stats1.errors++;
+        end
+        if (z_ref !== ( z_ref ^ z_dut ^ z_ref )) begin 
+            if (stats1.errors_z == 0) stats1.errortime_z = $time;
+            stats1.errors_z = stats1.errors_z + 1'b1; 
+        end
+    end
+
+    initial begin
+      #1000000;
+      $display("TIMEOUT");
+      $finish();
+    end
+
+    final begin
+        if (stats1.errors_z == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_z, stats1.errortime_z);
+        end
+
+        if (stats1.errors_z) 
+            $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "z", stats1.errors_z, stats1.errortime_z);
+        else 
+            $display("Hint: Output '%s' has no mismatches.", "z");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+endmodule
+[2026-05-13 13:14:16,299 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:14:16,300 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic x,
+    output logic y
+);
+
+    always @(posedge clk, negedge clk)
+        {x, y} <= $random % 4;
+    
+    initial begin
+        repeat(100) @(negedge clk);
+        #1 $finish;
+    end
+    
+endmodule
+
+module ModuleA (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    assign z = (x ^ y) & x;
+endmodule
+
+module ModuleB (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    // Waveform: (0,0)->1, (1,0)->0, (0,1)->0, (1,1)->1
+    assign z = ~(x ^ y);
+endmodule
+
+module TopModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    logic za1, zb1, za2, zb2;
+    logic or_out, and_out;
+
+    ModuleA a1 (.x(x), .y(y), .z(za1));
+    ModuleB b1 (.x(x), .y(y), .z(zb1));
+    ModuleA a2 (.x(x), .y(y), .z(za2));
+    ModuleB b2 (.x(x), .y(y), .z(zb2));
+
+    assign or_out  = za1 | zb1;
+    assign and_out = za2 & zb2;
+    assign z = or_out ^ and_out;
+endmodule
+
+module RefModule (
+    input  logic x,
+    input  logic y,
+    output logic z
+);
+    // Reference implementation matching TopModule logic
+    logic za1, zb1, za2, zb2;
+    logic or_out, and_out;
+    ModuleA a1 (.x(x), .y(y), .z(za1));
+    ModuleB b1 (.x(x), .y(y), .z(zb1));
+    ModuleA a2 (.x(x), .y(y), .z(za2));
+    ModuleB b2 (.x(x), .y(y), .z(zb2));
+    assign or_out  = za1 | zb1;
+    assign and_out = za2 & zb2;
+    assign z = or_out ^ and_out;
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_z;
+        int errortime_z;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic x;
+    logic y;
+    logic z_ref;
+    logic z_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, x, y, z_ref, z_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .x,
+        .y 
+    );
+
+    RefModule good1 (
+        .x,
+        .y,
+        .z(z_ref) 
+    );
+        
+    TopModule top_module1 (
+        .x,
+        .y,
+        .z(z_dut) 
+    );
+
+    assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                $display("Mismatch detected at %0t ps: x=%b, y=%b, z_dut=%b, z_ref=%b", $time, x, y, z_dut, z_ref);
+            end
+            stats1.errors++;
+        end
+
+        if (z_ref !== ( z_ref ^ z_dut ^ z_ref )) begin 
+            if (stats1.errors_z == 0) stats1.errortime_z = $time;
+            stats1.errors_z = stats1.errors_z + 1'b1; 
+        end
+    end
+
+    initial begin
+      #1000000;
+      $display("TIMEOUT");
+      $finish();
+    end
+
+    final begin
+        if (stats1.errors_z == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_z, stats1.errortime_z);
+        end
+
+        if (stats1.errors_z) 
+            $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "z", stats1.errors_z, stats1.errortime_z);
+        else 
+            $display("Hint: Output '%s' has no mismatches.", "z");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+endmodule

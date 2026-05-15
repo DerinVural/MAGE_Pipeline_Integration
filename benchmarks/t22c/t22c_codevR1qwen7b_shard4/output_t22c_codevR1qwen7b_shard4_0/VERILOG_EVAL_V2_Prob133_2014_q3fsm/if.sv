@@ -1,0 +1,1 @@
+module TopModule (input clk, input reset, input s, input w, output z); // Port declarations follow input_spec exactly. All signals are logic. Port names and types are as per golden testbench's instantiation in tb module.

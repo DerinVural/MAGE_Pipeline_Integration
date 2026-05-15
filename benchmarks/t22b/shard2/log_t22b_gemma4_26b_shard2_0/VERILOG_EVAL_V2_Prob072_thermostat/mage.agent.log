@@ -1,0 +1,1140 @@
+[2026-05-13 15:14:59,783 - mage.agent - INFO] Initial tb:
+[2026-05-13 15:14:59,785 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg too_cold, too_hot, mode, fan_on,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		{too_cold, too_hot, mode, fan_on} <= 4'b0010;
+		@(negedge clk);
+		wavedrom_start("Winter");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0111;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1111;
+		@(negedge clk) wavedrom_stop();
+
+		{too_cold, too_hot, mode, fan_on} <= 4'b0000;
+		@(negedge clk);
+		wavedrom_start("Summer");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0101;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1101;
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200)
+			@(posedge clk, negedge clk) {too_cold, too_hot, mode, fan_on} <= $random;
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_heater;
+		int errortime_heater;
+		int errors_aircon;
+		int errortime_aircon;
+		int errors_fan;
+		int errortime_fan;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic mode;
+	logic too_cold;
+	logic too_hot;
+	logic fan_on;
+	logic heater_ref;
+	logic heater_dut;
+	logic aircon_ref;
+	logic aircon_dut;
+	logic fan_ref;
+	logic fan_dut;
+
+	// Queues for mismatch display
+	localparam MAX_QUEUE_SIZE = 10;
+	logic [3:0] input_q [$];
+	logic [2:0] output_q [$];
+	logic [2:0] expected_q [$];
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,mode,too_cold,too_hot,fan_on,heater_ref,heater_dut,aircon_ref,aircon_dut,fan_ref,fan_dut );
+	end
+
+	wire tb_match;    // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on );
+	RefModule good1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_ref),
+		.aircon(aircon_ref),
+		.fan(fan_ref) );
+		
+	TopModule top_module1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_dut),
+		.aircon(aircon_dut),
+		.fan(fan_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_heater) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "heater", stats1.errors_heater, stats1.errortime_heater);
+		else $display("Hint: Output '%s' has no mismatches.", "heater");
+		if (stats1.errors_aircon) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "aircon", stats1.errors_aircon, stats1.errortime_aircon);
+		else $display("Hint: Output '%s' has no mismatches.", "aircon");
+		if (stats1.errors_fan) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "fan", stats1.errors_fan, stats1.errortime_fan);
+		else $display("Hint: Output '%s' has no mismatches.", "fan");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	assign tb_match = ( { heater_ref, aircon_ref, fan_ref } === ( { heater_ref, aircon_ref, fan_ref } ^ { heater_dut, aircon_dut, fan_dut } ^ { heater_ref, aircon_ref, fan_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		// Update Queues
+		if (input_q.size() >= MAX_QUEUE_SIZE) begin
+			input_q.delete(0);
+			output_q.delete(0);
+			expected_q.delete(0);
+		end
+		if (input_q.size() < MAX_QUEUE_SIZE) begin
+			input_q.push_back({too_cold, too_hot, mode, fan_on});
+			expected_q.push_back({heater_ref, aircon_ref, fan_ref});
+			output_q.push_back({heater_dut, aircon_dut, fan_dut});
+		end
+
+		stats1.clocks++;
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("Mismatch detected at time %t", $time);
+				$display("Inputs: mode=%b, too_cold=%b, too_hot=%b, fan_on=%b", mode, too_cold, too_hot, fan_on);
+				$display("Got: heater=%b, aircon=%b, fan=%b", heater_dut, aircon_dut, fan_dut);
+				$display("Exp: heater=%b, aircon=%b, fan=%b", heater_ref, aircon_ref, fan_ref);
+				$display("\nLast %0d cycles of simulation:", input_q.size());
+				for (int i = 0; i < input_q.size(); i++) begin
+					if (output_q[i] === expected_q[i]) begin
+						$display("Cycle %d: Match", i);
+					end else begin
+						$display("Cycle %d: Mismatch", i);
+						end
+					$display(	"  Input: %b, Got: %b, Exp: %b", input_q[i], output_q[i], expected_q[i]);
+					end
+			end)
+
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+
+		if (heater_ref !== ( heater_ref ^ heater_dut ^ heater_ref ))
+		begin 
+			if (stats1.errors_heater == 0) stats1.errortime_heater = $time;
+			stats1.errors_heater = stats1.errors_heater+1'b1; 
+		end
+		if (aircon_ref !== ( aircon_ref ^ aircon_dut ^ aircon_ref ))
+		begin 
+			if (stats1.errors_aircon == 0) stats1.errortime_aircon = $time;
+			stats1.errors_aircon = stats1.errors_aircon+1'b1; 
+		end
+		if (fan_ref !== ( fan_ref ^ fan_dut ^ fan_ref ))
+		begin 
+			if (stats1.errors_fan == 0) stats1.errortime_fan = $time;
+			stats1.errors_fan = stats1.errors_fan+1'b1; 
+		end
+	end
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 15:14:59,785 - mage.agent - INFO] Initial if:
+[2026-05-13 15:14:59,785 - mage.agent - INFO] module TopModule (
+    input  logic mode,
+    input  logic too_cold,
+    input  logic too_hot,
+    input  logic fan_on,
+    output logic heater,
+    output logic aircon,
+    output logic fan
+);
+endmodule
+[2026-05-13 15:14:59,790 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  mode
+ - input  too_cold
+ - input  too_hot
+ - input  fan_on
+ - output heater
+ - output aircon
+ - output fan
+
+The module should implement a heating/cooling thermostat controller which
+controls both a heater (during winter) and an air conditioner (during
+summer). The module should on and off the heater, air conditioning, and
+blower fan as appropriate. The thermostat can be in one of two modes:
+heating (mode = 1) and cooling (mode = 0). In heating mode, turn the
+heater on when it is too cold (too_cold = 1) but do not use the air
+conditioner. In cooling mode, turn the air conditioner on when it is too
+hot (too_hot = 1), but do not turn on the heater. When the heater or air
+conditioner are on, also turn on the fan to circulate the air. In
+addition, the user can also request the fan to turn on (fan_on = 1), even
+if the heater and air conditioner are off.
+
+
+[2026-05-13 15:15:18,863 - mage.agent - INFO] Initial rtl:
+[2026-05-13 15:15:18,863 - mage.agent - INFO] module TopModule (
+    input  logic mode,
+    input  logic too_cold,
+    input  logic too_hot,
+    input  logic fan_on,
+    output logic heater,
+    output logic aircon,
+    output logic fan
+);
+
+    // Combinational logic for heater
+    // In heating mode (mode=1), turn heater on when too_cold=1
+    // In cooling mode (mode=0), heater is always off
+    assign heater = mode && too_cold;
+
+    // Combinational logic for aircon
+    // In cooling mode (mode=0), turn aircon on when too_hot=1
+    // In heating mode (mode=1), aircon is always off
+    assign aircon = (!mode) && too_hot;
+
+    // Combinational logic for fan
+    // Turn on fan if heater is on, aircon is on, or user requests it via fan_on
+    assign fan = heater || aircon || fan_on;
+
+endmodule
+[2026-05-13 15:15:23,728 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 15:17:23,720 - mage.agent - INFO] Revised tb:
+[2026-05-13 15:17:23,720 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg too_cold, too_hot, mode, fan_on,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		{too_cold, too_hot, mode, fan_on} <= 4'b0010;
+		@(negedge clk);
+		wavedrom_start("Winter");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0111;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1111;
+		@(negedge clk) wavedrom_stop();
+
+		{too_cold, too_hot, mode, fan_on} <= 4'b0000;
+		@(negedge clk);
+		wavedrom_start("Summer");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0101;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1101;
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200)
+			@(posedge clk, negedge clk) {too_cold, too_hot, mode, fan_on} <= $random;
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input mode,
+	input too_cold,
+	input too_hot,
+	input fan_on,
+	output heater,
+	output aircon,
+	output fan
+);
+	assign heater = mode ? too_cold : 1'b0;
+	assign aircon = mode ? 1'b0 : too_hot;
+	assign fan    = (mode ? too_cold : too_hot) || fan_on;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_heater;
+		int errortime_heater;
+		int errors_aircon;
+		int errortime_aircon;
+		int errors_fan;
+		int errortime_fan;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+		
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic mode;
+	logic too_cold;
+	logic too_hot;
+	logic fan_on;
+	logic heater_ref;
+	logic heater_dut;
+	logic aircon_ref;
+	logic aircon_dut;
+	logic fan_ref;
+	logic fan_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,mode,too_cold,too_hot,fan_on,heater_ref,heater_dut,aircon_ref,aircon_dut,fan_ref,fan_dut );
+	end
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on );
+	RefModule good1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_ref),
+		.aircon(aircon_ref),
+		.fan(fan_ref) );
+		
+	TopModule top_module1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_dut),
+		.aircon(aircon_dut),
+		.fan(fan_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_heater) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "heater", stats1.errors_heater, stats1.errortime_heater);
+		else $display("Hint: Output '%s' has no mismatches.", "heater");
+		if (stats1.errors_aircon) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "aircon", stats1.errors_aircon, stats1.errortime_aircon);
+		else $display("Hint: Output '%s' has no mismatches.", "aircon");
+		if (stats1.errors_fan) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "fan", stats1.errors_fan, stats1.errortime_fan);
+		else $display("Hint: Output '%s' has no mismatches.", "fan");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { heater_ref, aircon_ref, fan_ref } === ( { heater_ref, aircon_ref, fan_ref } ^ { heater_dut, aircon_dut, fan_dut } ^ { heater_ref, aircon_ref, fan_ref } ) );
+	
+	// Handle first mismatch display
+	always @(posedge clk, negedge clk) begin
+		if (tb_mismatch && stats1.errors == 0) begin
+			$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+			$display("Inputs: mode=%b, too_cold=%b, too_hot=%b, fan_on=%b", mode, too_cold, too_hot, fan_on);
+			$display("Expected Outputs: heater=%b, aircon=%b, fan=%b", heater_ref, aircon_ref, fan_ref);
+			$display("Actual Outputs:   heater=%b, aircon=%b, fan=%b", heater_dut, aircon_dut, fan_dut);
+		end
+	end
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (heater_ref !== ( heater_ref ^ heater_dut ^ heater_ref ))
+		begin if (stats1.errors_heater == 0) stats1.errortime_heater = $time;
+			stats1.errors_heater = stats1.errors_heater+1'b1; end
+		if (aircon_ref !== ( aircon_ref ^ aircon_dut ^ aircon_ref ))
+		begin if (stats1.errors_aircon == 0) stats1.errortime_aircon = $time;
+			stats1.errors_aircon = stats1.errors_aircon+1'b1; end
+		if (fan_ref !== ( fan_ref ^ fan_dut ^ fan_ref ))
+		begin if (stats1.errors_fan == 0) stats1.errortime_fan = $time;
+			stats1.errors_fan = stats1.errors_fan+1'b1; end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 15:19:27,177 - mage.agent - INFO] Revised tb:
+[2026-05-13 15:19:27,177 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg too_cold, too_hot, mode, fan_on,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		{too_cold, too_hot, mode, fan_on} <= 4'b0010;
+		@(negedge clk);
+		wavedrom_start("Winter");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0111;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1111;
+		@(negedge clk) wavedrom_stop();
+
+		{too_cold, too_hot, mode, fan_on} <= 4'b0000;
+		@(negedge clk);
+		wavedrom_start("Summer");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0101;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1101;
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200)
+			@(posedge clk, negedge clk) {too_cold, too_hot, mode, fan_on} <= $random;
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input mode,
+	input too_cold,
+	input too_hot,
+	input fan_on,
+	output heater,
+	output aircon,
+	output fan
+);
+	assign heater = mode ? too_cold : 1'b0;
+	assign aircon = mode ? 1'b0 : too_hot;
+	assign fan    = (mode ? too_cold : too_hot) || fan_on;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_heater;
+		int errortime_heater;
+		int errors_aircon;
+		int errortime_aircon;
+		int errors_fan;
+		int errortime_fan;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic mode;
+	logic too_cold;
+	logic too_hot;
+	logic fan_on;
+	logic heater_ref;
+	logic heater_dut;
+	logic aircon_ref;
+	logic aircon_dut;
+	logic fan_ref;
+	logic fan_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,mode,too_cold,too_hot,fan_on,heater_ref,heater_dut,aircon_ref,aircon_dut,fan_ref,fan_dut );
+	end
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on );
+	RefModule good1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_ref),
+		.aircon(aircon_ref),
+		.fan(fan_ref) );
+		
+	TopModule top_module1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_dut),
+		.aircon(aircon_dut),
+		.fan(fan_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	
+		if (stats1.errors_heater) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "heater", stats1.errors_heater, stats1.errortime_heater);
+		else $display("Hint: Output '%s' has no mismatches.", "heater");
+		if (stats1.errors_aircon) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "aircon", stats1.errors_aircon, stats1.errortime_aircon);
+		else $display("Hint: Output '%s' has no mismatches.", "aircon");
+		if (stats1.errors_fan) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "fan", stats1.errors_fan, stats1.errortime_fan);
+		else $display("Hint: Output '%s' has no mismatches.", "fan");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end;
+		
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { heater_ref, aircon_ref, fan_ref } === ( { heater_ref, aircon_ref, fan_ref } ^ { heater_dut, aircon_dut, fan_dut } ^ { heater_ref, aircon_ref, fan_ref } ) );
+	
+	// Display first mismatch
+	always @(posedge clk, negedge clk) begin
+		if (tb_mismatch && stats1.errors == 0) begin
+			$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+			$display("Inputs: mode=%b, too_cold=%b, too_hot=%b, fan_on=%b", mode, too_cold, too_hot, fan_on);
+			$display("Expected Outputs: heater=%b, aircon=%b, fan=%b", heater_ref, aircon_ref, fan_ref);
+			$display("Actual Outputs:   heater=%b, aircon=%b, fan=%b", heater_dut, aircon_dut, fan_dut);
+		end;
+	end;
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		endog
+		if (heater_ref !== ( heater_ref ^ heater_dut ^ heater_ref ))
+		begin if (stats1.errors_heater == 0) stats1.errortime_heater = $time;
+			stats1.errors_heater = stats1.errors_heater+1'b1; end
+		if (aircon_ref !== ( aircon_ref ^ aircon_dut ^ aircon_ref ))
+		begin if (stats1.errors_aircon == 0) stats1.errortime_aircon = $time;
+			stats1.errors_aircon = stats1.errors_aircon+1'b1; end
+		if (fan_ref !== ( fan_ref ^ fan_dut ^ fan_ref ))
+		begin if (stats1.errors_fan == 0) stats1.errortime_fan = $time;
+			stats1.errors_fan = stats1.errors_fan+1'b1; end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 15:21:32,293 - mage.agent - INFO] Revised tb:
+[2026-05-13 15:21:32,293 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg too_cold, too_hot, mode, fan_on,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		{too_cold, too_hot, mode, fan_on} <= 4'b0010;
+		@(negedge clk);
+		wavedrom_start("Winter");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0111;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1111;
+		@(negedge clk) wavedrom_stop();
+
+		{too_cold, too_hot, mode, fan_on} <= 4'b0000;
+		@(negedge clk);
+		wavedrom_start("Summer");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0101;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1101;
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200)
+			@(posedge clk, negedge clk) {too_cold, too_hot, mode, fan_on} <= $random;
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+	input mode,
+	input too_cold,
+	input too_hot,
+	input fan_on,
+	output heater,
+	output aircon,
+	output fan
+);
+	assign heater = mode ? too_cold : 1'b0;
+	assign aircon = mode ? 1'b0 : too_hot;
+	assign fan    = (mode ? too_cold : too_hot) || fan_on;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_heater;
+		int errortime_heater;
+		int errors_aircon;
+		int errortime_aircon;
+		int errors_fan;
+		int errortime_fan;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic mode;
+	logic too_cold;
+	logic too_hot;
+	logic fan_on;
+	logic heater_ref;
+	logic heater_dut;
+	logic aircon_ref;
+	logic aircon_dut;
+	logic fan_ref;
+	logic fan_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,mode,too_cold,too_hot,fan_on,heater_ref,heater_dut,aircon_ref,aircon_dut,fan_ref,fan_dut );
+	end
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on );
+	RefModule good1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_ref),
+		.aircon(aircon_ref),
+		.fan(fan_ref) );
+		
+	TopModule top_module1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_dut),
+		.aircon(aircon_dut),
+		.fan(fan_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_heater) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "heater", stats1.errors_heater, stats1.errortime_heater);
+		else $display("Hint: Output '%s' has no mismatches.", "heater");
+		if (stats1.errors_aircon) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "aircon", stats1.errors_aircon, stats1.errortime_aircon);
+		else $display("Hint: Output '%s' has no mismatches.", "aircon");
+		if (stats1.errors_fan) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "fan", stats1.errors_fan, stats1.errortime_fan);
+		else $display("Hint: Output '%s' has no mismatches.", "fan");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { heater_ref, aircon_ref, fan_ref } === ( { heater_ref, aircon_ref, fan_ref } ^ { heater_dut, aircon_dut, fan_dut } ^ { heater_ref, aircon_ref, fan_ref } ) );
+	
+	// Handle first mismatch display
+	always @(posedge clk, negedge clk) begin
+		if (tb_mismatch && stats1.errors == 0) begin
+			$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+			$display("Inputs: mode=%b, too_cold=%b, too_hot=%b, fan_on=%b", mode, too_cold, too_hot, fan_on);
+			$display("Expected Outputs: heater=%b, aircon=%b, fan=%b", heater_ref, aircon_ref, fan_ref);
+			$display("Actual Outputs:   heater=%b, aircon=%b, fan=%b", heater_dut, aircon_dut, fan_dut);
+		end
+	end
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (heater_ref !== ( heater_ref ^ heater_dut ^ heater_ref ))
+		begin if (stats1.errors_heater == 0) stats1.errortime_heater = $time;
+			stats1.errors_heater = stats1.errors_heater+1'b1; end
+		if (aircon_ref !== ( aircon_ref ^ aircon_dut ^ aircon_ref ))
+		begin if (stats1.errors_aircon == 0) stats1.errortime_aircon = $time;
+			stats1.errors_aircon = stats1.errors_aircon+1'b1; end
+		if (fan_ref !== ( fan_ref ^ fan_dut ^ fan_ref ))
+		begin if (stats1.errors_fan == 0) stats1.errortime_fan = $time;
+			stats1.errors_fan = stats1.errors_fan+1'b1; end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 15:23:39,455 - mage.agent - INFO] Revised tb:
+[2026-05-13 15:23:39,455 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg too_cold, too_hot, mode, fan_on,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		{too_cold, too_hot, mode, fan_on} <= 4'b0010;
+		@(negedge clk);
+		wavedrom_start("Winter");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0011;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0010;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1110;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0111;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1111;
+		@(negedge clk) wavedrom_stop();
+
+		{too_cold, too_hot, mode, fan_on} <= 4'b0000;
+		@(negedge clk);
+		wavedrom_start("Summer");
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0101;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b0000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1000;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1100;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1001;
+			@(posedge clk) {too_cold, too_hot, mode, fan_on} <= 4'b1101;
+		@(negedge clk) wavedrom_stop();
+		
+		repeat(200)
+			@(posedge clk, negedge clk) {too_cold, too_hot, mode, fan_on} <= $random;
+		
+		#1 $finish;
+	end;
+	
+endmodule
+
+module RefModule (
+	input mode,
+	input too_cold,
+	input too_hot,
+	input fan_on,
+	output heater,
+	output aircon,
+	output fan
+);
+	assign heater = mode ? too_cold : 1'b0;
+	assign aircon = mode ? 1'b0 : too_hot;
+	assign fan    = (mode ? too_cold : too_hot) || fan_on;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_heater;
+		int errortime_heater;
+		int errors_aircon;
+		int errortime_aircon;
+		int errors_fan;
+		int errortime_fan;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic mode;
+	logic too_cold;
+	logic too_hot;
+	logic fan_on;
+	logic heater_ref;
+	logic heater_dut;
+	logic aircon_ref;
+	logic aircon_dut;
+	logic fan_ref;
+	logic fan_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,mode,too_cold,too_hot,fan_on,heater_ref,heater_dut,aircon_ref,aircon_dut,fan_ref,fan_dut );
+	end
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on );
+	RefModule good1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_ref),
+		.aircon(aircon_ref),
+		.fan(fan_ref) );
+		
+	TopModule top_module1 (
+		.mode,
+		.too_cold,
+		.too_hot,
+		.fan_on,
+		.heater(heater_dut),
+		.aircon(aircon_dut),
+		.fan(fan_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	
+		if (stats1.errors_heater) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "heater", stats1.errors_heater, stats1.errortime_heater);
+		else $display("Hint: Output '%s' has no mismatches.", "heater");
+		if (stats1.errors_aircon) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "aircon", stats1.errors_aircon, stats1.errortime_aircon);
+		else $display("Hint: Output '%s' has no mismatches.", "aircon");
+		if (stats1.errors_fan) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "fan", stats1.errors_fan, stats1.errortime_fan);
+		else $display("Hint: Output '%s' has no mismatches.", "fan");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+		
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { heater_ref, aircon_ref, fan_ref } === ( { heater_ref, aircon_ref, fan_ref } ^ { heater_dut, aircon_dut, fan_dut } ^ { heater_ref, aircon_ref, fan_ref } ) );
+	
+	// Handle first mismatch display
+	always @(posedge clk, negedge clk) begin
+		if (tb_mismatch && stats1.errors == 0) begin
+			$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+			$display("Inputs: mode=%b, too_cold=%b, too_hot=%b, fan_on=%b", mode, too_cold, too_hot, fan_on);
+			$display("Expected Outputs: heater=%b, aircon=%b, fan=%b", heater_ref, aircon_ref, fan_ref);
+			$display("Actual Outputs:   heater=%b, aircon=%b, fan=%b", heater_dut, aircon_dut, fan_dut);
+		end
+	end
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (heater_ref !== ( heater_ref ^ heater_dut ^ heater_ref ))
+		begin if (stats1.errors_heater == 0) stats1.errortime_heater = $time;
+			stats1.errors_heater = stats1.errors_heater+1'b1; end
+		if (aircon_ref !== ( aircon_ref ^ aircon_dut ^ aircon_ref ))
+		begin if (stats1.errors_aircon == 0) stats1.errortime_aircon = $time;
+			stats1.errors_aircon = stats1.errors_aircon+1'b1; end
+		if (fan_ref !== ( fan_ref ^ fan_dut ^ fan_ref ))
+		begin if (stats1.errors_fan == 0) stats1.errortime_fan = $time;
+			stats1.errors_fan = stats1.errors_fan+1'b1; end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule

@@ -1,0 +1,1 @@
+The code has been updated to declare 'tb_mismatch' explicitly. The assignments in stimulus_gen now use slicing to fit 201 bits. The display messages follow the specified format, including the first mismatch details and simulation end message. All ports match the golden testbench's interface.

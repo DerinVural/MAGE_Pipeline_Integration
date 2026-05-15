@@ -1,0 +1,765 @@
+[2026-05-13 12:33:52,836 - mage.tb_generator - INFO] TB generator input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in SystemVerilog design.\nYou can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nIn order to test a module generated with the given natural language specification:\n1. Please write an IO interface for that module;\n2. Please improve the given golden testbench to test the module.\n\nThe module interface should EXACTLY MATCH the description in input_spec.\n(Including the module name, input/output ports names, and their types)\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  in     (16 bits)\n - output out_hi ( 8 bits)\n - output out_lo ( 8 bits)\n\nThe module should implement a combinational circuit that splits an input\nhalf-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.\n\n\n</input_spec>\n\nTo improve the golden testbench, you should add more display to it, while keeping the original functionality.\nIn detail, the testbench you generated should:\n1. MAINTAIN the EXACT SAME functionality, interface and module instantiation  as the golden testbench;\n2. If the golden testbench contradicts the input_spec, ALWAYS FOLLOW the golden testbench;\n3. MAINTAIN the original logic of error counting;\n4. When simulation ends, ADD DISPLAY "SIMULATION PASSED" if no mismatch occurs, otherwise display:\n    "SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y".\nPlease also follow the display prompt below:\n\n1. If module to test is sequential logic (like including an FSM):\n    1.1. Store input signals, output signals, expected output signals and reset signals in a queue with MAX_QUEUE_SIZE;\n        When the first mismatch occurs, display the queue content after storing it. Make sure the mismatched signal can be displayed.\n    1.2. MAX_QUEUE_SIZE should be set according to the requirement of the module.\n        For example, if the module has a 3-bit state, MAX_QUEUE_SIZE should be at least 2 ** 3 = 8.\n        And if the module was to detect a pattern of 8 bits, MAX_QUEUE_SIZE should be at least (8 + 1) = 9.\n        However, to control log size, NEVER set MAX_QUEUE_SIZE > 10.\n    1.3. The clocking of queue and display should be same with the clocking of tb_match detection.\n        For example, if \'always @(posedge clk, negedge clk)\' is used to detect mismatch,\n        It should also be used to push queue and display first error.\n2. If module to test is combinational logic:\n    When the first mismatch occurs, display the input signals, output signals and expected output signals at that time.\n3. For multiple-bit signals displayed in HEX format, also display the BINARY format if its width <= 64.\n\n<display_queue_example>\n// Queue-based simulation mismatch display\n\nreg [INPUT_WIDTH-1:0] input_queue [$];\nreg [OUTPUT_WIDTH-1:0] got_output_queue [$];\nreg [OUTPUT_WIDTH-1:0] golden_queue [$];\nreg reset_queue [$];\n\nlocalparam MAX_QUEUE_SIZE = 5;\n\nalways @(posedge clk, negedge clk) begin\n    if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin\n        input_queue.delete(0);\n        got_output_queue.delete(0);\n        golden_queue.delete(0);\n        reset_queue.delete(0);\n    end\n\n    input_queue.push_back(input_data);\n    got_output_queue.push_back(got_output);\n    golden_queue.push_back(golden_output);\n    reset_queue.push_back(rst);\n\n    // Check for first mismatch\n    if (got_output !== golden_output) begin\n        $display("Mismatch detected at time %t", $time);\n        $display("\\nLast %d cycles of simulation:", input_queue.size());\n\n\n        for (int i = 0; i < input_queue.size(); i++) begin\n            if (got_output_queue[i] === golden_queue[i]) begin\n                $display("Got Match at");\n            end else begin\n                $display("Got Mismatch at");\n            end\n            $display("Cycle %d, reset %b, input %h, got output %h, exp output %h",\n                i,\n                reset_queue[i],\n                input_queue[i],\n                got_output_queue[i],\n                golden_queue[i]\n            );\n        end\n    end\n\nend\n</display_queue_example>\n\n\n\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\nIn addition, try to give advice to avoid syntax error.\nAn SystemVerilog module always starts with a line starting with the keyword \'module\' followed by the module name.\nIt ends with the keyword \'endmodule\'.\n\nBelow is the golden testbench code for the module generated with the given natural language specification.\n<golden_testbench>\n`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput reg[511:0] wavedrom_title,\n\toutput reg wavedrom_enable\t\n);\n\n\n// Add two ports to module stimulus_gen:\n//    output [511:0] wavedrom_title\n//    output reg wavedrom_enable\n\n\ttask wavedrom_start(input[511:0] title = "");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start("Random inputs");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend\n\t\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile("wave.vcd");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\n\twire tb_match;\t\t// Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in );\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) );\n\n\t\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n\t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n\n\t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n\t\t$display("Simulation finished at %0d ps", $time);\n\t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute\n\t// the sensitivity list of the @(strobe) process, which isn\'t implemented.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; end\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; end\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display("TIMEOUT");\n     $finish();\n   end\n\nendmodule\n\n\n<golden_testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps and advices to avoid syntax error",\n    "interface": "The IO part of a SystemVerilog module, not containing the module implementation",\n    "testbench": "The testbench code to test the module"\n}\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n\nRemember that if the golden testbench contradicts the input_spec, ALWAYS FOLLOW the golden testbench;\nEspecially if the input_spec say some input should not exist, but as long as the golden testbench uses it, you should use it.\nRemember to display "SIMULATION PASSED" when simulation ends if no mismatch occurs, otherwise display "SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y".\nRemember to add display for the FIRST mismatch, while maintaining the original logic of error counting;\nALWAYS generate the complete testbench, no matter how long it is.\nGenerate interface according to golden testbench, even if it contradicts the input_spec. Declare all ports as logic.\n')])]
+[2026-05-13 12:33:52,842 - mage.token_counter - INFO] TokenCounter count_chat [agent=TBGenerator] at temp: 0.85, top_p: 0.95
+[2026-05-13 12:35:17,526 - mage.tb_generator - INFO] Token count: in     2431 tokens, out     2009 tokens
+[2026-05-13 12:35:17,526 - mage.tb_generator - INFO] {
+    "reasoning": "1. Interface Generation: Based on the input_spec, the module 'TopModule' requires 'in' (16-bit input), 'out_hi' (8-bit output), and 'out_lo' (8-bit output). I will declare these as logic ports.\n2. Testbench Improvement Strategy: \n    - The module is combinational logic. Therefore, I will implement the mismatch display by printing the input, the actual output, and the expected output at the moment of the first mismatch.\n    - I will maintain the existing 'stats' structure and error counting logic.\n    - I will add a flag to track if a mismatch has occurred to enable the final 'SIMULATION PASSED' or 'SIMULATION FAILED' message.\n    - To satisfy the requirement for combinational logic mismatch display, I will use a trigger within the 'always @(posedge clk, negedge clk)' block (which is where the golden testbench performs checks) to detect the first mismatch and display signals in Hex and Binary (since width <= 64).\n3. Advice to avoid syntax errors: \n    - Ensure all ports in the interface match the names and bit-widths used in the testbench instantiation.\n    - When using bitwise operators like `^` for mismatch detection (as seen in the golden TB), ensure bit-widths are compatible to avoid unexpected truncation.\n    - Ensure `final` blocks are used for summary displays to guarantee they execute at the end of simulation.",
+    "interface": "module TopModule (\n    input  logic [15:0] in,\n    output logic [7:0]  out_hi,\n    output logic [7:0]  out_lo\n);\n",
+    "testbench": "`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput logic [511:0] wavedrom_title,\n\toutput logic wavedrom_enable\n);\n\n\ttask wavedrom_start(input[511:0] title = \"\");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start(\"Random inputs\");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend\n\t\nendmodule\n\n// Reference module for golden values\nmodule RefModule (\n    input  logic [15:0] in,\n    output logic [7:0]  out_hi,\n    output logic [7:0]  out_lo\n);\n    assign out_hi = in[15:8];\n    assign out_lo = in[7:0];\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile(\"wave.vcd\");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\twire tb_match;        // Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\t// Flag to track if first mismatch happened to display error details\n\tbit mismatch_displayed = 0;\n\tbit simulation_failed = 0;\n\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in \n\t);\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) \n\t);\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) \n\t);\n\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend;\n\tendtask\t\n\n\tfinal begin\n\t\tif (simulation_failed) begin\n\t\t\t$display(\"SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d\", stats1.errors, stats1.errortime);\n\t\tend else begin\n\t\t\t$display(\"SIMULATION PASSED\");\n\t\tend\n\n\t\tif (stats1.errors_out_hi) $display(\"Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.\", \"out_hi\", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display(\"Hint: Output '%s' has no mismatches.\", \"out_hi\");\n\t\tif (stats1.errors_out_lo) $display(\"Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.\", \"out_lo\", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display(\"Hint: Output '%s' has no mismatches.\", \"out_lo\");\n\n\t\t$display(\"Hint: Total mismatched samples is %1d out of %1d samples\\n\", stats1.errors, stats1.clocks);\n\t\t$display(\"Simulation finished at %0d ps\", $time);\n\t\t$display(\"Mismatches: %1d in %1d samples\", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t\n\t// Use explicit sensitivity list here.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n\t\t\tstats1.errors++;\n\t\t\tsimulation_failed = 1;\n\t\t\t\n\t\t\t// Combinational Logic Mismatch Display\n\t\t\tif (!mismatch_displayed) begin\n\t\t\t\t$display(\"First mismatch detected at time %t:\", $time);\n\t\t\t\t$display(\"Input: %h (%b)\", in, in);\n\t\t\t\t$display(\"Expected: out_hi=%h(%b), out_lo=%h(%b)\", out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);\n\t\t\t\t$display(\"Got:      out_hi=%h(%b), out_lo=%h(%b)\", out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);\n\t\t\t\tmismatch_displayed = 1;\n\t\t\tend\n\t\tend\n\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin \n\t\t\tif (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1'b1; \n\t\tend\n\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin \n\t\t\tif (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1'b1; \n\t\tend\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display(\"TIMEOUT\");\n     $finish();\n   end\n\nendmodule"
+}
+[2026-05-13 12:35:17,526 - mage.agent - INFO] Initial tb:
+[2026-05-13 12:35:17,528 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic [15:0] in,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	always @(posedge clk, negedge clk)
+		in <= $random;
+	
+	initial begin
+		wavedrom_start("Random inputs");
+		repeat(10) @(posedge clk);
+		wavedrom_stop();
+		repeat(100) @(negedge clk);
+		$finish;
+	end
+	
+endmodule
+
+// Reference module for golden values
+module RefModule (
+    input  logic [15:0] in,
+    output logic [7:0]  out_hi,
+    output logic [7:0]  out_lo
+);
+    assign out_hi = in[15:8];
+    assign out_lo = in[7:0];
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_hi;
+		int errortime_out_hi;
+		int errors_out_lo;
+		int errortime_out_lo;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [15:0] in;
+	logic [7:0] out_hi_ref;
+	logic [7:0] out_hi_dut;
+	logic [7:0] out_lo_ref;
+	logic [7:0] out_lo_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	// Flag to track if first mismatch happened to display error details
+	bit mismatch_displayed = 0;
+	bit simulation_failed = 0;
+
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in 
+	);
+	RefModule good1 (
+		.in,
+		.out_hi(out_hi_ref),
+		.out_lo(out_lo_ref) 
+	);
+		
+	TopModule top_module1 (
+		.in,
+		.out_hi(out_hi_dut),
+		.out_lo(out_lo_dut) 
+	);
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	final begin
+		if (simulation_failed) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end else begin
+			$display("SIMULATION PASSED");
+		end
+
+		if (stats1.errors_out_hi) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);
+		else $display("Hint: Output '%s' has no mismatches.", "out_hi");
+		if (stats1.errors_out_lo) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);
+		else $display("Hint: Output '%s' has no mismatches.", "out_lo");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			simulation_failed = 1;
+			
+			// Combinational Logic Mismatch Display
+			if (!mismatch_displayed) begin
+				$display("First mismatch detected at time %t:", $time);
+				$display("Input: %h (%b)", in, in);
+				$display("Expected: out_hi=%h(%b), out_lo=%h(%b)", out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);
+				$display("Got:      out_hi=%h(%b), out_lo=%h(%b)", out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);
+				mismatch_displayed = 1;
+			end
+		end
+
+		if (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))
+		begin 
+			if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;
+			stats1.errors_out_hi = stats1.errors_out_hi+1'b1; 
+		end
+
+		if (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))
+		begin 
+			if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;
+			stats1.errors_out_lo = stats1.errors_out_lo+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 12:35:17,528 - mage.agent - INFO] Initial if:
+[2026-05-13 12:35:17,528 - mage.agent - INFO] module TopModule (
+    input  logic [15:0] in,
+    output logic [7:0]  out_hi,
+    output logic [7:0]  out_lo
+);
+
+[2026-05-13 12:35:17,534 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  in     (16 bits)
+ - output out_hi ( 8 bits)
+ - output out_lo ( 8 bits)
+
+The module should implement a combinational circuit that splits an input
+half-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.
+
+
+[2026-05-13 12:35:17,535 - mage.rtl_generator - INFO] RTL generator input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in RTL design. You can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nPlease write a module in SystemVerilog RTL language regarding to the given natural language specification.\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\nIn addition, try to give advice to avoid syntax error.\nAn SystemVerilog RTL module always starts with a line starting with the keyword \'module\' followed by the module name.\nIt ends with the keyword \'endmodule\'.\n\n[Hints]:\nFor implementing kmap (Karnaugh map), you need to think step by step.\nCarefully example how the kmap in input_spec specifies the order of the inputs.\nNote that x[i] in x[N:1] means x[i-1] in x[N-1:0].\nThen find the inputs corresponding to output=1, 0, and don\'t-care for each case.\n\nNote in Verilog, for a signal "logic x[M:N]" where M > N, you CANNOT reversely select bits from it like x[1:2];\nInstead, you should use concatations like {x[1], x[2]}.\n\nThe module interface should EXACTLY MATCH module_interface if given.\nOtherwise, should EXACTLY MATCH with the description in input_spec.\n(Including the module name, input/output ports names, and their types)\n\n\n\nHere are some examples of RTL SystemVerilog code:\nExample 1:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement a XOR gate.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic in0,\n            input  logic in1,\n            output logic out\n        );\n\n            assign out = in0 ^ in1;\n\n        endmodule\n    </module>\n</example>\nExample 2:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement an 8-bit registered incrementer.\n        The 8-bit input is first registered and then incremented by one on the next cycle.\n        The reset input is active high synchronous and should reset the output to zero.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic       clk,\n            input  logic       reset,\n            input  logic [7:0] in_,\n            output logic [7:0] out\n        );\n\n            // Sequential logic\n            logic [7:0] reg_out;\n            always @( posedge clk ) begin\n                if ( reset )\n                reg_out <= 0;\n                else\n                reg_out <= in_;\n            end\n\n            // Combinational logic\n            logic [7:0] temp_wire;\n            always @(*) begin\n                temp_wire = reg_out + 1;\n            end\n\n            // Structural connections\n            assign out = temp_wire;\n\n        endmodule\n    </module>\n</example>\nExample 3:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement an n-bit registered incrementer where the bitwidth is specified by the parameter nbits.\n        The n-bit input is first registered and then incremented by one on the next cycle.\n        The reset input is active high synchronous and should reset the output to zero.\n    </input_spec>\n    <module>\n        module TopModule #(\n            parameter nbits\n        )(\n            input  logic             clk,\n            input  logic             reset,\n            input  logic [nbits-1:0] in_,\n            output logic [nbits-1:0] out\n        );\n\n            // Sequential logic\n            logic [nbits-1:0] reg_out;\n            always @( posedge clk ) begin\n                if ( reset )\n                reg_out <= 0;\n                else\n                reg_out <= in_;\n            end\n\n            // Combinational logic\n            logic [nbits-1:0] temp_wire;\n            always @(*) begin\n                temp_wire = reg_out + 1;\n            end\n\n            // Structural connections\n            assign out = temp_wire;\n\n        endmodule\n    </module>\n</example>\nExample 4:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        Build a finite-state machine that takes as input a serial bit stream,\n            and outputs a one whenever the bit stream contains two consecutive one\'s.\n        The output is one on the cycle _after_ there are two consecutive one\'s.\n        The reset input is active high synchronous,\n            and should reset the finite-state machine to an appropriate initial state.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic clk,\n            input  logic reset,\n            input  logic in_,\n            output logic out\n        );\n\n            // State enum\n            localparam STATE_A = 2\'b00;\n            localparam STATE_B = 2\'b01;\n            localparam STATE_C = 2\'b10;\n\n            // State register\n            logic [1:0] state;\n            logic [1:0] state_next;\n            always @(posedge clk) begin\n                if ( reset )\n                state <= STATE_A;\n                else\n                state <= state_next;\n            end\n\n            // Next state combinational logic\n            always @(*) begin\n                state_next = state;\n                case ( state )\n                STATE_A: state_next = ( in_ ) ? STATE_B : STATE_A;\n                STATE_B: state_next = ( in_ ) ? STATE_C : STATE_A;\n                STATE_C: state_next = ( in_ ) ? STATE_C : STATE_A;\n                endcase\n            end\n\n            // Output combinational logic\n            always @(*) begin\n                out = 1\'b0;\n                case ( state )\n                STATE_A: out = 1\'b0;\n                STATE_B: out = 1\'b0;\n                STATE_C: out = 1\'b1;\n                endcase\n            end\n\n        endmodule\n    </module>\n</example>\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  in     (16 bits)\n - output out_hi ( 8 bits)\n - output out_lo ( 8 bits)\n\nThe module should implement a combinational circuit that splits an input\nhalf-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.\n\n\n</input_spec>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nAnother agent has generated a testbench regarding the given input_spec:\n<testbench>\n`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput logic [511:0] wavedrom_title,\n\toutput logic wavedrom_enable\n);\n\n\ttask wavedrom_start(input[511:0] title = "");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start("Random inputs");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend\n\t\nendmodule\n\n// Reference module for golden values\nmodule RefModule (\n    input  logic [15:0] in,\n    output logic [7:0]  out_hi,\n    output logic [7:0]  out_lo\n);\n    assign out_hi = in[15:8];\n    assign out_lo = in[7:0];\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile("wave.vcd");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\twire tb_match;        // Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\t// Flag to track if first mismatch happened to display error details\n\tbit mismatch_displayed = 0;\n\tbit simulation_failed = 0;\n\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in \n\t);\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) \n\t);\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) \n\t);\n\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend;\n\tendtask\t\n\n\tfinal begin\n\t\tif (simulation_failed) begin\n\t\t\t$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);\n\t\tend else begin\n\t\t\t$display("SIMULATION PASSED");\n\t\tend\n\n\t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n\t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n\n\t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n\t\t$display("Simulation finished at %0d ps", $time);\n\t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t\n\t// Use explicit sensitivity list here.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n\t\t\tstats1.errors++;\n\t\t\tsimulation_failed = 1;\n\t\t\t\n\t\t\t// Combinational Logic Mismatch Display\n\t\t\tif (!mismatch_displayed) begin\n\t\t\t\t$display("First mismatch detected at time %t:", $time);\n\t\t\t\t$display("Input: %h (%b)", in, in);\n\t\t\t\t$display("Expected: out_hi=%h(%b), out_lo=%h(%b)", out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);\n\t\t\t\t$display("Got:      out_hi=%h(%b), out_lo=%h(%b)", out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);\n\t\t\t\tmismatch_displayed = 1;\n\t\t\tend\n\t\tend\n\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin \n\t\t\tif (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; \n\t\tend\n\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin \n\t\t\tif (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; \n\t\tend\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display("TIMEOUT");\n     $finish();\n   end\n\nendmodule\n</testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nThe module interface is given below:\n<module_interface>\nmodule TopModule (\n    input  logic [15:0] in,\n    output logic [7:0]  out_hi,\n    output logic [7:0]  out_lo\n);\n\n</module_interface>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps and advices to avoid syntax error",\n    "module": "Pure SystemVerilog code, a complete module"\n}\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n\nOther requirements:\n1. Don\'t use state_t to define the parameter. Use `localparam` or Use \'reg\' or \'logic\' for signals as registers or Flip-Flops.\n2. Declare all ports and signals as logic.\n3. Not all the sequential logic need to be reset to 0 when reset is asserted,\n    but these without-reset logic should be initialized to a known value with an initial block instead of being X.\n4. For combinational logic with an always block do not explicitly specify the sensitivity list; instead use always @(*).\n5. NEVER USE \'inside\' operator in RTL code. Code like \'state inside {STATE_B, STATE_C, STATE_D}\' should NOT be used.\n6. Never USE \'unique\' or \'unique0\' keywords in RTL code. Code like \'unique case\' should NOT be used.\n')])]
+[2026-05-13 12:35:17,542 - mage.token_counter - INFO] TokenCounter count_chat [agent=RTLGenerator] at temp: 0.85, top_p: 0.95
+[2026-05-13 12:35:31,762 - mage.rtl_generator - INFO] Token count: in     3178 tokens, out      291 tokens
+[2026-05-13 12:35:31,762 - mage.rtl_generator - INFO] {
+    "reasoning": "The goal is to implement a combinational circuit that splits a 16-bit input into two 8-bit outputs: the high byte and the low byte. \n1. The input 'in' is a 16-bit vector [15:0].\n2. The high byte 'out_hi' consists of the upper 8 bits of the input, which are indices [15:8].\n3. The low byte 'out_lo' consists of the lower 8 bits of the input, which are indices [7:0].\n4. To avoid syntax errors, ensure that the bit-range selection matches the width of the output ports (8 bits each).\n5. Since the specification calls for a combinational circuit, 'assign' statements are the most efficient and readable way to implement this logic. \n6. All ports are declared as 'logic' as per the requirement.",
+    "module": "module TopModule (\n    input  logic [15:0] in,\n    output logic [7:0]  out_hi,\n    output logic [7:0]  out_lo\n);\n\n    // Combinational splitting of the 16-bit input into two 8-bit bytes\n    assign out_hi = in[15:8];\n    assign out_lo = in[7:0];\n\nendmodule"
+}
+[2026-05-13 12:35:31,766 - mage.bash_tools - INFO] Running command: iverilog -t null -Wall -Winfloop -Wno-timescale -g2012 -o /dev/null ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/rtl.sv
+[2026-05-13 12:35:31,804 - mage.sim_reviewer - INFO] Syntax check is_pass: True, 
+output: {
+    "stdout": "",
+    "stderr": ""
+}
+[2026-05-13 12:35:31,809 - mage.agent - INFO] Initial rtl:
+[2026-05-13 12:35:31,809 - mage.agent - INFO] module TopModule (
+    input  logic [15:0] in,
+    output logic [7:0]  out_hi,
+    output logic [7:0]  out_lo
+);
+
+    // Combinational splitting of the 16-bit input into two 8-bit bytes
+    assign out_hi = in[15:8];
+    assign out_lo = in[7:0];
+
+endmodule
+[2026-05-13 12:35:31,809 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -o ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv; vvp -n ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp
+[2026-05-13 12:35:31,854 - mage.sim_reviewer - INFO] Simulation is_pass: False, mismatch_cnt: 0, golden_tb_format: False
+output: {
+    "stdout": "",
+    "stderr": "./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:2: error: 'RefModule' has already been declared in this scope.\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:33:      : It was declared here as a module.\n./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:10: error: Module RefModule was already declared here: ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:33\n\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\n"
+}
+[2026-05-13 12:35:31,855 - mage.sim_judge - INFO] Sim judge input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in SystemVerilog design.\nYou can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nA simulation has failed for the rtl and testbench generated by other agents;\nThe related failed_sim_log was given below. The input_spec which the rtl and testbench should follow was also given below.\nPlease judge whether the TESTBENCH need to be modified.\nIf you think so, set tb_needs_fix = True, otherwise set tb_needs_fix = False.\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  in     (16 bits)\n - output out_hi ( 8 bits)\n - output out_lo ( 8 bits)\n\nThe module should implement a combinational circuit that splits an input\nhalf-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.\n\n\n</input_spec>\n<failed_sim_log>\n{\n    "stdout": "",\n    "stderr": "./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:2: error: \'RefModule\' has already been declared in this scope.\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:33:      : It was declared here as a module.\\n./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:10: error: Module RefModule was already declared here: ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:33\\n\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\\n"\n}\n</failed_sim_log>\n<failed_rtl>\n1: module TopModule (\n2:     input  logic [15:0] in,\n3:     output logic [7:0]  out_hi,\n4:     output logic [7:0]  out_lo\n5: );\n6: \n7:     // Combinational splitting of the 16-bit input into two 8-bit bytes\n8:     assign out_hi = in[15:8];\n9:     assign out_lo = in[7:0];\n10: \n11: endmodule\n\n</failed_rtl>\n<failed_testbench>\n1: `timescale 1 ps/1 ps\n2: `define OK 12\n3: `define INCORRECT 13\n4: \n5: module stimulus_gen (\n6: \tinput clk,\n7: \toutput logic [15:0] in,\n8: \toutput logic [511:0] wavedrom_title,\n9: \toutput logic wavedrom_enable\n10: );\n11: \n12: \ttask wavedrom_start(input[511:0] title = "");\n13: \tendtask\n14: \t\n15: \ttask wavedrom_stop;\n16: \t\t#1;\n17: \tendtask\t\n18: \n19: \talways @(posedge clk, negedge clk)\n20: \t\tin <= $random;\n21: \t\n22: \tinitial begin\n23: \t\twavedrom_start("Random inputs");\n24: \t\trepeat(10) @(posedge clk);\n25: \t\twavedrom_stop();\n26: \t\trepeat(100) @(negedge clk);\n27: \t\t$finish;\n28: \tend\n29: \t\n30: endmodule\n31: \n32: // Reference module for golden values\n33: module RefModule (\n34:     input  logic [15:0] in,\n35:     output logic [7:0]  out_hi,\n36:     output logic [7:0]  out_lo\n37: );\n38:     assign out_hi = in[15:8];\n39:     assign out_lo = in[7:0];\n40: endmodule\n41: \n42: module tb();\n43: \n44: \ttypedef struct packed {\n45: \t\tint errors;\n46: \t\tint errortime;\n47: \t\tint errors_out_hi;\n48: \t\tint errortime_out_hi;\n49: \t\tint errors_out_lo;\n50: \t\tint errortime_out_lo;\n51: \n52: \t\tint clocks;\n53: \t} stats;\n54: \t\n55: \tstats stats1;\n56: \t\n57: \t\n58: \twire[511:0] wavedrom_title;\n59: \twire wavedrom_enable;\n60: \tint wavedrom_hide_after_time;\n61: \t\n62: \treg clk=0;\n63: \tinitial forever\n64: \t\t#5 clk = ~clk;\n65: \n66: \tlogic [15:0] in;\n67: \tlogic [7:0] out_hi_ref;\n68: \tlogic [7:0] out_hi_dut;\n69: \tlogic [7:0] out_lo_ref;\n70: \tlogic [7:0] out_lo_dut;\n71: \n72: \tinitial begin \n73: \t\t$dumpfile("wave.vcd");\n74: \t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n75: \tend\n76: \n77: \twire tb_match;        // Verification\n78: \twire tb_mismatch = ~tb_match;\n79: \t\n80: \t// Flag to track if first mismatch happened to display error details\n81: \tbit mismatch_displayed = 0;\n82: \tbit simulation_failed = 0;\n83: \n84: \tstimulus_gen stim1 (\n85: \t\t.clk,\n86: \t\t.* ,\n87: \t\t.in \n88: \t);\n89: \tRefModule good1 (\n90: \t\t.in,\n91: \t\t.out_hi(out_hi_ref),\n92: \t\t.out_lo(out_lo_ref) \n93: \t);\n94: \t\t\n95: \tTopModule top_module1 (\n96: \t\t.in,\n97: \t\t.out_hi(out_hi_dut),\n98: \t\t.out_lo(out_lo_dut) \n99: \t);\n100: \n101: \tbit strobe = 0;\n102: \ttask wait_for_end_of_timestep;\n103: \t\trepeat(5) begin\n104: \t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n105: \t\t\t@(strobe);\n106: \t\tend;\n107: \tendtask\t\n108: \n109: \tfinal begin\n110: \t\tif (simulation_failed) begin\n111: \t\t\t$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);\n112: \t\tend else begin\n113: \t\t\t$display("SIMULATION PASSED");\n114: \t\tend\n115: \n116: \t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n117: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n118: \t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n119: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n120: \n121: \t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n122: \t\t$display("Simulation finished at %0d ps", $time);\n123: \t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n124: \tend\n125: \t\n126: \t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n127: \tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n128: \t\n129: \t// Use explicit sensitivity list here.\n130: \talways @(posedge clk, negedge clk) begin\n131: \n132: \t\tstats1.clocks++;\n133: \t\tif (!tb_match) begin\n134: \t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n135: \t\t\tstats1.errors++;\n136: \t\t\tsimulation_failed = 1;\n137: \t\t\t\n138: \t\t\t// Combinational Logic Mismatch Display\n139: \t\t\tif (!mismatch_displayed) begin\n140: \t\t\t\t$display("First mismatch detected at time %t:", $time);\n141: \t\t\t\t$display("Input: %h (%b)", in, in);\n142: \t\t\t\t$display("Expected: out_hi=%h(%b), out_lo=%h(%b)", out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);\n143: \t\t\t\t$display("Got:      out_hi=%h(%b), out_lo=%h(%b)", out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);\n144: \t\t\t\tmismatch_displayed = 1;\n145: \t\t\tend\n146: \t\tend\n147: \n148: \t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n149: \t\tbegin \n150: \t\t\tif (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n151: \t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; \n152: \t\tend\n153: \n154: \t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n155: \t\tbegin \n156: \t\t\tif (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n157: \t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; \n158: \t\tend\n159: \n160: \tend\n161: \n162:    // add timeout after 100K cycles\n163:    initial begin\n164:      #1000000\n165:      $display("TIMEOUT");\n166:      $finish();\n167:    end\n168: \n169: endmodule\n\n</failed_testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps",\n    "tb_needs_fix": false\n}\nEspecially, FORCE SET tb_needs_fix to True if failed_sim_log says there is ANY syntax error in testbench(tb.sv),\nEven if the syntax error looks not related to the failed test case or the testbench looks correct.\n\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n')])]
+[2026-05-13 12:35:31,860 - mage.token_counter - INFO] TokenCounter count_chat [agent=SimJudge] at temp: 0.85, top_p: 0.95
+[2026-05-13 12:35:37,190 - mage.sim_judge - INFO] Token count: in     2500 tokens, out      148 tokens
+[2026-05-13 12:35:37,190 - mage.sim_judge - INFO] {
+    "reasoning": "The failed simulation log indicates a compilation error: \"error: 'RefModule' has already been declared in this scope.\" This error occurs because the testbench (tb.sv) contains a definition for `RefModule` (lines 33-40), but the simulation environment is also attempting to include a reference file `Prob015_vector1_ref.sv` which likely contains the same module definition. This redundancy causes a namespace collision during compilation. Since the error is a syntax/compilation error within the testbench file (duplicate declaration), the testbench needs to be modified to remove the redundant `RefModule` declaration to allow the simulation to run.",
+    "tb_needs_fix": true
+}
+[2026-05-13 12:35:37,191 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 12:35:37,193 - mage.tb_generator - INFO] TB generator input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in SystemVerilog design.\nYou can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nIn order to test a module generated with the given natural language specification:\n1. Please write an IO interface for that module;\n2. Please improve the given golden testbench to test the module.\n\nThe module interface should EXACTLY MATCH the description in input_spec.\n(Including the module name, input/output ports names, and their types)\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  in     (16 bits)\n - output out_hi ( 8 bits)\n - output out_lo ( 8 bits)\n\nThe module should implement a combinational circuit that splits an input\nhalf-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.\n\n\n</input_spec>\n\nTo improve the golden testbench, you should add more display to it, while keeping the original functionality.\nIn detail, the testbench you generated should:\n1. MAINTAIN the EXACT SAME functionality, interface and module instantiation  as the golden testbench;\n2. If the golden testbench contradicts the input_spec, ALWAYS FOLLOW the golden testbench;\n3. MAINTAIN the original logic of error counting;\n4. When simulation ends, ADD DISPLAY "SIMULATION PASSED" if no mismatch occurs, otherwise display:\n    "SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y".\nPlease also follow the display prompt below:\n\n1. When the first mismatch occurs, display the input signals, output signals and expected output signals at that time.\n2. For multiple-bit signals displayed in HEX format, also display the BINARY format if its width <= 64.\n\n\n\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\nIn addition, try to give advice to avoid syntax error.\nAn SystemVerilog module always starts with a line starting with the keyword \'module\' followed by the module name.\nIt ends with the keyword \'endmodule\'.\n\nBelow is the golden testbench code for the module generated with the given natural language specification.\n<golden_testbench>\n`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput reg[511:0] wavedrom_title,\n\toutput reg wavedrom_enable\t\n);\n\n\n// Add two ports to module stimulus_gen:\n//    output [511:0] wavedrom_title\n//    output reg wavedrom_enable\n\n\ttask wavedrom_start(input[511:0] title = "");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start("Random inputs");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend\n\t\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile("wave.vcd");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\n\twire tb_match;\t\t// Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in );\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) );\n\n\t\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n\t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n\n\t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n\t\t$display("Simulation finished at %0d ps", $time);\n\t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute\n\t// the sensitivity list of the @(strobe) process, which isn\'t implemented.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; end\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; end\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display("TIMEOUT");\n     $finish();\n   end\n\nendmodule\n\n\n<golden_testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps and advices to avoid syntax error",\n    "interface": "The IO part of a SystemVerilog module, not containing the module implementation",\n    "testbench": "The testbench code to test the module"\n}\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n\nRemember that if the golden testbench contradicts the input_spec, ALWAYS FOLLOW the golden testbench;\nEspecially if the input_spec say some input should not exist, but as long as the golden testbench uses it, you should use it.\nRemember to display "SIMULATION PASSED" when simulation ends if no mismatch occurs, otherwise display "SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y".\nRemember to add display for the FIRST mismatch, while maintaining the original logic of error counting;\nALWAYS generate the complete testbench, no matter how long it is.\nGenerate interface according to golden testbench, even if it contradicts the input_spec. Declare all ports as logic.\n')])]
+[2026-05-13 12:35:37,196 - mage.token_counter - INFO] TokenCounter count_chat [agent=TBGenerator] at temp: 0.85, top_p: 0.95
+[2026-05-13 12:36:59,655 - mage.tb_generator - INFO] Token count: in     1859 tokens, out     2050 tokens
+[2026-05-13 12:36:59,655 - mage.tb_generator - INFO] {
+    "reasoning": "1. **Interface Design**: Based on the `input_spec`, the module `TopModule` requires `in` (16 bits), `out_hi` (8 bits), and `out_lo` (8 bits). All ports are declared as `logic` to follow modern SystemVerilog practices.\n2. **Testbench Improvement**: \n    - **Functionality**: I will maintain the original `stimulus_gen` and `tb` structure, including the `stats` struct and the reference module logic.\n    - **Error Display**: I will add a block inside the `always @(posedge clk, negedge clk)` block that triggers only on the *first* mismatch. It will use `$display` with `%h` (hex) and `%b` (binary) formats as requested. Since the signals are small (<= 64 bits), binary will be displayed.\n    - **Pass/Fail Logic**: I will modify the `final` block. If `stats1.errors == 0`, I will display 'SIMULATION PASSED'. Otherwise, I will display 'SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y' using the existing `stats1.errors` and `stats1.errortime` variables.\n    - **Maintaining Golden Logic**: The error counting and the `tb_match` logic (which handles X-propagation) are preserved exactly as in the golden testbench.\n3. **Advice to avoid syntax errors**:\n    - Always ensure that the `module` and `endmodule` keywords are correctly placed.\n    - When using `struct packed`, ensure all members are explicitly typed.\n    - Ensure that all signals used in `assign` or `always` blocks are declared previously.\n    - When using `$display`, check that the number of format specifiers matches the number of arguments.\n    - Be careful with bit-widths in concatenations to avoid unintended truncation.",
+    "interface": "module TopModule (\n    input  logic [15:0] in,\n    output logic [7:0]  out_hi,\n    output logic [7:0]  out_lo\n);\n",
+    "testbench": "``timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput logic [511:0] wavedrom_title,\n\toutput logic wavedrom_enable\n);\n\n\ttask wavedrom_start(input[511:0] title = \"\");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start(\"Random inputs\");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend\n\t\nendmodule\n\nmodule RefModule (\n    input logic [15:0] in,\n    output logic [7:0] out_hi,\n    output logic [7:0] out_lo\n);\n    assign out_hi = in[15:8];\n    assign out_lo = in[7:0];\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile(\"wave.vcd\");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\n\twire tb_match;        // Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in );\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) );\n\n\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors == 0) begin\n\t\t\t$display(\"SIMULATION PASSED\");\n\t\tend else begin\n\t\t\t$display(\"SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d\", stats1.errors, stats1.errortime);\n\t\tend\n\n\t\tif (stats1.errors_out_hi) $display(\"Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.\", \"out_hi\", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display(\"Hint: Output '%s' has no mismatches.\", \"out_hi\");\n\t\tif (stats1.errors_out_lo) $display(\"Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.\", \"out_lo\", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display(\"Hint: Output '%s' has no mismatches.\", \"out_lo\");\n\n\t\t$display(\"Hint: Total mismatched samples is %1d out of %1d samples\\n\", stats1.errors, stats1.clocks);\n\t\t$display(\"Simulation finished at %0d ps\", $time);\n\t\t$display(\"Mismatches: %1d in %1d samples\", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t// Use explicit sensitivity list here.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) begin\n\t\t\t\tstats1.errortime = $time;\n\t\t\t\t$display(\"FIRST MISMATCH DETECTED at time %0t:\", $time);\n\t\t\t\t$display(\"  in: %h (%b)\", in, in, in);\n\t\t\t\t$display(\"  Expected: out_hi=%h (%b), out_lo=%h (%b)\", out_hi_ref, out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref, out_lo_ref);\n\t\t\t\t$display(\"  Actual:   out_hi=%h (%b), out_lo=%h (%b)\", out_hi_dut, out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut, out_lo_dut);\n\t\t\tend\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin \n\t\t\tif (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1'b1; \n\t\tend\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin \n\t\t\tif (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1'b1; \n\t\tend\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display(\"TIMEOUT\");\n     $finish();\n   end\n\nendmodule"
+}
+[2026-05-13 12:36:59,658 - mage.agent - INFO] Revised tb:
+[2026-05-13 12:36:59,658 - mage.agent - INFO] ``timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic [15:0] in,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	always @(posedge clk, negedge clk)
+		in <= $random;
+	
+	initial begin
+		wavedrom_start("Random inputs");
+		repeat(10) @(posedge clk);
+		wavedrom_stop();
+		repeat(100) @(negedge clk);
+		$finish;
+	end
+	
+endmodule
+
+module RefModule (
+    input logic [15:0] in,
+    output logic [7:0] out_hi,
+    output logic [7:0] out_lo
+);
+    assign out_hi = in[15:8];
+    assign out_lo = in[7:0];
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_hi;
+		int errortime_out_hi;
+		int errors_out_lo;
+		int errortime_out_lo;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [15:0] in;
+	logic [7:0] out_hi_ref;
+	logic [7:0] out_hi_dut;
+	logic [7:0] out_lo_ref;
+	logic [7:0] out_lo_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in );
+	RefModule good1 (
+		.in,
+		.out_hi(out_hi_ref),
+		.out_lo(out_lo_ref) );
+		
+	TopModule top_module1 (
+		.in,
+		.out_hi(out_hi_dut),
+		.out_lo(out_lo_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_out_hi) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);
+		else $display("Hint: Output '%s' has no mismatches.", "out_hi");
+		if (stats1.errors_out_lo) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);
+		else $display("Hint: Output '%s' has no mismatches.", "out_lo");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("FIRST MISMATCH DETECTED at time %0t:", $time);
+				$display("  in: %h (%b)", in, in, in);
+				$display("  Expected: out_hi=%h (%b), out_lo=%h (%b)", out_hi_ref, out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref, out_lo_ref);
+				$display("  Actual:   out_hi=%h (%b), out_lo=%h (%b)", out_hi_dut, out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut, out_lo_dut);
+			end
+			stats1.errors++;
+		end
+		if (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))
+		begin 
+			if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;
+			stats1.errors_out_hi = stats1.errors_out_hi+1'b1; 
+		end
+		if (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))
+		begin 
+			if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;
+			stats1.errors_out_lo = stats1.errors_out_lo+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 12:36:59,659 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -o ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv; vvp -n ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp
+[2026-05-13 12:36:59,704 - mage.sim_reviewer - INFO] Simulation is_pass: False, mismatch_cnt: 0, golden_tb_format: False
+output: {
+    "stdout": "",
+    "stderr": "./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:1: syntax error\nI give up.\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\n"
+}
+[2026-05-13 12:36:59,705 - mage.sim_judge - INFO] Sim judge input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in SystemVerilog design.\nYou can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nA simulation has failed for the rtl and testbench generated by other agents;\nThe related failed_sim_log was given below. The input_spec which the rtl and testbench should follow was also given below.\nPlease judge whether the TESTBENCH need to be modified.\nIf you think so, set tb_needs_fix = True, otherwise set tb_needs_fix = False.\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  in     (16 bits)\n - output out_hi ( 8 bits)\n - output out_lo ( 8 bits)\n\nThe module should implement a combinational circuit that splits an input\nhalf-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.\n\n\n</input_spec>\n<failed_sim_log>\n{\n    "stdout": "",\n    "stderr": "./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:1: syntax error\\nI give up.\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\\n"\n}\n</failed_sim_log>\n<failed_rtl>\n1: module TopModule (\n2:     input  logic [15:0] in,\n3:     output logic [7:0]  out_hi,\n4:     output logic [7:0]  out_lo\n5: );\n6: \n7:     // Combinational splitting of the 16-bit input into two 8-bit bytes\n8:     assign out_hi = in[15:8];\n9:     assign out_lo = in[7:0];\n10: \n11: endmodule\n\n</failed_rtl>\n<failed_testbench>\n1: ``timescale 1 ps/1 ps\n2: `define OK 12\n3: `define INCORRECT 13\n4: \n5: module stimulus_gen (\n6: \tinput clk,\n7: \toutput logic [15:0] in,\n8: \toutput logic [511:0] wavedrom_title,\n9: \toutput logic wavedrom_enable\n10: );\n11: \n12: \ttask wavedrom_start(input[511:0] title = "");\n13: \tendtask\n14: \t\n15: \ttask wavedrom_stop;\n16: \t\t#1;\n17: \tendtask\t\n18: \n19: \talways @(posedge clk, negedge clk)\n20: \t\tin <= $random;\n21: \t\n22: \tinitial begin\n23: \t\twavedrom_start("Random inputs");\n24: \t\trepeat(10) @(posedge clk);\n25: \t\twavedrom_stop();\n26: \t\trepeat(100) @(negedge clk);\n27: \t\t$finish;\n28: \tend\n29: \t\n30: endmodule\n31: \n32: module RefModule (\n33:     input logic [15:0] in,\n34:     output logic [7:0] out_hi,\n35:     output logic [7:0] out_lo\n36: );\n37:     assign out_hi = in[15:8];\n38:     assign out_lo = in[7:0];\n39: endmodule\n40: \n41: module tb();\n42: \n43: \ttypedef struct packed {\n44: \t\tint errors;\n45: \t\tint errortime;\n46: \t\tint errors_out_hi;\n47: \t\tint errortime_out_hi;\n48: \t\tint errors_out_lo;\n49: \t\tint errortime_out_lo;\n50: \n51: \t\tint clocks;\n52: \t} stats;\n53: \t\n54: \tstats stats1;\n55: \t\n56: \t\n57: \twire[511:0] wavedrom_title;\n58: \twire wavedrom_enable;\n59: \tint wavedrom_hide_after_time;\n60: \t\n61: \treg clk=0;\n62: \tinitial forever\n63: \t\t#5 clk = ~clk;\n64: \n65: \tlogic [15:0] in;\n66: \tlogic [7:0] out_hi_ref;\n67: \tlogic [7:0] out_hi_dut;\n68: \tlogic [7:0] out_lo_ref;\n69: \tlogic [7:0] out_lo_dut;\n70: \n71: \tinitial begin \n72: \t\t$dumpfile("wave.vcd");\n73: \t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n74: \tend\n75: \n76: \n77: \twire tb_match;        // Verification\n78: \twire tb_mismatch = ~tb_match;\n79: \t\n80: \tstimulus_gen stim1 (\n81: \t\t.clk,\n82: \t\t.* ,\n83: \t\t.in );\n84: \tRefModule good1 (\n85: \t\t.in,\n86: \t\t.out_hi(out_hi_ref),\n87: \t\t.out_lo(out_lo_ref) );\n88: \t\t\n89: \tTopModule top_module1 (\n90: \t\t.in,\n91: \t\t.out_hi(out_hi_dut),\n92: \t\t.out_lo(out_lo_dut) );\n93: \n94: \n95: \tbit strobe = 0;\n96: \ttask wait_for_end_of_timestep;\n97: \t\trepeat(5) begin\n98: \t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n99: \t\t\t@(strobe);\n100: \t\tend\n101: \tendtask\t\n102: \n103: \t\n104: \tfinal begin\n105: \t\tif (stats1.errors == 0) begin\n106: \t\t\t$display("SIMULATION PASSED");\n107: \t\tend else begin\n108: \t\t\t$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);\n109: \t\tend\n110: \n111: \t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n112: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n113: \t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n114: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n115: \n116: \t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n117: \t\t$display("Simulation finished at %0d ps", $time);\n118: \t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n119: \tend\n120: \t\n121: \t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n122: \tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n123: \t// Use explicit sensitivity list here.\n124: \talways @(posedge clk, negedge clk) begin\n125: \n126: \t\tstats1.clocks++;\n127: \t\tif (!tb_match) begin\n128: \t\t\tif (stats1.errors == 0) begin\n129: \t\t\t\tstats1.errortime = $time;\n130: \t\t\t\t$display("FIRST MISMATCH DETECTED at time %0t:", $time);\n131: \t\t\t\t$display("  in: %h (%b)", in, in, in);\n132: \t\t\t\t$display("  Expected: out_hi=%h (%b), out_lo=%h (%b)", out_hi_ref, out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref, out_lo_ref);\n133: \t\t\t\t$display("  Actual:   out_hi=%h (%b), out_lo=%h (%b)", out_hi_dut, out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut, out_lo_dut);\n134: \t\t\tend\n135: \t\t\tstats1.errors++;\n136: \t\tend\n137: \t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n138: \t\tbegin \n139: \t\t\tif (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n140: \t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; \n141: \t\tend\n142: \t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n143: \t\tbegin \n144: \t\t\tif (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n145: \t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; \n146: \t\tend\n147: \n148: \tend\n149: \n150:    // add timeout after 100K cycles\n151:    initial begin\n152:      #1000000\n153:      $display("TIMEOUT");\n154:      $finish();\n155:    end\n156: \n157: endmodule\n\n</failed_testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps",\n    "tb_needs_fix": false\n}\nEspecially, FORCE SET tb_needs_fix to True if failed_sim_log says there is ANY syntax error in testbench(tb.sv),\nEven if the syntax error looks not related to the failed test case or the testbench looks correct.\n\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n')])]
+[2026-05-13 12:36:59,709 - mage.token_counter - INFO] TokenCounter count_chat [agent=SimJudge] at temp: 0.85, top_p: 0.95
+[2026-05-13 12:37:06,030 - mage.sim_judge - INFO] Token count: in     2319 tokens, out      172 tokens
+[2026-05-13 12:37:06,030 - mage.sim_judge - INFO] {
+    "reasoning": "The failed_sim_log explicitly reports a syntax error in the testbench: './output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:1: syntax error'. Looking at the provided testbench code, line 1 contains ` ``timescale 1 ps/1 ps`. In SystemVerilog/Verilog, the tick for a compiler directive should be a single backtick (`` ` ``), but the code provided has two backticks (`` `` ``). This is a syntax error that prevents the simulation from running. Since the instructions state to set tb_needs_fix to True if there is ANY syntax error in the testbench, I must set it to True.",
+    "tb_needs_fix": true
+}
+[2026-05-13 12:37:06,033 - mage.tb_generator - INFO] TB generator input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in SystemVerilog design.\nYou can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nIn order to test a module generated with the given natural language specification:\n1. Please write an IO interface for that module;\n2. Please improve the given golden testbench to test the module.\n\nThe module interface should EXACTLY MATCH the description in input_spec.\n(Including the module name, input/output ports names, and their types)\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  in     (16 bits)\n - output out_hi ( 8 bits)\n - output out_lo ( 8 bits)\n\nThe module should implement a combinational circuit that splits an input\nhalf-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.\n\n\n</input_spec>\n\nTo improve the golden testbench, you should add more display to it, while keeping the original functionality.\nIn detail, the testbench you generated should:\n1. MAINTAIN the EXACT SAME functionality, interface and module instantiation  as the golden testbench;\n2. If the golden testbench contradicts the input_spec, ALWAYS FOLLOW the golden testbench;\n3. MAINTAIN the original logic of error counting;\n4. When simulation ends, ADD DISPLAY "SIMULATION PASSED" if no mismatch occurs, otherwise display:\n    "SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y".\nPlease also follow the display prompt below:\n\n1. When the first mismatch occurs, display the input signals, output signals and expected output signals at that time.\n2. For multiple-bit signals displayed in HEX format, also display the BINARY format if its width <= 64.\n\n\n\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\nIn addition, try to give advice to avoid syntax error.\nAn SystemVerilog module always starts with a line starting with the keyword \'module\' followed by the module name.\nIt ends with the keyword \'endmodule\'.\n\nBelow is the golden testbench code for the module generated with the given natural language specification.\n<golden_testbench>\n`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput reg[511:0] wavedrom_title,\n\toutput reg wavedrom_enable\t\n);\n\n\n// Add two ports to module stimulus_gen:\n//    output [511:0] wavedrom_title\n//    output reg wavedrom_enable\n\n\ttask wavedrom_start(input[511:0] title = "");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start("Random inputs");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend\n\t\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile("wave.vcd");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\n\twire tb_match;\t\t// Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in );\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) );\n\n\t\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n\t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n\n\t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n\t\t$display("Simulation finished at %0d ps", $time);\n\t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute\n\t// the sensitivity list of the @(strobe) process, which isn\'t implemented.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; end\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; end\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display("TIMEOUT");\n     $finish();\n   end\n\nendmodule\n\n\n<golden_testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nThere was a generation trial that failed simulation:\n<failed_sim_log>\n{\n    "stdout": "",\n    "stderr": "./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:1: syntax error\\nI give up.\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\\n"\n}\n</failed_sim_log>\n<previous_code>\n1: module TopModule (\n2:     input  logic [15:0] in,\n3:     output logic [7:0]  out_hi,\n4:     output logic [7:0]  out_lo\n5: );\n6: \n7:     // Combinational splitting of the 16-bit input into two 8-bit bytes\n8:     assign out_hi = in[15:8];\n9:     assign out_lo = in[7:0];\n10: \n11: endmodule\n\n</previous_code>\n<previous_tb>\n1: ``timescale 1 ps/1 ps\n2: `define OK 12\n3: `define INCORRECT 13\n4: \n5: module stimulus_gen (\n6: \tinput clk,\n7: \toutput logic [15:0] in,\n8: \toutput logic [511:0] wavedrom_title,\n9: \toutput logic wavedrom_enable\n10: );\n11: \n12: \ttask wavedrom_start(input[511:0] title = "");\n13: \tendtask\n14: \t\n15: \ttask wavedrom_stop;\n16: \t\t#1;\n17: \tendtask\t\n18: \n19: \talways @(posedge clk, negedge clk)\n20: \t\tin <= $random;\n21: \t\n22: \tinitial begin\n23: \t\twavedrom_start("Random inputs");\n24: \t\trepeat(10) @(posedge clk);\n25: \t\twavedrom_stop();\n26: \t\trepeat(100) @(negedge clk);\n27: \t\t$finish;\n28: \tend\n29: \t\n30: endmodule\n31: \n32: module RefModule (\n33:     input logic [15:0] in,\n34:     output logic [7:0] out_hi,\n35:     output logic [7:0] out_lo\n36: );\n37:     assign out_hi = in[15:8];\n38:     assign out_lo = in[7:0];\n39: endmodule\n40: \n41: module tb();\n42: \n43: \ttypedef struct packed {\n44: \t\tint errors;\n45: \t\tint errortime;\n46: \t\tint errors_out_hi;\n47: \t\tint errortime_out_hi;\n48: \t\tint errors_out_lo;\n49: \t\tint errortime_out_lo;\n50: \n51: \t\tint clocks;\n52: \t} stats;\n53: \t\n54: \tstats stats1;\n55: \t\n56: \t\n57: \twire[511:0] wavedrom_title;\n58: \twire wavedrom_enable;\n59: \tint wavedrom_hide_after_time;\n60: \t\n61: \treg clk=0;\n62: \tinitial forever\n63: \t\t#5 clk = ~clk;\n64: \n65: \tlogic [15:0] in;\n66: \tlogic [7:0] out_hi_ref;\n67: \tlogic [7:0] out_hi_dut;\n68: \tlogic [7:0] out_lo_ref;\n69: \tlogic [7:0] out_lo_dut;\n70: \n71: \tinitial begin \n72: \t\t$dumpfile("wave.vcd");\n73: \t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n74: \tend\n75: \n76: \n77: \twire tb_match;        // Verification\n78: \twire tb_mismatch = ~tb_match;\n79: \t\n80: \tstimulus_gen stim1 (\n81: \t\t.clk,\n82: \t\t.* ,\n83: \t\t.in );\n84: \tRefModule good1 (\n85: \t\t.in,\n86: \t\t.out_hi(out_hi_ref),\n87: \t\t.out_lo(out_lo_ref) );\n88: \t\t\n89: \tTopModule top_module1 (\n90: \t\t.in,\n91: \t\t.out_hi(out_hi_dut),\n92: \t\t.out_lo(out_lo_dut) );\n93: \n94: \n95: \tbit strobe = 0;\n96: \ttask wait_for_end_of_timestep;\n97: \t\trepeat(5) begin\n98: \t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n99: \t\t\t@(strobe);\n100: \t\tend\n101: \tendtask\t\n102: \n103: \t\n104: \tfinal begin\n105: \t\tif (stats1.errors == 0) begin\n106: \t\t\t$display("SIMULATION PASSED");\n107: \t\tend else begin\n108: \t\t\t$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);\n109: \t\tend\n110: \n111: \t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n112: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n113: \t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n114: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n115: \n116: \t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n117: \t\t$display("Simulation finished at %0d ps", $time);\n118: \t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n119: \tend\n120: \t\n121: \t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n122: \tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n123: \t// Use explicit sensitivity list here.\n124: \talways @(posedge clk, negedge clk) begin\n125: \n126: \t\tstats1.clocks++;\n127: \t\tif (!tb_match) begin\n128: \t\t\tif (stats1.errors == 0) begin\n129: \t\t\t\tstats1.errortime = $time;\n130: \t\t\t\t$display("FIRST MISMATCH DETECTED at time %0t:", $time);\n131: \t\t\t\t$display("  in: %h (%b)", in, in, in);\n132: \t\t\t\t$display("  Expected: out_hi=%h (%b), out_lo=%h (%b)", out_hi_ref, out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref, out_lo_ref);\n133: \t\t\t\t$display("  Actual:   out_hi=%h (%b), out_lo=%h (%b)", out_hi_dut, out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut, out_lo_dut);\n134: \t\t\tend\n135: \t\t\tstats1.errors++;\n136: \t\tend\n137: \t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n138: \t\tbegin \n139: \t\t\tif (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n140: \t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; \n141: \t\tend\n142: \t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n143: \t\tbegin \n144: \t\t\tif (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n145: \t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; \n146: \t\tend\n147: \n148: \tend\n149: \n150:    // add timeout after 100K cycles\n151:    initial begin\n152:      #1000000\n153:      $display("TIMEOUT");\n154:      $finish();\n155:    end\n156: \n157: endmodule\n\n</previous_tb>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps and advices to avoid syntax error",\n    "interface": "The IO part of a SystemVerilog module, not containing the module implementation",\n    "testbench": "The testbench code to test the module"\n}\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n\nRemember that if the golden testbench contradicts the input_spec, ALWAYS FOLLOW the golden testbench;\nEspecially if the input_spec say some input should not exist, but as long as the golden testbench uses it, you should use it.\nRemember to display "SIMULATION PASSED" when simulation ends if no mismatch occurs, otherwise display "SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y".\nRemember to add display for the FIRST mismatch, while maintaining the original logic of error counting;\nALWAYS generate the complete testbench, no matter how long it is.\nGenerate interface according to golden testbench, even if it contradicts the input_spec. Declare all ports as logic.\n')])]
+[2026-05-13 12:37:06,039 - mage.token_counter - INFO] TokenCounter count_chat [agent=TBGenerator] at temp: 0.85, top_p: 0.95
+[2026-05-13 12:38:30,737 - mage.tb_generator - INFO] Token count: in     3815 tokens, out     2099 tokens
+[2026-05-13 12:38:30,737 - mage.tb_generator - INFO] {
+    "reasoning": "1. **Interface Design**: The `input_spec` defines `TopModule` with `in` (16 bits), `out_hi` (8 bits), and `out_lo` (8 bits). The `golden_testbench` instantiates `TopModule` using these exact names. I will define the module with these ports using `logic` types as requested.\n2. **Module Implementation**: The logic for splitting a 16-bit word into two 8-bit bytes is `out_hi = in[15:8]` and `out_lo = in[7:0]`.\n3. **Testbench Improvement**: \n    - **Maintain Integrity**: I will keep the `stimulus_gen`, `RefModule`, and `tb` structure. I will ensure `stimulus_gen` has the ports `wavedrom_title` and `wavedrom_enable` as requested by the comment in the golden TB.\n    - **Error Display**: I will add a conditional block inside the mismatch detection logic to capture the first mismatch. Per requirements, I will display `in`, `out_hi_ref`, `out_lo_ref`, `out_hi_dut`, and `out_lo_dut` in both HEX and BINARY (since width <= 64).\n    - **Final Status**: I will implement the `final` block to check `stats1.errors`. If 0, display 'SIMULATION PASSED'. Otherwise, display 'SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y'.\n    - **Logic Preservation**: The XOR-based comparison `( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) )` and the individual error counters will be preserved exactly.\n4. **Syntax Error Avoidance Advice**:\n    - Ensure the timescale is defined at the very top.\n    - Do not use double backticks (``) for timescale; use single backticks (`).\n    - Ensure all tasks and modules are properly closed with `endtask` and `endmodule`.\n    - In the `display` statement, ensure the number of format specifiers matches the number of arguments. Avoid passing too many arguments to a single `%h` specifier.",
+    "interface": "module TopModule (\n    input  logic [15:0] in,\n    output logic [7:0]  out_hi,\n    output logic [7:0]  out_lo\n);",
+    "testbench": "`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput logic [511:0] wavedrom_title,\n\toutput logic wavedrom_enable\n);\n\n\ttask wavedrom_start(input[511:0] title = \"\");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start(\"Random inputs\");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend;\n\t\nendmodule\n\nmodule RefModule (\n    input logic [15:0] in,\n    output logic [7:0] out_hi,\n    output logic [7:0] out_lo\n);\n    assign out_hi = in[15:8];\n    assign out_lo = in[7:0];\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile(\"wave.vcd\");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\n\twire tb_match;        // Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in );\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) );\n\n\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors == 0) begin\n\t\t\t$display(\"SIMULATION PASSED\");\n\t\tend else begin\n\t\t\t$display(\"SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d\", stats1.errors, stats1.errortime);\n\t\tend\n\n\t\tif (stats1.errors_out_hi) $display(\"Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.\", \"out_hi\", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display(\"Hint: Output '%s' has no mismatches.\", \"out_hi\");\n\t\tif (stats1.errors_out_lo) $display(\"Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.\", \"out_lo\", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display(\"Hint: Output '%s' has no mismatches.\", \"out_lo\");\n\n\t\t$display(\"Hint: Total mismatched samples is %1d out of %1d samples\\n\", stats1.errors, stats1.clocks);\n\t\t$display(\"Simulation finished at %0d ps\", $time);\n\t\t$display(\"Mismatches: %1d in %1d samples\", stats1.errors, stats1.clocks);\n\tend;\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t// Use explicit sensitivity list here.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) begin\n\t\t\t\tstats1.errortime = $time;\n\t\t\t\t$display(\"FIRST MISMATCH DETECTED at time %0t:\", $time);\n\t\t\t\t$display(\"  in: %h (%b)\", in, in);\n\t\t\t\t$display(\"  Expected: out_hi=%h (%b), out_lo=%h (%b)\", out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);\n\t\t\t\t$display(\"  Actual:   out_hi=%h (%b), out_lo=%h (%b)\", out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);\n\t\t\tend;\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1'b1; end\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1'b1; end\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display(\"TIMEOUT\");\n     $finish();\n   end\n\nendmodule"
+}
+[2026-05-13 12:38:30,740 - mage.agent - INFO] Revised tb:
+[2026-05-13 12:38:30,740 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic [15:0] in,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	always @(posedge clk, negedge clk)
+		in <= $random;
+	
+	initial begin
+		wavedrom_start("Random inputs");
+		repeat(10) @(posedge clk);
+		wavedrom_stop();
+		repeat(100) @(negedge clk);
+		$finish;
+	end;
+	
+endmodule
+
+module RefModule (
+    input logic [15:0] in,
+    output logic [7:0] out_hi,
+    output logic [7:0] out_lo
+);
+    assign out_hi = in[15:8];
+    assign out_lo = in[7:0];
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_hi;
+		int errortime_out_hi;
+		int errors_out_lo;
+		int errortime_out_lo;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [15:0] in;
+	logic [7:0] out_hi_ref;
+	logic [7:0] out_hi_dut;
+	logic [7:0] out_lo_ref;
+	logic [7:0] out_lo_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in );
+	RefModule good1 (
+		.in,
+		.out_hi(out_hi_ref),
+		.out_lo(out_lo_ref) );
+		
+	TopModule top_module1 (
+		.in,
+		.out_hi(out_hi_dut),
+		.out_lo(out_lo_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_out_hi) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);
+		else $display("Hint: Output '%s' has no mismatches.", "out_hi");
+		if (stats1.errors_out_lo) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);
+		else $display("Hint: Output '%s' has no mismatches.", "out_lo");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end;
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("FIRST MISMATCH DETECTED at time %0t:", $time);
+				$display("  in: %h (%b)", in, in);
+				$display("  Expected: out_hi=%h (%b), out_lo=%h (%b)", out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);
+				$display("  Actual:   out_hi=%h (%b), out_lo=%h (%b)", out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);
+			end;
+			stats1.errors++;
+		end
+		if (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))
+		begin if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;
+			stats1.errors_out_hi = stats1.errors_out_hi+1'b1; end
+		if (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))
+		begin if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;
+			stats1.errors_out_lo = stats1.errors_out_lo+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 12:38:30,741 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -o ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv; vvp -n ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp
+[2026-05-13 12:38:30,787 - mage.sim_reviewer - INFO] Simulation is_pass: False, mismatch_cnt: 0, golden_tb_format: False
+output: {
+    "stdout": "",
+    "stderr": "./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:2: error: 'RefModule' has already been declared in this scope.\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:32:      : It was declared here as a module.\n./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:10: error: Module RefModule was already declared here: ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:32\n\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\n"
+}
+[2026-05-13 12:38:30,788 - mage.sim_judge - INFO] Sim judge input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in SystemVerilog design.\nYou can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nA simulation has failed for the rtl and testbench generated by other agents;\nThe related failed_sim_log was given below. The input_spec which the rtl and testbench should follow was also given below.\nPlease judge whether the TESTBENCH need to be modified.\nIf you think so, set tb_needs_fix = True, otherwise set tb_needs_fix = False.\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  in     (16 bits)\n - output out_hi ( 8 bits)\n - output out_lo ( 8 bits)\n\nThe module should implement a combinational circuit that splits an input\nhalf-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.\n\n\n</input_spec>\n<failed_sim_log>\n{\n    "stdout": "",\n    "stderr": "./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:2: error: \'RefModule\' has already been declared in this scope.\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:32:      : It was declared here as a module.\\n./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:10: error: Module RefModule was already declared here: ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:32\\n\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\\n"\n}\n</failed_sim_log>\n<failed_rtl>\n1: module TopModule (\n2:     input  logic [15:0] in,\n3:     output logic [7:0]  out_hi,\n4:     output logic [7:0]  out_lo\n5: );\n6: \n7:     // Combinational splitting of the 16-bit input into two 8-bit bytes\n8:     assign out_hi = in[15:8];\n9:     assign out_lo = in[7:0];\n10: \n11: endmodule\n\n</failed_rtl>\n<failed_testbench>\n1: `timescale 1 ps/1 ps\n2: `define OK 12\n3: `define INCORRECT 13\n4: \n5: module stimulus_gen (\n6: \tinput clk,\n7: \toutput logic [15:0] in,\n8: \toutput logic [511:0] wavedrom_title,\n9: \toutput logic wavedrom_enable\n10: );\n11: \n12: \ttask wavedrom_start(input[511:0] title = "");\n13: \tendtask\n14: \t\n15: \ttask wavedrom_stop;\n16: \t\t#1;\n17: \tendtask\t\n18: \n19: \talways @(posedge clk, negedge clk)\n20: \t\tin <= $random;\n21: \t\n22: \tinitial begin\n23: \t\twavedrom_start("Random inputs");\n24: \t\trepeat(10) @(posedge clk);\n25: \t\twavedrom_stop();\n26: \t\trepeat(100) @(negedge clk);\n27: \t\t$finish;\n28: \tend;\n29: \t\n30: endmodule\n31: \n32: module RefModule (\n33:     input logic [15:0] in,\n34:     output logic [7:0] out_hi,\n35:     output logic [7:0] out_lo\n36: );\n37:     assign out_hi = in[15:8];\n38:     assign out_lo = in[7:0];\n39: endmodule\n40: \n41: module tb();\n42: \n43: \ttypedef struct packed {\n44: \t\tint errors;\n45: \t\tint errortime;\n46: \t\tint errors_out_hi;\n47: \t\tint errortime_out_hi;\n48: \t\tint errors_out_lo;\n49: \t\tint errortime_out_lo;\n50: \n51: \t\tint clocks;\n52: \t} stats;\n53: \t\n54: \tstats stats1;\n55: \t\n56: \t\n57: \twire[511:0] wavedrom_title;\n58: \twire wavedrom_enable;\n59: \tint wavedrom_hide_after_time;\n60: \t\n61: \treg clk=0;\n62: \tinitial forever\n63: \t\t#5 clk = ~clk;\n64: \n65: \tlogic [15:0] in;\n66: \tlogic [7:0] out_hi_ref;\n67: \tlogic [7:0] out_hi_dut;\n68: \tlogic [7:0] out_lo_ref;\n69: \tlogic [7:0] out_lo_dut;\n70: \n71: \tinitial begin \n72: \t\t$dumpfile("wave.vcd");\n73: \t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n74: \tend\n75: \n76: \n77: \twire tb_match;        // Verification\n78: \twire tb_mismatch = ~tb_match;\n79: \t\n80: \tstimulus_gen stim1 (\n81: \t\t.clk,\n82: \t\t.* ,\n83: \t\t.in );\n84: \tRefModule good1 (\n85: \t\t.in,\n86: \t\t.out_hi(out_hi_ref),\n87: \t\t.out_lo(out_lo_ref) );\n88: \t\t\n89: \tTopModule top_module1 (\n90: \t\t.in,\n91: \t\t.out_hi(out_hi_dut),\n92: \t\t.out_lo(out_lo_dut) );\n93: \n94: \n95: \tbit strobe = 0;\n96: \ttask wait_for_end_of_timestep;\n97: \t\trepeat(5) begin\n98: \t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n99: \t\t\t@(strobe);\n100: \t\tend\n101: \tendtask\t\n102: \n103: \t\n104: \tfinal begin\n105: \t\tif (stats1.errors == 0) begin\n106: \t\t\t$display("SIMULATION PASSED");\n107: \t\tend else begin\n108: \t\t\t$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);\n109: \t\tend\n110: \n111: \t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n112: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n113: \t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n114: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n115: \n116: \t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n117: \t\t$display("Simulation finished at %0d ps", $time);\n118: \t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n119: \tend;\n120: \t\n121: \t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n122: \tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n123: \t// Use explicit sensitivity list here.\n124: \talways @(posedge clk, negedge clk) begin\n125: \n126: \t\tstats1.clocks++;\n127: \t\tif (!tb_match) begin\n128: \t\t\tif (stats1.errors == 0) begin\n129: \t\t\t\tstats1.errortime = $time;\n130: \t\t\t\t$display("FIRST MISMATCH DETECTED at time %0t:", $time);\n131: \t\t\t\t$display("  in: %h (%b)", in, in);\n132: \t\t\t\t$display("  Expected: out_hi=%h (%b), out_lo=%h (%b)", out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);\n133: \t\t\t\t$display("  Actual:   out_hi=%h (%b), out_lo=%h (%b)", out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);\n134: \t\t\tend;\n135: \t\t\tstats1.errors++;\n136: \t\tend\n137: \t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n138: \t\tbegin if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n139: \t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; end\n140: \t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n141: \t\tbegin if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n142: \t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; end\n143: \n144: \tend\n145: \n146:    // add timeout after 100K cycles\n147:    initial begin\n148:      #1000000\n149:      $display("TIMEOUT");\n150:      $finish();\n151:    end\n152: \n153: endmodule\n\n</failed_testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps",\n    "tb_needs_fix": false\n}\nEspecially, FORCE SET tb_needs_fix to True if failed_sim_log says there is ANY syntax error in testbench(tb.sv),\nEven if the syntax error looks not related to the failed test case or the testbench looks correct.\n\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n')])]
+[2026-05-13 12:38:30,792 - mage.token_counter - INFO] TokenCounter count_chat [agent=SimJudge] at temp: 0.85, top_p: 0.95
+[2026-05-13 12:38:35,249 - mage.sim_judge - INFO] Token count: in     2391 tokens, out      126 tokens
+[2026-05-13 12:38:35,249 - mage.sim_judge - INFO] {
+    "reasoning": "The failed simulation log explicitly reports multiple syntax errors: 'error: 'RefModule' has already been declared in this scope.' and 'error: Module RefModule was already declared here'. This indicates a name collision between the testbench and a reference module included by the simulation environment. Additionally, the log shows that the simulation failed to open the input file due to these compilation errors. Since the testbench contains the definition of 'RefModule' which conflicts with the environment's reference file, the testbench must be modified to resolve this namespace conflict.",
+    "tb_needs_fix": true
+}
+[2026-05-13 12:38:35,252 - mage.tb_generator - INFO] TB generator input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in SystemVerilog design.\nYou can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nIn order to test a module generated with the given natural language specification:\n1. Please write an IO interface for that module;\n2. Please improve the given golden testbench to test the module.\n\nThe module interface should EXACTLY MATCH the description in input_spec.\n(Including the module name, input/output ports names, and their types)\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  in     (16 bits)\n - output out_hi ( 8 bits)\n - output out_lo ( 8 bits)\n\nThe module should implement a combinational circuit that splits an input\nhalf-word (16 bits, [15:0] ) into lower [7:0] and upper [15:8] bytes.\n\n\n</input_spec>\n\nTo improve the golden testbench, you should add more display to it, while keeping the original functionality.\nIn detail, the testbench you generated should:\n1. MAINTAIN the EXACT SAME functionality, interface and module instantiation  as the golden testbench;\n2. If the golden testbench contradicts the input_spec, ALWAYS FOLLOW the golden testbench;\n3. MAINTAIN the original logic of error counting;\n4. When simulation ends, ADD DISPLAY "SIMULATION PASSED" if no mismatch occurs, otherwise display:\n    "SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y".\nPlease also follow the display prompt below:\n\n1. When the first mismatch occurs, display the input signals, output signals and expected output signals at that time.\n2. For multiple-bit signals displayed in HEX format, also display the BINARY format if its width <= 64.\n\n\n\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\nIn addition, try to give advice to avoid syntax error.\nAn SystemVerilog module always starts with a line starting with the keyword \'module\' followed by the module name.\nIt ends with the keyword \'endmodule\'.\n\nBelow is the golden testbench code for the module generated with the given natural language specification.\n<golden_testbench>\n`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput reg[511:0] wavedrom_title,\n\toutput reg wavedrom_enable\t\n);\n\n\n// Add two ports to module stimulus_gen:\n//    output [511:0] wavedrom_title\n//    output reg wavedrom_enable\n\n\ttask wavedrom_start(input[511:0] title = "");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start("Random inputs");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend\n\t\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile("wave.vcd");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\n\twire tb_match;\t\t// Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in );\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) );\n\n\t\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n\t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n\n\t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n\t\t$display("Simulation finished at %0d ps", $time);\n\t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute\n\t// the sensitivity list of the @(strobe) process, which isn\'t implemented.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; end\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; end\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display("TIMEOUT");\n     $finish();\n   end\n\nendmodule\n\n\n<golden_testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nThere was a generation trial that failed simulation:\n<failed_sim_log>\n{\n    "stdout": "",\n    "stderr": "./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:1: syntax error\\nI give up.\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\\n"\n}\n</failed_sim_log>\n<previous_code>\n1: module TopModule (\n2:     input  logic [15:0] in,\n3:     output logic [7:0]  out_hi,\n4:     output logic [7:0]  out_lo\n5: );\n6: \n7:     // Combinational splitting of the 16-bit input into two 8-bit bytes\n8:     assign out_hi = in[15:8];\n9:     assign out_lo = in[7:0];\n10: \n11: endmodule\n\n</previous_code>\n<previous_tb>\n1: ``timescale 1 ps/1 ps\n2: `define OK 12\n3: `define INCORRECT 13\n4: \n5: module stimulus_gen (\n6: \tinput clk,\n7: \toutput logic [15:0] in,\n8: \toutput logic [511:0] wavedrom_title,\n9: \toutput logic wavedrom_enable\n10: );\n11: \n12: \ttask wavedrom_start(input[511:0] title = "");\n13: \tendtask\n14: \t\n15: \ttask wavedrom_stop;\n16: \t\t#1;\n17: \tendtask\t\n18: \n19: \talways @(posedge clk, negedge clk)\n20: \t\tin <= $random;\n21: \t\n22: \tinitial begin\n23: \t\twavedrom_start("Random inputs");\n24: \t\trepeat(10) @(posedge clk);\n25: \t\twavedrom_stop();\n26: \t\trepeat(100) @(negedge clk);\n27: \t\t$finish;\n28: \tend\n29: \t\n30: endmodule\n31: \n32: module RefModule (\n33:     input logic [15:0] in,\n34:     output logic [7:0] out_hi,\n35:     output logic [7:0] out_lo\n36: );\n37:     assign out_hi = in[15:8];\n38:     assign out_lo = in[7:0];\n39: endmodule\n40: \n41: module tb();\n42: \n43: \ttypedef struct packed {\n44: \t\tint errors;\n45: \t\tint errortime;\n46: \t\tint errors_out_hi;\n47: \t\tint errortime_out_hi;\n48: \t\tint errors_out_lo;\n49: \t\tint errortime_out_lo;\n50: \n51: \t\tint clocks;\n52: \t} stats;\n53: \t\n54: \tstats stats1;\n55: \t\n56: \t\n57: \twire[511:0] wavedrom_title;\n58: \twire wavedrom_enable;\n59: \tint wavedrom_hide_after_time;\n60: \t\n61: \treg clk=0;\n62: \tinitial forever\n63: \t\t#5 clk = ~clk;\n64: \n65: \tlogic [15:0] in;\n66: \tlogic [7:0] out_hi_ref;\n67: \tlogic [7:0] out_hi_dut;\n68: \tlogic [7:0] out_lo_ref;\n69: \tlogic [7:0] out_lo_dut;\n70: \n71: \tinitial begin \n72: \t\t$dumpfile("wave.vcd");\n73: \t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n74: \tend\n75: \n76: \n77: \twire tb_match;        // Verification\n78: \twire tb_mismatch = ~tb_match;\n79: \t\n80: \tstimulus_gen stim1 (\n81: \t\t.clk,\n82: \t\t.* ,\n83: \t\t.in );\n84: \tRefModule good1 (\n85: \t\t.in,\n86: \t\t.out_hi(out_hi_ref),\n87: \t\t.out_lo(out_lo_ref) );\n88: \t\t\n89: \tTopModule top_module1 (\n90: \t\t.in,\n91: \t\t.out_hi(out_hi_dut),\n92: \t\t.out_lo(out_lo_dut) );\n93: \n94: \n95: \tbit strobe = 0;\n96: \ttask wait_for_end_of_timestep;\n97: \t\trepeat(5) begin\n98: \t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n99: \t\t\t@(strobe);\n100: \t\tend\n101: \tendtask\t\n102: \n103: \t\n104: \tfinal begin\n105: \t\tif (stats1.errors == 0) begin\n106: \t\t\t$display("SIMULATION PASSED");\n107: \t\tend else begin\n108: \t\t\t$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);\n109: \t\tend\n110: \n111: \t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n112: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n113: \t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n114: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n115: \n116: \t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n117: \t\t$display("Simulation finished at %0d ps", $time);\n118: \t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n119: \tend\n120: \t\n121: \t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n122: \tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n123: \t// Use explicit sensitivity list here.\n124: \talways @(posedge clk, negedge clk) begin\n125: \n126: \t\tstats1.clocks++;\n127: \t\tif (!tb_match) begin\n128: \t\t\tif (stats1.errors == 0) begin\n129: \t\t\t\tstats1.errortime = $time;\n130: \t\t\t\t$display("FIRST MISMATCH DETECTED at time %0t:", $time);\n131: \t\t\t\t$display("  in: %h (%b)", in, in, in);\n132: \t\t\t\t$display("  Expected: out_hi=%h (%b), out_lo=%h (%b)", out_hi_ref, out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref, out_lo_ref);\n133: \t\t\t\t$display("  Actual:   out_hi=%h (%b), out_lo=%h (%b)", out_hi_dut, out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut, out_lo_dut);\n134: \t\t\tend\n135: \t\t\tstats1.errors++;\n136: \t\tend\n137: \t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n138: \t\tbegin \n139: \t\t\tif (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n140: \t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; \n141: \t\tend\n142: \t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n143: \t\tbegin \n144: \t\t\tif (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n145: \t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; \n146: \t\tend\n147: \n148: \tend\n149: \n150:    // add timeout after 100K cycles\n151:    initial begin\n152:      #1000000\n153:      $display("TIMEOUT");\n154:      $finish();\n155:    end\n156: \n157: endmodule\n\n</previous_tb>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nThere was a generation trial that failed simulation:\n<failed_sim_log>\n{\n    "stdout": "",\n    "stderr": "./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:2: error: \'RefModule\' has already been declared in this scope.\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:32:      : It was declared here as a module.\\n./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv:10: error: Module RefModule was already declared here: ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:32\\n\\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp: Unable to open input file.\\n"\n}\n</failed_sim_log>\n<previous_code>\n1: module TopModule (\n2:     input  logic [15:0] in,\n3:     output logic [7:0]  out_hi,\n4:     output logic [7:0]  out_lo\n5: );\n6: \n7:     // Combinational splitting of the 16-bit input into two 8-bit bytes\n8:     assign out_hi = in[15:8];\n9:     assign out_lo = in[7:0];\n10: \n11: endmodule\n\n</previous_code>\n<previous_tb>\n1: `timescale 1 ps/1 ps\n2: `define OK 12\n3: `define INCORRECT 13\n4: \n5: module stimulus_gen (\n6: \tinput clk,\n7: \toutput logic [15:0] in,\n8: \toutput logic [511:0] wavedrom_title,\n9: \toutput logic wavedrom_enable\n10: );\n11: \n12: \ttask wavedrom_start(input[511:0] title = "");\n13: \tendtask\n14: \t\n15: \ttask wavedrom_stop;\n16: \t\t#1;\n17: \tendtask\t\n18: \n19: \talways @(posedge clk, negedge clk)\n20: \t\tin <= $random;\n21: \t\n22: \tinitial begin\n23: \t\twavedrom_start("Random inputs");\n24: \t\trepeat(10) @(posedge clk);\n25: \t\twavedrom_stop();\n26: \t\trepeat(100) @(negedge clk);\n27: \t\t$finish;\n28: \tend;\n29: \t\n30: endmodule\n31: \n32: module RefModule (\n33:     input logic [15:0] in,\n34:     output logic [7:0] out_hi,\n35:     output logic [7:0] out_lo\n36: );\n37:     assign out_hi = in[15:8];\n38:     assign out_lo = in[7:0];\n39: endmodule\n40: \n41: module tb();\n42: \n43: \ttypedef struct packed {\n44: \t\tint errors;\n45: \t\tint errortime;\n46: \t\tint errors_out_hi;\n47: \t\tint errortime_out_hi;\n48: \t\tint errors_out_lo;\n49: \t\tint errortime_out_lo;\n50: \n51: \t\tint clocks;\n52: \t} stats;\n53: \t\n54: \tstats stats1;\n55: \t\n56: \t\n57: \twire[511:0] wavedrom_title;\n58: \twire wavedrom_enable;\n59: \tint wavedrom_hide_after_time;\n60: \t\n61: \treg clk=0;\n62: \tinitial forever\n63: \t\t#5 clk = ~clk;\n64: \n65: \tlogic [15:0] in;\n66: \tlogic [7:0] out_hi_ref;\n67: \tlogic [7:0] out_hi_dut;\n68: \tlogic [7:0] out_lo_ref;\n69: \tlogic [7:0] out_lo_dut;\n70: \n71: \tinitial begin \n72: \t\t$dumpfile("wave.vcd");\n73: \t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n74: \tend\n75: \n76: \n77: \twire tb_match;        // Verification\n78: \twire tb_mismatch = ~tb_match;\n79: \t\n80: \tstimulus_gen stim1 (\n81: \t\t.clk,\n82: \t\t.* ,\n83: \t\t.in );\n84: \tRefModule good1 (\n85: \t\t.in,\n86: \t\t.out_hi(out_hi_ref),\n87: \t\t.out_lo(out_lo_ref) );\n88: \t\t\n89: \tTopModule top_module1 (\n90: \t\t.in,\n91: \t\t.out_hi(out_hi_dut),\n92: \t\t.out_lo(out_lo_dut) );\n93: \n94: \n95: \tbit strobe = 0;\n96: \ttask wait_for_end_of_timestep;\n97: \t\trepeat(5) begin\n98: \t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n99: \t\t\t@(strobe);\n100: \t\tend\n101: \tendtask\t\n102: \n103: \t\n104: \tfinal begin\n105: \t\tif (stats1.errors == 0) begin\n106: \t\t\t$display("SIMULATION PASSED");\n107: \t\tend else begin\n108: \t\t\t$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);\n109: \t\tend\n110: \n111: \t\tif (stats1.errors_out_hi) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);\n112: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_hi");\n113: \t\tif (stats1.errors_out_lo) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);\n114: \t\telse $display("Hint: Output \'%s\' has no mismatches.", "out_lo");\n115: \n116: \t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n117: \t\t$display("Simulation finished at %0d ps", $time);\n118: \t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n119: \tend;\n120: \t\n121: \t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n122: \tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n123: \t// Use explicit sensitivity list here.\n124: \talways @(posedge clk, negedge clk) begin\n125: \n126: \t\tstats1.clocks++;\n127: \t\tif (!tb_match) begin\n128: \t\t\tif (stats1.errors == 0) begin\n129: \t\t\t\tstats1.errortime = $time;\n130: \t\t\t\t$display("FIRST MISMATCH DETECTED at time %0t:", $time);\n131: \t\t\t\t$display("  in: %h (%b)", in, in);\n132: \t\t\t\t$display("  Expected: out_hi=%h (%b), out_lo=%h (%b)", out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);\n133: \t\t\t\t$display("  Actual:   out_hi=%h (%b), out_lo=%h (%b)", out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);\n134: \t\t\tend;\n135: \t\t\tstats1.errors++;\n136: \t\tend\n137: \t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n138: \t\tbegin if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n139: \t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1\'b1; end\n140: \t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n141: \t\tbegin if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n142: \t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1\'b1; end\n143: \n144: \tend\n145: \n146:    // add timeout after 100K cycles\n147:    initial begin\n148:      #1000000\n149:      $display("TIMEOUT");\n150:      $finish();\n151:    end\n152: \n153: endmodule\n\n</previous_tb>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps and advices to avoid syntax error",\n    "interface": "The IO part of a SystemVerilog module, not containing the module implementation",\n    "testbench": "The testbench code to test the module"\n}\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n\nRemember that if the golden testbench contradicts the input_spec, ALWAYS FOLLOW the golden testbench;\nEspecially if the input_spec say some input should not exist, but as long as the golden testbench uses it, you should use it.\nRemember to display "SIMULATION PASSED" when simulation ends if no mismatch occurs, otherwise display "SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y".\nRemember to add display for the FIRST mismatch, while maintaining the original logic of error counting;\nALWAYS generate the complete testbench, no matter how long it is.\nGenerate interface according to golden testbench, even if it contradicts the input_spec. Declare all ports as logic.\n')])]
+[2026-05-13 12:38:35,261 - mage.token_counter - INFO] TokenCounter count_chat [agent=TBGenerator] at temp: 0.85, top_p: 0.95
+[2026-05-13 12:39:55,255 - mage.tb_generator - INFO] Token count: in     5843 tokens, out     1925 tokens
+[2026-05-13 12:39:55,256 - mage.tb_generator - INFO] {
+    "reasoning": "1. **Interface Design**: Based on the `input_spec`, the module `TopModule` requires `input [15:0] in`, `output [7:0] out_hi`, and `output [7:0] out_lo`. I will declare all ports using the `logic` keyword as requested.\n2. **RefModule Handling**: The failed simulation logs indicate that `RefModule` is already defined in the environment. To avoid 'already declared' errors, I will remove the `RefModule` definition from my testbench code, as it is provided externally by the test harness.\n3. **Testbench Improvement**: \n    - I will maintain the `stimulus_gen` and `tb` structure.\n    - I will implement the error counting logic exactly as in the golden testbench.\n    - I will add the `final` block logic to display 'SIMULATION PASSED' or 'SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME y'.\n    - I will add the detailed first-mismatch display: showing `in` (hex/bin), `out_hi` (hex/bin), `out_lo` (hex/bin), and the expected values.\n    - For multi-bit signals, I will use `%h` and `%b` for hex and binary formats.\n4. **Syntax Error Advice**: \n    - Avoid adding semicolons after `endmodule` or `end` (e.g., `endmodule;` is wrong).\n    - Ensure all `task` definitions end with `endtask`.\n    - When using `.*` in instantiation, ensure port names match exactly.\n    - Do not redefine modules like `RefModule` if they are part of the global scope in the simulator environment.",
+    "interface": "module TopModule (\n    input  logic [15:0] in,\n    output logic [7:0]  out_hi,\n    output logic [7:0]  out_lo\n);",
+    "testbench": "`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [15:0] in,\n\toutput logic [511:0] wavedrom_title,\n\toutput logic wavedrom_enable\n);\n\n\ttask wavedrom_start(input[511:0] title = \"\");\n\tendtask\n\t\n\ttask wavedrom_stop;\n\t\t#1;\n\tendtask\t\n\n\talways @(posedge clk, negedge clk)\n\t\tin <= $random;\n\t\n\tinitial begin\n\t\twavedrom_start(\"Random inputs\");\n\t\trepeat(10) @(posedge clk);\n\t\twavedrom_stop();\n\t\trepeat(100) @(negedge clk);\n\t\t$finish;\n\tend\n\t\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_out_hi;\n\t\tint errortime_out_hi;\n\t\tint errors_out_lo;\n\t\tint errortime_out_lo;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [15:0] in;\n\tlogic [7:0] out_hi_ref;\n\tlogic [7:0] out_hi_dut;\n\tlogic [7:0] out_lo_ref;\n\tlogic [7:0] out_lo_dut;\n\n\tinitial begin \n\t\t$dumpfile(\"wave.vcd\");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );\n\tend\n\n\n\twire tb_match;        // Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in );\n\tRefModule good1 (\n\t\t.in,\n\t\t.out_hi(out_hi_ref),\n\t\t.out_lo(out_lo_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.in,\n\t\t.out_hi(out_hi_dut),\n\t\t.out_lo(out_lo_dut) );\n\n\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors == 0) begin\n\t\t\t$display(\"SIMULATION PASSED\");\n\t\tend else begin\n\t\t\t$display(\"SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d\", stats1.errors, stats1.errortime);\n\t\tend\n\n\t\tif (stats1.errors_out_hi) $display(\"Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.\", \"out_hi\", stats1.errors_out_hi, stats1.errortime_out_hi);\n\t\telse $display(\"Hint: Output '%s' has no mismatches.\", \"out_hi\");\n\t\tif (stats1.errors_out_lo) $display(\"Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.\", \"out_lo\", stats1.errors_out_lo, stats1.errortime_out_lo);\n\t\telse $display(\"Hint: Output '%s' has no mismatches.\", \"out_lo\");\n\n\t\t$display(\"Hint: Total mismatched samples is %1d out of %1d samples\\n\", stats1.errors, stats1.clocks);\n\t\t$display(\"Simulation finished at %0d ps\", $time);\n\t\t$display(\"Mismatches: %1d in %1d samples\", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );\n\t// Use explicit sensitivity list here.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) begin\n\t\t\t\tstats1.errortime = $time;\n\t\t\t\t$display(\"FIRST MISMATCH DETECTED at time %0t:\", $time);\n\t\t\t\t$display(\"  in: %h (%b)\", in, in);\n\t\t\t\t$display(\"  Expected: out_hi=%h (%b), out_lo=%h (%b)\", out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);\n\t\t\t\t$display(\"  Actual:   out_hi=%h (%b), out_lo=%h (%b)\", out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);\n\t\t\tend\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))\n\t\tbegin \n\t\t\tif (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;\n\t\t\tstats1.errors_out_hi = stats1.errors_out_hi+1'b1; \n\t\tend\n\t\tif (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))\n\t\tbegin \n\t\t\tif (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;\n\t\t\tstats1.errors_out_lo = stats1.errors_out_lo+1'b1; \n\t\tend\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display(\"TIMEOUT\");\n     $finish();\n   end\n\nendmodule"
+}
+[2026-05-13 12:39:55,258 - mage.agent - INFO] Revised tb:
+[2026-05-13 12:39:55,259 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic [15:0] in,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	always @(posedge clk, negedge clk)
+		in <= $random;
+	
+	initial begin
+		wavedrom_start("Random inputs");
+		repeat(10) @(posedge clk);
+		wavedrom_stop();
+		repeat(100) @(negedge clk);
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_hi;
+		int errortime_out_hi;
+		int errors_out_lo;
+		int errortime_out_lo;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [15:0] in;
+	logic [7:0] out_hi_ref;
+	logic [7:0] out_hi_dut;
+	logic [7:0] out_lo_ref;
+	logic [7:0] out_lo_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,out_hi_ref,out_hi_dut,out_lo_ref,out_lo_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in );
+	RefModule good1 (
+		.in,
+		.out_hi(out_hi_ref),
+		.out_lo(out_lo_ref) );
+		
+	TopModule top_module1 (
+		.in,
+		.out_hi(out_hi_dut),
+		.out_lo(out_lo_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_out_hi) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_hi", stats1.errors_out_hi, stats1.errortime_out_hi);
+		else $display("Hint: Output '%s' has no mismatches.", "out_hi");
+		if (stats1.errors_out_lo) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out_lo", stats1.errors_out_lo, stats1.errortime_out_lo);
+		else $display("Hint: Output '%s' has no mismatches.", "out_lo");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_hi_ref, out_lo_ref } === ( { out_hi_ref, out_lo_ref } ^ { out_hi_dut, out_lo_dut } ^ { out_hi_ref, out_lo_ref } ) );
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("FIRST MISMATCH DETECTED at time %0t:", $time);
+				$display("  in: %h (%b)", in, in);
+				$display("  Expected: out_hi=%h (%b), out_lo=%h (%b)", out_hi_ref, out_hi_ref, out_hi_ref, out_lo_ref, out_lo_ref);
+				$display("  Actual:   out_hi=%h (%b), out_lo=%h (%b)", out_hi_dut, out_hi_dut, out_hi_dut, out_lo_dut, out_lo_dut);
+			end
+			stats1.errors++;
+		end
+		if (out_hi_ref !== ( out_hi_ref ^ out_hi_dut ^ out_hi_ref ))
+		begin 
+			if (stats1.errors_out_hi == 0) stats1.errortime_out_hi = $time;
+			stats1.errors_out_hi = stats1.errors_out_hi+1'b1; 
+		end
+		if (out_lo_ref !== ( out_lo_ref ^ out_lo_dut ^ out_lo_ref ))
+		begin 
+			if (stats1.errors_out_lo == 0) stats1.errortime_out_lo = $time;
+			stats1.errors_out_lo = stats1.errors_out_lo+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-13 12:39:55,260 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -o ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv; vvp -n ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_output.vvp
+[2026-05-13 12:39:55,420 - mage.sim_reviewer - INFO] Simulation is_pass: True, mismatch_cnt: 0, golden_tb_format: False
+output: {
+    "stdout": "VCD info: dumpfile wave.vcd opened for output.\n./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/tb.sv:27: $finish called at 1090 (1ps)\nSIMULATION PASSED\nHint: Output 'out_hi' has no mismatches.\nHint: Output 'out_lo' has no mismatches.\nHint: Total mismatched samples is 0 out of 218 samples\n\nSimulation finished at 1090 ps\nMismatches: 0 in 218 samples\n",
+    "stderr": ""
+}
+[2026-05-13 12:39:55,420 - mage.token_counter - INFO] TBGenerator cnt          : in    13948 tokens, out     8083 tokens
+[2026-05-13 12:39:55,421 - mage.token_counter - INFO] RTLGenerator cnt         : in     3178 tokens, out      291 tokens
+[2026-05-13 12:39:55,421 - mage.token_counter - INFO] SimJudge cnt             : in     7210 tokens, out      446 tokens
+[2026-05-13 12:39:55,421 - mage.token_counter - INFO] Total cnt                : in    24336 tokens, out     8820 tokens
+[2026-05-13 12:39:55,421 - mage.token_counter - INFO] Total cost               : $0.00 USD
+[2026-05-13 12:39:55,432 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -s tb -o ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_golden.vvp ./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_test.sv ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_ref.sv; vvp -n ./output_t22b_gemma4_26b_shard1_0/VERILOG_EVAL_V2_Prob015_vector1/sim_golden.vvp
+[2026-05-13 12:39:55,513 - mage.sim_reviewer - INFO] Golden simulation is_pass: True, 
+output: {
+    "stdout": "VCD info: dumpfile wave.vcd opened for output.\n./verilog-eval/dataset_spec-to-rtl/Prob015_vector1_test.sv:35: $finish called at 1090 (1ps)\nHint: Output 'out_hi' has no mismatches.\nHint: Output 'out_lo' has no mismatches.\nHint: Total mismatched samples is 0 out of 218 samples\n\nSimulation finished at 1090 ps\nMismatches: 0 in 218 samples\n",
+    "stderr": ""
+}

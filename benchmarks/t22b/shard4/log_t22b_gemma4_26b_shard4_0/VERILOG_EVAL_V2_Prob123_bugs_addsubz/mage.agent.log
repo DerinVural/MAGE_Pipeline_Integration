@@ -1,0 +1,458 @@
+[2026-05-13 12:11:32,333 - mage.agent - INFO] Initial tb:
+[2026-05-13 12:11:32,334 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic do_sub,
+	output logic [7:0] a, b,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable,
+	input tb_match
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		{a, b} <= 16'haabb;
+		do_sub <= 0;
+		@(negedge clk) wavedrom_start("");
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			
+			@(posedge clk, negedge clk) {a, b} <= 16'h0303; do_sub <= 1'b0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			@(posedge clk, negedge clk) {a, b} <= 16'h0304; do_sub <= 1'b0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			@(posedge clk, negedge clk) {a, b} <= 16'hfd03; do_sub <= 1'b0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			@(posedge clk, negedge clk) {a, b} <= 16'hfd04; do_sub <= 1'b0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+		wavedrom_stop();
+		
+		repeat(100) @(posedge clk, negedge clk) begin
+			{a,b, do_sub} <= $urandom;
+		end
+			
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+		int errors_result_is_zero;
+		int errortime_result_is_zero;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic do_sub;
+	logic [7:0] a;
+	logic [7:0] b;
+	logic [7:0] out_ref;
+	logic [7:0] out_dut;
+	logic result_is_zero_ref;
+	logic result_is_zero_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,do_sub,a,b,out_ref,out_dut,result_is_zero_ref,result_is_zero_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.do_sub,
+		.a,
+		.b );
+	
+	RefModule good1 (
+		.do_sub,
+		.a,
+		.b,
+		.out(out_ref),
+		.result_is_zero(result_is_zero_ref) );
+		
+	TopModule top_module1 (
+		.do_sub,
+		.a,
+		.b,
+		.out(out_dut),
+		.result_is_zero(result_is_zero_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	
+	final begin
+		if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+		else $display("Hint: Output '%s' has no mismatches.", "out");
+		if (stats1.errors_result_is_zero) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "result_is_zero", stats1.errors_result_is_zero, stats1.errortime_result_is_zero);
+		else $display("Hint: Output '%s' has no mismatches.", "result_is_zero");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_ref, result_is_zero_ref } === ( { out_ref, result_is_zero_ref } ^ { out_dut, result_is_zero_dut } ^ { out_ref, result_is_zero_ref } ) );
+	
+	// Combinational logic mismatch display
+	always @(*) begin
+		if (!tb_match && stats1.errors > 0) begin
+			// We only want to display the very first mismatch details once.
+			// However, since this is @(*), we need to be careful. 
+			// The logic below checks if the error just happened.
+			// To follow instructions: "When the first mismatch occurs, display the input signals, output signals and expected output signals at that time."
+			// Since we can't easily detect 'first' in a pure @(*) without a flag, we'll rely on the error counting logic below.
+		end
+	end
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				$display("First mismatch detected at time %0t:", $time);
+				$display("Inputs: do_sub=%b, a=%h (%b), b=%h (%b)", do_sub, a, a, b, b);
+				$display("Got Output: out=%h (%b), result_is_zero=%b", out_dut, out_dut, result_is_zero_dut);
+				$display("Exp Output: out=%h (%b), result_is_zero=%b", out_ref, out_ref, result_is_zero_ref);
+			end;
+			stats1.errors++;
+		end
+
+		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			stats1.errors_out = stats1.errors_out+1'b1; 
+		end
+
+		if (result_is_zero_ref !== ( result_is_zero_ref ^ result_is_zero_dut ^ result_is_zero_ref ))
+		begin 
+			if (stats1.errors_result_is_zero == 0) stats1.errortime_result_is_zero = $time;
+			stats1.errors_result_is_zero = stats1.errors_result_is_zero+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+module RefModule (
+    input logic do_sub,
+    input logic [7:0] a,
+    input logic [7:0] b,
+    output logic [7:0] out,
+    output logic result_is_zero
+);
+    always_comb begin
+        if (do_sub) out = a - b;
+        else        out = a + b;
+        result_is_zero = (out == 8'b0);
+    end
+endmodule
+[2026-05-13 12:11:32,334 - mage.agent - INFO] Initial if:
+[2026-05-13 12:11:32,334 - mage.agent - INFO] module TopModule (
+    input logic do_sub,
+    input logic [7:0] a,
+    input logic [7:0] b,
+    output logic [7:0] out,
+    output logic result_is_zero
+);
+[2026-05-13 12:11:32,340 - mage.agent - INFO] 
+Consider the following adder-subtractor with a zero flag:
+
+  synthesis verilog_input_version verilog_2001
+  module TopModule (
+      input do_sub,
+      input [7:0] a,
+      input [7:0] b,
+      output reg [7:0] out,
+      output reg result_is_zero
+  );
+
+      always @(*) begin
+          case (do_sub)
+            0: out = a+b;
+            1: out = a-b;
+          endcase
+
+          if (~out)
+              result_is_zero = 1;
+      end
+
+  endmodule
+
+Unfortunately, this module has a bug. Implement a new version of this
+module that fixes the bug.
+
+
+[2026-05-13 12:11:47,656 - mage.agent - INFO] Initial rtl:
+[2026-05-13 12:11:47,656 - mage.agent - INFO] module TopModule (
+    input  logic       do_sub,
+    input  logic [7:0] a,
+    input  logic [7:0] b,
+    output logic [7:0] out,
+    output logic       result_is_zero
+);
+
+    always @(*) begin
+        // Default values to prevent latches
+        out = 8'b0;
+        result_is_zero = 1'b0;
+
+        // Perform addition or subtraction
+        if (do_sub) begin
+            out = a - b;
+        end else begin
+            out = a + b;
+        end
+
+        // Calculate zero flag based on the result
+        if (out == 8'b0) begin
+            result_is_zero = 1'b1;
+        end else begin
+            result_is_zero = 1'b0;
+        end
+    end
+
+endmodule
+[2026-05-13 12:11:53,046 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 12:13:37,792 - mage.agent - INFO] Revised tb:
+[2026-05-13 12:13:37,792 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic do_sub,
+	output logic [7:0] a, b,
+	output logic [511:0] wavedrom_title,
+	output logic wavedrom_enable,
+	input tb_match
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		{a, b} <= 16'haabb;
+		do_sub <= 0;
+		@(negedge clk) wavedrom_start("");
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			
+			@(posedge clk, negedge clk) {a, b} <= 16'h0303; do_sub <= 1'b0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			@(posedge clk, negedge clk) {a, b} <= 16'h0304; do_sub <= 1'b0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			@(posedge clk, negedge clk) {a, b} <= 16'hfd03; do_sub <= 1'b0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+			@(posedge clk, negedge clk) {a, b} <= 16'hfd04; do_sub <= 1'b0;
+			@(posedge clk, negedge clk) do_sub <= 0;
+			@(posedge clk, negedge clk) do_sub <= 1;
+		wavedrom_stop();
+		
+		repeat(100) @(posedge clk, negedge clk) begin
+			{a,b, do_sub} <= $urandom;
+		end
+			
+		$finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out;
+		int errortime_out;
+		int errors_result_is_zero;
+		int errortime_result_is_zero;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic do_sub;
+	logic [7:0] a;
+	logic [7:0] b;
+	logic [7:0] out_ref;
+	logic [7:0] out_dut;
+	logic result_is_zero_ref;
+	logic result_is_zero_dut;
+
+	// Variables for first mismatch display
+	bit first_mismatch_logged = 0;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,do_sub,a,b,out_ref,out_dut,result_is_zero_ref,result_is_zero_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.do_sub,
+		.a,
+		.b );
+	RefModule good1 (
+		.do_sub,
+		.a,
+		.b,
+		.out(out_ref),
+		.result_is_zero(result_is_zero_ref) );
+		
+	TopModule top_module1 (
+		.do_sub,
+		.a,
+		.b,
+		.out(out_dut),
+		.result_is_zero(result_is_zero_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end;
+	endtask	
+
+	
+	final begin
+		if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+		else $display("Hint: Output '%s' has no mismatches.", "out");
+		if (stats1.errors_result_is_zero) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "result_is_zero", stats1.errors_result_is_zero, stats1.errortime_result_is_zero);
+		else $display("Hint: Output '%s' has no mismatches.", "result_is_zero");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	end;
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { out_ref, result_is_zero_ref } === ( { out_ref, result_is_zero_ref } ^ { out_dut, result_is_zero_dut } ^ { out_ref, result_is_zero_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				// Display first mismatch
+				$display("First Mismatch at %0t ps:", $time);
+				$display("  Inputs: do_sub=%b, a=%h (%b), b=%h (%b)", do_sub, a, a, b, b);
+				$display("  Expected: out=%h (%b), result_is_zero=%b", out_ref, out_ref, result_is_zero_ref);
+				$display("  Actual:   out=%h (%b), result_is_zero=%b", out_dut, out_dut, result_is_zero_dut);
+			end
+			stats1.errors++;
+		end
+
+		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			stats1.errors_out = stats1.errors_out+1'b1; 
+		end
+
+		if (result_is_zero_ref !== ( result_is_zero_ref ^ result_is_zero_dut ^ result_is_zero_ref ))
+		begin 
+			if (stats1.errors_result_is_zero == 0) stats1.errortime_result_is_zero = $time;
+			stats1.errors_result_is_zero = stats1.errors_result_is_zero+1'b1; 
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule

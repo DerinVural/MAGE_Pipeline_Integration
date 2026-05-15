@@ -1,0 +1,973 @@
+[2026-05-14 12:56:57,460 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:56:57,462 - mage.agent - INFO] `timescale 1 ps/1 ps
+module tb();
+    reg clk = 0;
+    always #5 clk = ~clk;
+
+    reg areset;
+    reg bump_left;
+    reg bump_right;
+    logic walk_left_dut;
+    logic walk_right_dut;
+    logic walk_left_ref;
+    logic walk_right_ref;
+
+    // Reference model
+    RefModule ref_mod (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .walk_left(walk_left_ref),
+        .walk_right(walk_right_ref)
+    );
+
+    // DUT
+    TopModule dut (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .walk_left(walk_left_dut),
+        .walk_right(walk_right_dut)
+    );
+
+    // Match logic
+    wire tb_match = ( {walk_left_ref, walk_right_ref} === ( {walk_left_ref, walk_right_ref} ^ {walk_left_dut, walk_right_dut} ^ {walk_left_ref, walk_right_ref} ) );
+    reg [1:0] error_count;
+    reg [31:0] first_error_time;
+    reg [31:0] first_mismatch_count;
+    reg error_flag;
+
+    // Tracking variables for queue display
+    localparam MAX_QUEUE_SIZE = 5;
+    reg [3:0] input_queue [0:MAX_QUEUE_SIZE-1]; // Assuming inputs are 4 bits? Or individual signals.
+    // Wait: bump_left and bump_right are each 1 bit, so inputs are 2 bits.
+    // Revised queue sizes: Each input is 2 bits, output is 2 bits (walk left/right, each 1 bit). So store clk, areset, bump_left, bump_right each cycle.
+    // But the example uses MAX_QUEUE_SIZE=5. Alternatively, track clk, reset, inputs, outputs over multiple cycles.
+    // This may need adjustment. Original display_queue_example uses input, got, golden.
+
+    // Reimplemented using inputs as a 2-bit vector (bump_left and right), and outputs as 2 bits (walk left and right).
+    // Reset signal is areset.
+    // For queue storage: clk, areset, bump_left, bump_right, walk_left_dut, walk_right_dut, walk_left_ref, walk_right_ref.
+    // Or track each relevant variable. Let's track the current state, inputs, outputs.
+
+    // To implement the queue as per the example.
+    // Assume state is a single bit since two states (left and right walk), but in the display example, it's not the state. Since the module's state is internal, we track inputs and outputs.
+    // Let's track: areset, bump_left, bump_right, walk_left_dut, walk_right_dut, walk_left_ref, walk_right_ref over 5 cycles.
+    reg [4:0] input_sequence [0:4]; // Each entry contains areset, bump_left, bump_right, time
+    reg [1:0] got_sequence [0:4];
+    reg [1:0] golden_sequence [0:4];
+    integer queue_ptr = 0;
+
+    always @(posedge clk, negedge clk) begin
+        if (queue_ptr >= MAX_QUEUE_SIZE) queue_ptr <= 0;
+        input_sequence[queue_ptr] = {areset, bump_left, bump_right};
+        got_sequence[queue_ptr] = {walk_left_dut, walk_right_dut};
+        golden_sequence[queue_ptr] = {walk_left_ref, walk_right_ref};
+        queue_ptr <= queue_ptr + 1;
+    end
+
+    // Detect first mismatch
+    always @(posedge clk, negedge clk) begin
+        if (!error_flag && !tb_match) begin
+            error_count <= error_count + 1;
+            if (error_count == 0) first_error_time <= $time;
+            error_flag <= 1;
+            // Display mismatch
+            $display("Mismatch detected at time %t", $time);
+            // Display queue
+            $display("Last %0d cycles of simulation:", MAX_QUEUE_SIZE);
+            for (int i=0; i < MAX_QUEUE_SIZE; i++) begin
+                if (i >= queue_ptr) begin
+                    // Handle wrap-around
+                    $display("Cycle %0d: areset=%b, bump_left=%b, bump_right=%b, got=%b%b, golden=%b%b",
+                        (queue_ptr + i) % MAX_QUEUE_SIZE,
+                        input_sequence[(queue_ptr + i) % MAX_QUEUE_SIZE][4],
+                        input_sequence[(queue_ptr + i) % MAX_QUEUE_SIZE][3],
+                        input_sequence[(queue_ptr + i) % MAX_QUEUE_SIZE][2],
+                        got_sequence[(queue_ptr + i) % MAX_QUEUE_SIZE][1],
+                        got_sequence[(queue_ptr + i) % MAX_QUEUE_SIZE][0],
+                        golden_sequence[(queue_ptr + i) % MAX_QUEUE_SIZE][1],
+                        golden_sequence[(queue_ptr + i) % MAX_QUEUE_SIZE][0]);
+                end else begin
+                    $display("Cycle %0d: areset=%b, bump_left=%b, bump_right=%b, got=%b%b, golden=%b%b",
+                        i,
+                        input_sequence[i][4],
+                        input_sequence[i][3],
+                        input_sequence[i][2],
+                        got_sequence[i][1],
+                        got_sequence[i][0],
+                        golden_sequence[i][1],
+                        golden_sequence[i][0]);
+                end
+            end
+        end
+    end
+
+    // Simulation control
+    initial begin
+        areset = 1;
+        bump_left = 0;
+        bump_right = 0;
+        error_count = 0;
+        error_flag = 0;
+        // Reset test sequence
+        // Add test cases here: areset pulses, bump inputs.
+        #10;
+        // After reset, apply stimuli
+        areset = 0;
+        #20;
+        bump_left = 1;
+        bump_right = 0;
+        #10;
+        bump_left = 0;
+        bump_right = 1;
+        // Continue for more cycles
+        #100;
+        // Check for mismatches
+        if (error_count > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", error_count, first_error_time);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+        $finish;
+    end
+endmodule
+
+// Reference module (assumed to be correct behavior)
+module RefModule (
+    input clk,
+    input areset,
+    input bump_left,
+    input bump_right,
+    output reg walk_left,
+    output reg walk_right
+);
+    always @(posedge clk) begin
+        if (areset) begin
+            walk_left <= 1;
+            walk_right <= 0;
+        end else begin
+            if (bump_left) begin
+                walk_left <= 0;
+                walk_right <= 1;
+            end else if (bump_right) begin
+                walk_left <= 1;
+                walk_right <= 0;
+            end else begin
+                walk_left <= walk_left;
+                walk_right <= walk_right;
+            end
+        end
+    end
+endmodule
+[2026-05-14 12:56:57,462 - mage.agent - INFO] Initial if:
+[2026-05-14 12:56:57,462 - mage.agent - INFO] module TopModule (input clk, input areset, input bump_left, input bump_right, output walk_left, output walk_right);
+[2026-05-14 12:56:57,466 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+ - input  bump_left
+ - input  bump_right
+ - output walk_left
+ - output walk_right
+
+The module should implement a simple game called Lemmings which involves
+critters with fairly simple brains. So simple that we are going to model
+it using a finite state machine. In the Lemmings' 2D world, Lemmings can
+be in one of two states: walking left (walk_left is 1) or walking right
+(walk_right is 1). It will switch directions if it hits an obstacle. In
+particular, if a Lemming is bumped on the left (by receiving a 1 on
+bump_left), it will walk right. If it's bumped on the right (by receiving
+a 1 on bump_right), it will walk left. If it's bumped on both sides at
+the same time, it will still switch directions.
+
+The module should implement a Moore state machine with two states, two
+inputs, and one output (internal to the module) that models this
+behaviour. areset is positive edge triggered asynchronous resetting the
+Lemming machine to walk left. Assume all sequential logic is triggered on
+the positive edge of the clock.
+
+
+[2026-05-14 12:57:00,888 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:57:00,888 - mage.agent - INFO] module TopModule (input logic clk, input logic areset, input logic bump_left, input logic bump_right, output logic walk_left, output logic walk_right);
+
+localparam STATE_LEFT = 1'b0;
+localparam STATE_RIGHT = 1'b1;
+
+logic state;
+logic next_state;
+
+initial begin
+    state = STATE_LEFT;
+end
+
+always @(posedge clk or posedge areset) begin
+    if (areset) begin
+        state <= STATE_LEFT;
+    end else begin
+        state <= next_state;
+    end
+end
+
+// Next state logic
+always @(*) begin
+    case (state)
+        STATE_LEFT: begin
+            if (bump_left || bump_right) begin
+                next_state = STATE_RIGHT;
+            end else begin
+                next_state = STATE_LEFT;
+            end
+        end
+        STATE_RIGHT: begin
+            if (bump_left || bump_right) begin
+                next_state = STATE_LEFT;
+            end else begin
+                next_state = STATE_RIGHT;
+            end
+        end
+        default: next_state = STATE_LEFT;
+    endcase
+end
+
+// Output logic based on current state
+assign walk_left = (state == STATE_LEFT);
+assign walk_right = (state == STATE_RIGHT);
+
+endmodule
+[2026-05-14 12:57:01,856 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 12:57:16,538 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:57:16,538 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic areset,
+    output logic bump_left,
+    output logic bump_right,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+    reg reset;
+    assign areset = reset;
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input[511:0] title = ""); endtask
+    task wavedrom_stop; #1; endtask
+
+    initial begin
+        reset <= 1'b1;
+        {bump_right, bump_left} <= 3'h3;
+        wavedrom_start("Asynchronous reset");
+        reset_test(1);
+        repeat(3) @(posedge clk);
+        {bump_right, bump_left} <= 2;
+        repeat(2) @(posedge clk);
+        {bump_right, bump_left} <= 1;
+        repeat(2) @(posedge clk);
+        wavedrom_stop();
+        @(posedge clk);
+        repeat(200) @(posedge clk, negedge clk) begin
+            {bump_right, bump_left} <= $random & $random;
+            reset <= !($random & 31);
+        end
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_walk_left;
+        int errortime_walk_left;
+        int errors_walk_right;
+        int errortime_walk_right;
+        int clocks;
+    } stats;
+    stats stats1 = {0, 0, 0, 0, 0, 0, 0};
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic areset;
+    logic bump_left;
+    logic bump_right;
+    logic walk_left_ref;
+    logic walk_right_ref;
+    logic walk_left_dut;
+    logic walk_right_dut;
+    wire tb_match = ~((walk_left_ref !== walk_left_dut) || (walk_right_ref !== walk_right_dut));
+    assign tb_mismatch = ~tb_match;
+    stimulus_gen stim1 (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .tb_match(tb_match)
+    );
+    RefModule good1 (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .walk_left(walk_left_ref),
+        .walk_right(walk_right_ref)
+    );
+    TopModule top_module1 (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .walk_left(walk_left_dut),
+        .walk_right(walk_right_dut)
+    );
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, clk, areset, bump_left, bump_right, walk_left_ref, walk_left_dut, walk_right_ref, walk_right_dut);
+    end
+    wire tb_mismatch;
+    reg first_mismatch = 1;
+    reg [31:0] error_count = 0;
+    reg [31:0] first_time;
+    reg [31:0] walk_left_error_time;
+    reg [31:0] walk_right_error_time;
+    always @(posedge clk) begin
+        if (first_mismatch && tb_mismatch) begin
+            $display("First Mismatch at time %0d:
+Input Signals: bump_left=%b, bump_right=%b, areset=%b
+Output Signals: walk_left_dut=%b, walk_right_dut=%b
+Expected Outputs: walk_left_ref=%b, walk_right_ref=%b", $time, bump_left, bump_right, areset, walk_left_dut, walk_right_dut, walk_left_ref, walk_right_ref);
+            if (walk_left_ref !== walk_left_dut ^ walk_right_ref !== walk_right_dut) begin
+                if (walk_left_ref !== walk_left_dut) $display("walk_left Mismatch at %0d", $time);
+                else $display("walk_right Mismatch at %0d", $time);
+            end
+            first_mismatch = 0;
+            first_time = $time;
+            if (walk_left_ref !== walk_left_dut) walk_left_error_time = $time;
+            else walk_right_error_time = $time;
+        end
+        if (tb_mismatch) begin
+            error_count += 1;
+            if (walk_left_ref !== walk_left_dut) stats1.errors_walk_left += 1;
+            else stats1.errors_walk_right += 1;
+        end
+        stats1.clocks += 1;
+    end
+    final begin
+        if (error_count > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", error_count, first_time);
+            $display("walk_left first mismatch at %0d: dut=%b, ref=%b", walk_left_error_time, walk_left_dut, walk_left_ref);
+            $display("walk_right first mismatch at %0d: dut=%b, ref=%b", walk_right_error_time, walk_right_dut, walk_right_ref);
+        end else $display("SIMULATION PASSED");
+        $display("Total Mismatches: %0d out of %0d samples", error_count, stats1.clocks);
+    end
+    // Timeout after 100K cycles
+    initial begin #1000000 $display("TIMEOUT"); $finish; end
+endmodule
+[2026-05-14 12:57:41,926 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:57:41,926 - mage.agent - INFO] `timescale 1 ps/1 ps
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_walk_left;
+        int errortime_walk_left;
+        int errors_walk_right;
+        int errortime_walk_right;
+        int clocks;
+    } stats;
+    stats stats1;
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic areset;
+    logic bump_left;
+    logic bump_right;
+    logic walk_left_ref;
+    logic walk_right_ref;
+    logic walk_left_dut;
+    logic walk_right_dut;
+    wire tb_match;
+    wire tb_mismatch;
+    initial begin
+        clk = 0;
+        areset = 1;
+        bump_left = 0;
+        bump_right = 0;
+        #10;
+        areset = 0;
+        $dumpfile("wave.vcd");
+        $dumpvars(1, clk, areset, bump_left, bump_right, walk_left_ref, walk_left_dut, walk_right_ref, walk_right_dut);
+    end
+    initial begin
+        reg [511:0] title;
+        reg [1:0] test_pattern;
+        reg reset_state;
+        reg async_reset;
+        reg [1:0] bump_state;
+        title = "Asynchronous reset";
+        stimulus_gen stim_gen(
+            .clk(clk),
+            .areset(areset),
+            .bump_left(bump_left),
+            .bump_right(bump_right),
+            .wavedrom_title(wavedrom_title),
+            .wavedrom_enable(wavedrom_enable),
+            .tb_match(tb_match)
+        );
+        RefModule ref_mod(
+            .clk(clk),
+            .areset(areset),
+            .bump_left(bump_left),
+            .bump_right(bump_right),
+            .walk_left(walk_left_ref),
+            .walk_right(walk_right_ref)
+        );
+        TopModule dut(
+            .clk(clk),
+            .areset(areset),
+            .bump_left(bump_left),
+            .bump_right(bump_right),
+            .walk_left(walk_left_dut),
+            .walk_right(walk_right_dut)
+        );
+        tb_mismatch = ~tb_match;
+        stats1 = stats'(0,0,0,0,0,0,0);
+        // Stimulus logic
+        areset = 1;
+        bump_left = 1;
+        bump_right = 1;
+        #10;
+        areset = 0;
+        repeat(3) @(posedge clk);
+        bump_state = 0;
+        repeat(2) @(posedge clk);
+        bump_state = 1;
+        repeat(2) @(posedge clk);
+        // Additional stimulus
+        repeat(200) @(posedge clk) begin
+            bump_left = $urandom % 2;
+            bump_right = $urandom % 2;
+            areset = ($urandom % 31) ? 0 : 1;
+        end
+        #1000000 $display("TIMEOUT"); $finish;
+    end
+    // Error detection
+    always @(posedge clk) begin
+        stats1.clocks += 1;
+        if (tb_mismatch) begin
+            stats1.errors += 1;
+            if (walk_left_ref !== walk_left_dut ^ walk_right_ref !== walk_right_dut) begin
+                if (walk_left_ref !== walk_left_dut) begin
+                    stats1.errors_walk_left += 1;
+                    stats1.errortime_walk_left = $time;
+                end else begin
+                    stats1.errors_walk_right += 1;
+                    stats1.errortime_walk_right = $time;
+                end
+            end
+            if (stats1.errors == 1) begin
+                $display("First Mismatch at time %0t:\n", $time);
+                $display("Input Signals: bump_left=%b, bump_right=%b, areset=%b", bump_left, bump_right, areset);
+                $display("Output Signals: walk_left_dut=%b, walk_right_dut=%b", walk_left_dut, walk_right_dut);
+                $display("Expected Outputs: walk_left_ref=%b, walk_right_ref=%b", walk_left_ref, walk_right_ref);
+            end
+        end
+    end
+    final begin
+        if (stats1.errors > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+        $display("Total Mismatches: %0d out of %0d samples", stats1.errors, stats1.clocks);
+    end
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output logic areset,
+    output logic bump_left,
+    output logic bump_right,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+    reg reset;
+    assign areset = reset;
+    // Reset test logic
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail) $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+    // Stimulus sequence
+    initial begin
+        reset <= 1;
+        bump_left = 1;
+        bump_right = 1;
+        wavedrom_start("Asynchronous reset");
+        reset_test(1);
+        repeat(3) @(posedge clk);
+        bump_state = 0;
+        repeat(2) @(posedge clk);
+        bump_state = 1;
+        repeat(2) @(posedge clk);
+        wavedrom_stop();
+        repeat(200) @(posedge clk) begin
+            bump_left = $urandom % 2;
+            bump_right = $urandom % 2;
+            reset = !($urandom % 31);
+        end
+        #10 $finish;
+    end
+    task wavedrom_start(input[511:0] title = ""); endtask
+    task wavedrom_stop; #1; endtask
+endmodule
+
+module RefModule (
+    input clk,
+    input areset,
+    input bump_left,
+    input bump_right,
+    output logic walk_left,
+    output logic walk_right
+);
+    // Reference implementation
+    localparam STATE_LEFT = 0;
+    localparam STATE_RIGHT = 1;
+    logic state;
+    always_ff @(posedge clk or posedge areset) begin
+        if (areset) state <= STATE_LEFT;
+        else state <= next_state;
+    end
+    logic next_state;
+    always_comb begin
+        case (state)
+            STATE_LEFT: next_state = (bump_left | bump_right) ? STATE_RIGHT : STATE_LEFT;
+            STATE_RIGHT: next_state = (bump_left | bump_right) ? STATE_LEFT : STATE_RIGHT;
+            default: next_state = STATE_LEFT;
+        endcase
+    end
+    assign walk_left = (state == STATE_LEFT);
+    assign walk_right = (state == STATE_RIGHT);
+endmodule
+
+[2026-05-14 12:58:07,591 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:58:07,591 - mage.agent - INFO] `timescale 1ps/1ps
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_walk_left;
+        int errortime_walk_left;
+        int errors_walk_right;
+        int errortime_walk_right;
+        int clocks;
+    } stats;
+    stats stats1 = {0,0,0,0,0,0,0};
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic areset;
+    logic bump_left;
+    logic bump_right;
+    logic walk_left_ref;
+    logic walk_right_ref;
+    logic walk_left_dut;
+    logic walk_right_dut;
+    wire tb_match;
+    wire tb_mismatch;
+    RefModule ref_mod (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .walk_left(walk_left_ref),
+        .walk_right(walk_right_ref)
+    );
+    TopModule dut (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .walk_left(walk_left_dut),
+        .walk_right(walk_right_dut)
+    );
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, clk, areset, bump_left, bump_right, walk_left_ref, walk_left_dut, walk_right_ref, walk_right_dut);
+    end
+    assign tb_match = ( {walk_left_ref, walk_right_ref} === ( {walk_left_ref, walk_right_ref} ^ {walk_left_dut, walk_right_dut} ^ {walk_left_ref, walk_right_ref} ) );
+    assign tb_mismatch = ~tb_match;
+    reg first_mismatch = 1;
+    reg [31:0] error_count = 0;
+    reg [31:0] first_time;
+    reg [31:0] walk_left_err_time, walk_right_err_time;
+    initial begin
+        clk = 0;
+        areset = 1;
+        bump_left = 0;
+        bump_right = 0;
+        #10;
+        areset = 0;
+        {bump_right, bump_left} = 2'h3;
+        repeat(3) @(posedge clk);
+        {bump_right, bump_left} = 2'h2;
+        repeat(2) @(posedge clk);
+        {bump_right, bump_left} = 2'h1;
+        repeat(2) @(posedge clk);
+        repeat(200) begin
+            @(posedge clk);
+            {bump_right, bump_left} = {$random, $random} & 4'h3;
+            areset = !($random & 31);
+        end
+        #1000000 $display("TIMEOUT"); $finish;
+    end
+    always @(posedge clk) begin
+        stats1.clocks++;
+        if (tb_mismatch) begin
+            if (error_count == 0) first_time = $time;
+            error_count++;
+            if (walk_left_ref !== walk_left_dut ^ walk_right_ref !== walk_right_dut) begin
+                if (walk_left_ref !== walk_left_dut) begin
+                    stats1.errors_walk_left++;
+                    walk_left_err_time = $time;
+                end else begin
+                    stats1.errors_walk_right++;
+                    walk_right_err_time = $time;
+                end
+            end
+        end
+        if (first_mismatch && tb_mismatch) begin
+            first_mismatch = 0;
+            $display("First Mismatch at time %0d:\n", $time);
+            $display("Input Signals: bump_left=%b, bump_right=%b, areset=%b", bump_left, bump_right, areset);
+            $display("Output Signals: walk_left_dut=%b, walk_right_dut=%b", walk_left_dut, walk_right_dut);
+            $display("Expected Outputs: walk_left_ref=%b, walk_right_ref=%b", walk_left_ref, walk_right_ref);
+            if (walk_left_ref !== walk_left_dut) begin
+                $display("walk_left Mismatch at %0d", $time);
+            end else begin
+                $display("walk_right Mismatch at %0d", $time);
+            end
+        end
+    end
+    final begin
+        if (error_count > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", error_count, first_time);
+            $display("walk_left first mismatch at %0d: dut=%b, ref=%b", walk_left_err_time, walk_left_dut, walk_left_ref);
+            $display("walk_right first mismatch at %0d: dut=%b, ref=%b", walk_right_err_time, walk_right_dut, walk_right_ref);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+        $display("Total Mismatches: %0d out of %0d samples", error_count, stats1.clocks);
+    end
+endmodule
+module stimulus_gen (
+    input clk,
+    output logic areset,
+    output logic bump_left,
+    output logic bump_right,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+    reg reset;
+    assign areset = reset;
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail) $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+    task wavedrom_start(input[511:0] title = "/"); endtask
+    task wavedrom_stop; #1; endtask
+    initial begin
+        reset <= 1;
+        {bump_right, bump_left} <= 3'h3;
+        wavedrom_start("Asynchronous reset");
+        reset_test(1);
+        repeat(3) @(posedge clk);
+        {bump_right, bump_left} <= 2;
+        repeat(2) @(posedge clk);
+        {bump_right, bump_left} <= 1;
+        repeat(2) @(posedge clk);
+        wavedrom_stop();
+        @(posedge clk);
+        repeat(200) begin
+            @(posedge clk, negedge clk);
+            {bump_right, bump_left} <= $random & $random;
+            reset <= !($random & 31);
+        end
+        #1 $finish;
+    end
+endmodule
+module RefModule (
+    input clk,
+    input areset,
+    input bump_left,
+    input bump_right,
+    output logic walk_left,
+    output logic walk_right
+);
+    localparam STATE_LEFT = 0, STATE_RIGHT = 1;
+    logic state;
+    always_ff @(posedge clk or posedge areset) begin
+        if (areset) state <= STATE_LEFT;
+        else state <= next_state;
+    end
+    logic next_state;
+    always_comb begin
+        case (state)
+            STATE_LEFT: next_state = (bump_left || bump_right) ? STATE_RIGHT : STATE_LEFT;
+            STATE_RIGHT: next_state = (bump_left || bump_right) ? STATE_LEFT : STATE_RIGHT;
+            default: next_state = STATE_LEFT;
+        endcase
+    end
+    assign walk_left = (state == STATE_LEFT);
+    assign walk_right = (state == STATE_RIGHT);
+endmodule
+[2026-05-14 12:58:35,934 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:58:35,934 - mage.agent - INFO] // Testbench code follows the golden testbench structure with proper hierarchy and signal connections.
+`timescale 1ps/1ps
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_walk_left;
+        int errortime_walk_left;
+        int errors_walk_right;
+        int errortime_walk_right;
+        int clocks;
+    } stats;
+    stats stats1;
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+    logic areset;
+    logic bump_left;
+    logic bump_right;
+    logic walk_left_ref;
+    logic walk_right_ref;
+    logic walk_left_dut;
+    logic walk_right_dut;
+    wire tb_match = ~((walk_left_ref !== walk_left_dut) || (walk_right_ref !== walk_right_dut));
+    wire tb_mismatch = ~tb_match;
+    stimulus_gen stim1 (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .wavedrom_title(wavedrom_title),
+        .wavedrom_enable(wavedrom_enable),
+        .tb_match(tb_match)
+    );
+    RefModule ref_mod (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .walk_left(walk_left_ref),
+        .walk_right(walk_right_ref)
+    );
+    TopModule top_module1 (
+        .clk(clk),
+        .areset(areset),
+        .bump_left(bump_left),
+        .bump_right(bump_right),
+        .walk_left(walk_left_dut),
+        .walk_right(walk_right_dut)
+    );
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, clk, areset, bump_left, bump_right, walk_left_ref, walk_left_dut, walk_right_ref, walk_right_dut);
+    end
+    reg first_mismatch = 1;
+    reg [31:0] error_count = 0;
+    reg [31:0] first_time;
+    reg [31:0] walk_left_err_time, walk_right_err_time;
+    always @(posedge clk) begin
+        stats1.clocks++;
+        if (tb_mismatch) begin
+            if (error_count == 0) first_time = $time;
+            error_count++;
+            if (walk_left_ref !== walk_left_dut ^ walk_right_ref !== walk_right_dut) begin
+                if (walk_left_ref !== walk_left_dut) begin
+                    stats1.errors_walk_left++;
+                    walk_left_err_time = $time;
+                end else begin
+                    stats1.errors_walk_right++;
+                    walk_right_err_time = $time;
+                end
+            end
+        end
+        if (first_mismatch && tb_mismatch) begin
+            first_mismatch = 0;
+            $display("First Mismatch at time %0d:\n", $time);
+            $display("Input Signals: bump_left=%b, bump_right=%b, areset=%b", bump_left, bump_right, areset);
+            $display("Output Signals: walk_left_dut=%b, walk_right_dut=%b", walk_left_dut, walk_right_dut);
+            $display("Expected Outputs: walk_left_ref=%b, walk_right_ref=%b", walk_left_ref, walk_right_ref);
+            if (walk_left_ref !== walk_left_dut) $display("walk_left Mismatch at %0d", $time);
+            else $display("walk_right Mismatch at %0d", $time);
+        end
+    end
+    final begin
+        if (error_count > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", error_count, first_time);
+            $display("walk_left first mismatch at %0d: dut=%b, ref=%b", walk_left_err_time, walk_left_dut, walk_left_ref);
+            $display("walk_right first mismatch at %0d: dut=%b, ref=%b", walk_right_err_time, walk_right_dut, walk_right_ref);
+        end else $display("SIMULATION PASSED");
+        $display("Total Mismatches: %0d out of %0d samples", error_count, stats1.clocks);
+    end
+    initial begin #1000000 $display("TIMEOUT"); $finish; end
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output logic areset,
+    output logic bump_left,
+    output logic bump_right,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+    reg reset;
+    assign areset = reset;
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+        @(negedge clk) begin datafail = !tb_match; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail) $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+    task wavedrom_start(input[511:0] title = "/"); endtask
+    task wavedrom_stop; #1; endtask
+    initial begin
+        reset <= 1;
+        {bump_right, bump_left} <= 3'h3;
+        wavedrom_start("Asynchronous reset");
+        reset_test(1);
+        repeat(3) @(posedge clk);
+        {bump_right, bump_left} <= 2;
+        repeat(2) @(posedge clk);
+        {bump_right, bump_left} <= 1;
+        repeat(2) @(posedge clk);
+        wavedrom_stop();
+        @(posedge clk);
+        repeat(200) @(posedge clk, negedge clk) begin
+            {bump_right, bump_left} <= $random & $random;
+            reset <= !($random & 31);
+        end
+        #1 $finish;
+    end
+endmodule
+
+module RefModule (
+    input clk,
+    input areset,
+    input bump_left,
+    input bump_right,
+    output logic walk_left,
+    output logic walk_right
+);
+    localparam STATE_LEFT = 0, STATE_RIGHT = 1;
+    logic state;
+    always_ff @(posedge clk or posedge areset) begin
+        if (areset) state <= STATE_LEFT;
+        else state <= next_state;
+    end
+    logic next_state;
+    always_comb begin
+        case (state)
+            STATE_LEFT: next_state = (bump_left || bump_right) ? STATE_RIGHT : STATE_LEFT;
+            STATE_RIGHT: next_state = (bump_left || bump_right) ? STATE_LEFT : STATE_RIGHT;
+            default: next_state = STATE_LEFT;
+        endcase
+    end
+    assign walk_left = (state == STATE_LEFT);
+    assign walk_right = (state == STATE_RIGHT);
+endmodule
+
+module TopModule (
+    input logic clk,
+    input logic areset,
+    input logic bump_left,
+    input logic bump_right,
+    output logic walk_left,
+    output logic walk_right
+);
+    localparam STATE_LEFT = 1'b0;
+    localparam STATE_RIGHT = 1'b1;
+    logic state;
+    logic next_state;
+    initial state = STATE_LEFT;
+    always @(posedge clk or posedge areset) begin
+        if (areset) state <= STATE_LEFT;
+        else state <= next_state;
+    end
+    always @(*) begin
+        case (state)
+            STATE_LEFT: next_state = (bump_left || bump_right) ? STATE_RIGHT : STATE_LEFT;
+            STATE_RIGHT: next_state = (bump_left || bump_right) ? STATE_LEFT : STATE_RIGHT;
+            default: next_state = STATE_LEFT;
+        endcase
+    end
+    assign walk_left = (state == STATE_LEFT);
+    assign walk_right = (state == STATE_RIGHT);
+endmodule

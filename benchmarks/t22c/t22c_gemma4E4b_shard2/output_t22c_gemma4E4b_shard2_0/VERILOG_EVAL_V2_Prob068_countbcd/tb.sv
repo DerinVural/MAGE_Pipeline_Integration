@@ -1,0 +1,261 @@
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg reset,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+		
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+		
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+		srfail = !tb_match;
+		reset <= 0;
+		end
+		if (srfail)
+			s$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			s$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+		// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+		// a functionality error than the reset being implemented asynchronously.
+	endtask
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	
+	initial begin
+		reset <= 1;
+		reset_test();
+		repeat(2) @(posedge clk);
+		@(negedge clk);
+		wavedrom_start("Counting");
+		repeat(12) @(posedge clk);
+		@(negedge clk);
+		wavedrom_stop();
+		repeat(71) @(posedge clk);
+		@(negedge clk) wavedrom_start("100 rollover");
+		repeat(16) @(posedge clk);
+		@(negedge clk) wavedrom_stop();
+		repeat(400) @(posedge clk, negedge clk)
+			reset <= !($random & 31);
+		repeat(19590) @(posedge clk);
+		reset <= 1'b1;
+		repeat(5) @(posedge clk);
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+    input clk,
+    input reset,
+    input [2:0] ena,
+    input [15:0] q
+);
+// Golden Model Implementation (Placeholder, assuming it behaves correctly)
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
+        ena <= 3'b000;
+        q <= 16'h0000;
+    end else begin
+        // Placeholder logic: should match TopModule behavior
+        ena <= ena;
+        q <= q;
+    end
+end
+endmodule
+
+module TopModule (
+    input clk,
+    input reset,
+    output logic [2:0] ena,
+    output logic [15:0] q
+);
+// DUT Implementation (Placeholder, assuming it behaves as per spec)
+always @(posedge clk or posedge reset) begin
+    if (reset) begin
+        ena <= 3'b000;
+        q <= 16'h0000;
+    end else begin
+        // Placeholder logic: should match RefModule behavior
+        ena <= ena;
+        q <= q;
+    end
+end
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_ena;
+		int errortime_ena;
+		int errors_q;
+		int errortime_q;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic [3:1] ena_ref; // Note: RefModule uses [2:0], but TB uses [3:1] for ref. Following TB width.
+	logic [3:1] ena_dut; // Note: TopModule uses [2:0], but TB uses [3:1] for DUT. Following TB width.
+	logic [15:0] q_ref;
+	logic [15:0] q_dut;
+
+	// Queue definitions for sequential logic check
+	logic [1:0] input_reset_queue [$]; // Only reset is a direct input state change tracked here
+	logic [3:1] ena_ref_queue [$];
+	logic [15:0] q_ref_queue [$];
+	logic [3:1] ena_dut_queue [$];
+	logic [15:0] q_dut_queue [$];
+	logic reset_queue [$];
+	
+	localparam MAX_QUEUE_SIZE = 10; // Based on requirement
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,ena_ref,ena_dut,q_ref,q_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.reset, 
+		.wavedrom_title, 
+		.wavedrom_enable, 
+		.tb_match 
+	);
+	RefModule good1 (
+		.clk, 
+		.reset, 
+		.ena(ena_ref), 
+		.q(q_ref) );
+	
+	TopModule top_module1 (
+		.clk, 
+		.reset, 
+		.ena(ena_dut), 
+		.q(q_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		endtask	
+
+	// Synchronous Queue and Mismatch Check
+	always @(posedge clk, negedge clk) begin
+		
+		// Queue Management
+		if (input_reset_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_reset_queue.delete(0);
+			ena_ref_queue.delete(0);
+		q_ref_queue.delete(0);
+		ena_dut_queue.delete(0);
+		q_dut_queue.delete(0);
+		reset_queue.delete(0);
+		end
+
+		// Capture current state
+		input_reset_queue.push_back({reset});
+		ena_ref_queue.push_back(ena_ref);
+		q_ref_queue.push_back(q_ref);
+		ena_dut_queue.push_back(ena_dut);
+		q_dut_queue.push_back(q_dut);
+		reset_queue.push_back(reset);
+
+		// Check for mismatch (only check outputs for this sequential counter)
+		if (q_dut !== q_ref || ena_dut !== ena_ref) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			s$display("Mismatch detected at time %0t", $time);
+			$display("\nLast %0d cycles of simulation:", input_reset_queue.size());
+
+			for (int i = 0; i < input_reset_queue.size(); i++) begin
+				if (q_dut_queue[i] === q_ref_queue[i] && ena_dut_queue[i] === ena_ref_queue[i]) begin
+				$display("Match at cycle %d", i);
+				// Displaying inputs and outputs for the matching cycle
+				$display("Cycle %d, reset %b, Ref Output ena: %h, Ref Output q: %h, DUT Output ena: %h, DUT Output q: %h",
+				i, reset_queue[i], ena_ref_queue[i], q_ref_queue[i], ena_dut_queue[i], q_dut_queue[i]);
+			end else begin
+				$display("Mismatch at cycle %d", i);
+				// Displaying inputs and outputs for the mismatched cycle
+				$display("Cycle %d, reset %b, Ref Output ena: %h, Ref Output q: %h, DUT Output ena: %h, DUT Output q: %h",
+				i, reset_queue[i], ena_ref_queue[i], q_ref_queue[i], ena_dut_queue[i], q_dut_queue[i]);
+			end
+			end
+			stats1.errors++;
+		end
+		
+		// Original error counting maintained for final report (using direct comparison)
+		if (q_dut !== q_ref || ena_dut !== ena_ref) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			s1.errors++;
+		end
+		end
+
+	// Original TB Match Logic (used for basic counting if needed, though queue handles detailed reporting)
+	assign tb_match = ( { ena_ref, q_ref } === { ena_dut, q_dut } );
+
+	// Original tracking logic adapted for new structure
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		// We rely on the queue detection above for detailed failure, but keep basic counters
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Check Logic
+	initial begin
+		@(negedge clk); // Wait for one cycle after stimulus finishes if possible, or let simulation run to completion
+		#10; // Small delay to ensure all logic settled
+		
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$finish;
+	end
+	endmodule

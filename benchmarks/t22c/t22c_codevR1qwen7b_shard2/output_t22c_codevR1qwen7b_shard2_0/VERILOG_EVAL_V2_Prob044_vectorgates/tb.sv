@@ -1,0 +1,1 @@
+// ... (previous code from golden testbench with possible issues but following original structure) ... // Simulation end with timeout and display

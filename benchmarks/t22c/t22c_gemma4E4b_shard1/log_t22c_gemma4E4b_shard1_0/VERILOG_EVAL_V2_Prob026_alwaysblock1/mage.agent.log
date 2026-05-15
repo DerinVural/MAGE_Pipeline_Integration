@@ -1,0 +1,1152 @@
+[2026-05-14 15:50:45,614 - mage.agent - INFO] Initial tb:
+[2026-05-14 15:50:45,616 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generator (Kept exactly as provided)
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+task wavedrom_stop;
+		h#1;
+	endtask
+
+	initial begin
+		int count; count = 0;
+		{a,b} <= 1'b0;
+		wavedrom_start("AND gate");
+		repeat(10) @(posedge clk)
+		{a,b} <= count++;
+		wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+		{b,a} <= $random;
+		h#1 $finish;
+	end
+	endmodule
+
+// Reference Module (Assumed to be implemented correctly for golden reference)
+module RefModule (
+    input a,
+    input b,
+    output out_assign,
+    output out_alwaysblock
+);
+    // Assuming AND implementation for reference
+    assign out_assign = a & b;
+    always @* begin
+        out_alwaysblock = a & b;
+    end
+endmodule
+
+// DUT Module (Placeholder for TopModule, assumed to be the one being tested)
+module TopModule (
+    input a,
+    input b,
+    output out_assign,
+    output out_alwaysblock
+);
+    // Implementation must match specification: AND gate using assign and always block
+    assign out_assign = a & b;
+    always @* begin
+        out_alwaysblock = a & b;
+    end
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_alwaysblock;
+		int errortime_out_alwaysblock;
+		// Added fields to capture state at first error for better debugging/reporting
+		logic [1:0] last_inputs;
+		logic last_ref_assign;
+		logic last_dut_assign;
+		logic last_ref_alwaysblock;
+		logic last_dut_alwaysblock;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+
+	// Variables to track first error time globally
+	reg int first_mismatch_time = 0;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch, a, b, out_assign_ref, out_assign_dut, out_alwaysblock_ref, out_alwaysblock_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiations (Kept exactly as provided)
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		a,
+		b );
+	RefModule good1 (
+		a,
+		b,
+		out_assign(out_assign_ref),
+		out_alwaysblock(out_alwaysblock_ref) );
+	TopModule top_module1 (
+		a,
+		b,
+		out_assign(out_assign_dut),
+		out_alwaysblock(out_alwaysblock_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	
+	// Verification: Standard equality check, equivalent to original logic
+	assign tb_match = ( { out_assign_ref, out_alwaysblock_ref } === { out_assign_dut, out_alwaysblock_dut } );
+
+	// Clocked verification and error checking (Combinational logic check on clock edge)
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time; // Record time of first overall mismatch
+			s	stats1.errors++;
+			end
+		
+		// Check for out_assign mismatch
+		if (out_assign_ref !== out_assign_dut) begin
+			if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time; // Capture first time for this signal
+			s	stats1.errors_out_assign = stats1.errors_out_assign+1'b1;
+			end
+			// Capture state at first mismatch for out_assign
+			if (stats1.errors_out_assign == 1 && stats1.errors_out_assign_prev == 0) begin
+				stats1.last_inputs = {a, b};
+				stats1.last_ref_assign = out_assign_ref;
+				stats1.last_dut_assign = out_assign_dut;
+				end
+			end
+		end
+		
+		// Check for out_alwaysblock mismatch
+		if (out_alwaysblock_ref !== out_alwaysblock_dut) begin
+			if (stats1.errors_out_alwaysblock == 0) stats1.errortime_out_alwaysblock = $time; // Capture first time for this signal
+			s	stats1.errors_out_alwaysblock = stats1.errors_out_alwaysblock+1'b1;
+			end
+			// Capture state at first mismatch for out_alwaysblock
+			if (stats1.errors_out_alwaysblock == 1 && stats1.errors_out_alwaysblock_prev == 0) begin
+				stats1.last_inputs = {a, b};
+				stats1.last_ref_alwaysblock = out_alwaysblock_ref;
+				stats1.last_dut_alwaysblock = out_alwaysblock_dut;
+				end
+			end
+		end
+		end
+
+   // Need previous state trackers for clean first-time capture (assuming we initialize them implicitly or track them)
+   // For simplicity and adherence to the provided structure, we rely on the reset/initialization of the counter to trigger the first capture.
+   // Note: In a full implementation, stats1.errors_out_assign_prev must be tracked.
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+		// Final Display Logic Implementation
+	final begin
+		int total_mismatches = stats1.errors;
+		int earliest_mismatch_time = 100000000; // A large value
+
+		// Find the absolute earliest mismatch time reported
+		if (stats1.errortime != 0) earliest_mismatch_time = $min(earliest_mismatch_time, stats1.errortime);
+		if (stats1.errortime_out_assign != 0) earliest_mismatch_time = $min(earliest_mismatch_time, stats1.errortime_out_assign);
+		if (stats1.errortime_out_alwaysblock != 0) earliest_mismatch_time = $min(earliest_mismatch_time, stats1.errortime_out_alwaysblock);
+
+		if (total_mismatches == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, earliest_mismatch_time);
+		end
+		
+		// Detailed reporting (Kept for debugging while ensuring final output is correct)
+		if (stats1.errors_out_assign > 0) begin
+			$display("Hint: Output 'out_assign' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_out_assign, stats1.errortime_out_assign);
+			// Display state at first mismatch for out_assign
+			$display("--- First Mismatch Details for out_assign at time %0d ---", stats1.errortime_out_assign);
+			$display("Inputs: a=%b, b=%b", stats1.last_inputs[0], stats1.last_inputs[1]);
+			$display("Reference Output: %h (%b)", stats1.last_ref_assign, stats1.last_ref_assign);
+			$display("DUT Output: %h (%b)", stats1.last_dut_assign, stats1.last_dut_assign);
+		end
+		if (stats1.errors_out_alwaysblock > 0) begin
+			$display("Hint: Output 'out_alwaysblock' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_out_alwaysblock, stats1.errortime_out_alwaysblock);
+			// Display state at first mismatch for out_alwaysblock
+			$display("--- First Mismatch Details for out_alwaysblock at time %0d ---", stats1.errortime_out_alwaysblock);
+			$display("Inputs: a=%b, b=%b", stats1.last_inputs[0], stats1.last_inputs[1]);
+			$display("Reference Output: %h (%b)", stats1.last_ref_alwaysblock, stats1.last_ref_alwaysblock);
+			$display("DUT Output: %h (%b)", stats1.last_dut_alwaysblock, stats1.last_dut_alwaysblock);
+		end
+
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Final Mismatches Count: %0d", stats1.errors);
+		
+		end
+
+endmodule
+[2026-05-14 15:50:45,616 - mage.agent - INFO] Initial if:
+[2026-05-14 15:50:45,616 - mage.agent - INFO] module TopModule (
+    input a,
+    input b,
+    output out_assign,
+    output out_alwaysblock
+);
+    // DUT implementation goes here
+endmodule
+[2026-05-14 15:50:45,622 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  a
+ - input  b
+ - output out_assign
+ - output out_alwaysblock
+
+The module should implement an AND gate using both an assign statement
+and a combinational always block.
+
+
+[2026-05-14 15:50:56,334 - mage.agent - INFO] Initial rtl:
+[2026-05-14 15:50:56,334 - mage.agent - INFO] module TopModule (
+    input  logic a,
+    input  logic b,
+    output logic out_assign,
+    output logic out_alwaysblock
+);
+
+    // Implementation using continuous assignment
+    assign out_assign = a & b;
+
+    // Implementation using a combinational always block
+    always @(*) begin
+        out_alwaysblock = a & b;
+    end
+
+endmodule
+[2026-05-14 15:51:01,446 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 15:52:09,048 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:52:09,048 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Replicating stimulus_gen as provided
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b} <= 1'b0;
+		wavedrom_start("AND gate");
+		repeat(10) @(posedge clk)
+		{a,b} <= count++;
+		wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+		{b,a} <= $random;
+		
+		#1 $finish;
+	end
+	endmodule
+
+// Placeholder for RefModule as it was used in the golden testbench
+module RefModule (
+    input a,
+    input b,
+    output out_assign,
+    output out_alwaysblock
+);
+    // Assuming simple AND gate implementation for reference
+    assign out_assign = a & b;
+    always @(*) begin
+        out_alwaysblock = a & b;
+    end
+endmodule
+
+// The DUT module implementation based on specification (AND gate)
+module TopModule (
+    input a,
+    input b,
+    output out_assign,
+    output out_alwaysblock
+);
+    // AND gate using assign statement
+    assign out_assign = a & b;
+
+    // AND gate using combinational always block
+    always @(*) begin
+        out_alwaysblock = a & b;
+    end
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_alwaysblock;
+		int errortime_out_alwaysblock;
+
+		int clocks;
+		// State capture for first mismatch reporting
+		logic err_a_capture; 
+		logic err_b_capture;
+		logic err_out_assign_ref_capture; 
+		logic err_out_alwaysblock_ref_capture;
+		logic err_out_assign_dut_capture;
+		logic err_out_alwaysblock_dut_capture;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+
+	// Capture variables for reporting
+	logic captured_a, captured_b, captured_out_assign_ref, captured_out_alwaysblock_ref, captured_out_assign_dut, captured_out_alwaysblock_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb, a, b, out_assign_ref, out_assign_dut, out_alwaysblock_ref, out_alwaysblock_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		.a, 
+		.b );
+	RefModule good1 (
+		.a, 
+		.b,
+		.out_assign(out_assign_ref),
+		.out_alwaysblock(out_alwaysblock_ref) );
+	
+	TopModule top_module1 (
+		.a,
+		.b,
+		.out_assign(out_assign_dut),
+		.out_alwaysblock(out_alwaysblock_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	// State tracking initialization
+	initial begin
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_out_assign = 0;
+		stats1.errortime_out_assign = 0;
+		stats1.errors_out_alwaysblock = 0;
+		stats1.errortime_out_alwaysblock = 0;
+		stats1.clocks = 0;
+		end
+
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	// The original complex XOR structure simplifies to equality check (A === B).
+	assign tb_match = ( { out_assign_ref, out_alwaysblock_ref } === ( { out_assign_dut, out_alwaysblock_dut } ) );
+	
+	// Original error counting logic
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			end
+		
+		// Out_assign check
+		if (out_assign_ref !== ( out_assign_ref ^ out_assign_dut ^ out_assign_ref ))
+		begin 
+			if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+			stats1.errors_out_assign = stats1.errors_out_assign+1'b1;
+		end
+		
+		// Out_alwaysblock check
+		if (out_alwaysblock_ref !== ( out_alwaysblock_ref ^ out_alwaysblock_dut ^ out_alwaysblock_ref ))
+		begin 
+			if (stats1.errors_out_alwaysblock == 0) stats1.errortime_out_alwaysblock = $time;
+			stats1.errors_out_alwaysblock = stats1.errors_out_alwaysblock+1'b1;
+		end
+	end
+
+	
+	// Capture state when the FIRST error occurs (stats1.errors transitions to 1)
+	always @(posedge clk, negedge clk)
+	begin
+		if (stats1.errors == 1 && stats1.clocks > 0) begin
+			captured_a <= a;
+			captured_b <= b;
+			captured_out_assign_ref <= out_assign_ref;
+			captured_out_alwaysblock_ref <= out_alwaysblock_ref;
+			captured_out_assign_dut <= out_assign_dut;
+			captured_out_alwaysblock_dut <= out_alwaysblock_dut;
+		end
+	end
+
+	
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final reporting block - IMPROVED
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("--- First Mismatch Details (Time: %0d) ---", stats1.errortime);
+			$display("Inputs: a = %b, b = %b", captured_a, captured_b);
+			$display("Expected Outputs: out_assign = %b, out_alwaysblock = %b", captured_out_assign_ref, captured_out_alwaysblock_ref);
+			$display("Actual Outputs: out_assign = %b, out_alwaysblock = %b", captured_out_assign_dut, captured_out_alwaysblock_dut);
+			end
+		end
+
+endmodule
+[2026-05-14 15:53:15,058 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:53:15,058 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// Replicating stimulus_gen as provided in the golden testbench
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b} <= 1'b0;
+		wavedrom_start("AND gate");
+		repeat(10) @(posedge clk)
+			{a,b} <= count++;
+		wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{b,a} <= $random;
+		
+		#1 $finish;
+	end
+	endmodule
+
+
+// Placeholder for RefModule as it was used in the golden testbench
+module RefModule (
+	input a,
+	input b,
+	output out_assign,
+	output out_alwaysblock
+);
+	// Assuming simple AND gate implementation for reference
+	assign out_assign = a & b;
+	always @(*) begin
+		out_alwaysblock = a & b;
+	end
+endmodule
+
+
+// The DUT module implementation based on specification (AND gate)
+module TopModule (
+    input  logic a,
+    input  logic b,
+    output logic out_assign,
+    output logic out_alwaysblock
+);
+    // AND gate using assign statement
+    assign out_assign = a & b;
+
+    // AND gate using combinational always block
+    always @(*) begin
+        out_alwaysblock = a & b;
+    end
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_alwaysblock;
+		int errortime_out_alwaysblock;
+		int clocks;
+		// State capture for first mismatch reporting
+		logic err_a_capture;
+		logic err_b_capture;
+		logic err_out_assign_ref_capture;
+		logic err_out_alwaysblock_ref_capture;
+		logic err_out_assign_dut_capture;
+		logic err_out_alwaysblock_dut_capture;
+	} stats;
+	
+	stats stats1;
+	
+	// Waveform monitoring signals from stimulus_gen
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+
+	// Capture variables for reporting	
+	logic captured_a, captured_b, captured_out_assign_ref, captured_out_alwaysblock_ref, captured_out_assign_dut, captured_out_alwaysblock_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb, a, b, out_assign_ref, out_assign_dut, out_alwaysblock_ref, out_alwaysblock_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b );
+	RefModule good1 (
+		.a,
+		.b,
+		.out_assign(out_assign_ref),
+		.out_alwaysblock(out_alwaysblock_ref) );
+	
+	TopModule top_module1 (
+		a,
+		b,
+		out_assign(out_assign_dut),
+		out_alwaysblock(out_alwaysblock_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+	
+	// State tracking initialization
+	initial begin
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_out_assign = 0;
+		stats1.errortime_out_assign = 0;
+		stats1.errors_out_alwaysblock = 0;
+		stats1.errortime_out_alwaysblock = 0;
+		stats1.clocks = 0;
+	end
+
+	
+	// Verification: Simplifies to direct equality check
+	assign tb_match = ( { out_assign_ref, out_alwaysblock_ref } === { out_assign_dut, out_alwaysblock_dut } );
+	
+	// Original error counting logic
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		
+		// Out_assign check (Simplified comparison to maintain structure)
+		if (out_assign_ref !== out_assign_dut)
+		begin 
+			if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+			sstats1.errors_out_assign = stats1.errors_out_assign+1'b1;
+		end
+		
+		// Out_alwaysblock check (Simplified comparison to maintain structure)
+		if (out_alwaysblock_ref !== out_alwaysblock_dut)
+		begin 
+			if (stats1.errors_out_alwaysblock == 0) stats1.errortime_out_alwaysblock = $time;
+			sstats1.errors_out_alwaysblock = stats1.errors_out_alwaysblock+1'b1;
+		end
+	end
+
+	// Capture state when the FIRST error occurs (stats1.errors transitions to 1)
+	always @(posedge clk, negedge clk)
+	begin
+		if (stats1.errors == 1 && stats1.clocks > 0) begin
+			captured_a <= a;
+			captured_b <= b;
+			captured_out_assign_ref <= out_assign_ref;
+			captured_out_alwaysblock_ref <= out_alwaysblock_ref;
+			captured_out_assign_dut <= out_assign_dut;
+			captured_out_alwaysblock_dut <= out_alwaysblock_dut;
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final reporting block - IMPROVED
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("--- First Mismatch Details (Time: %0d) ---", stats1.errortime);
+			$display("Inputs: a = %b, b = %b", captured_a, captured_b);
+			$display("Expected Outputs: out_assign = %b, out_alwaysblock = %b", captured_out_assign_ref, captured_out_alwaysblock_ref);
+			$display("Actual Outputs: out_assign = %b, out_alwaysblock = %b", captured_out_assign_dut, captured_out_alwaysblock_dut);
+		end
+	end
+
+endmodule
+[2026-05-14 15:54:21,230 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:54:21,230 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Replicating stimulus_gen as provided in the golden testbench
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b} <= 1'b0;
+		wavedrom_start("AND gate");
+		repeat(10) @(posedge clk)
+		{a,b} <= count++;
+		wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+		{b,a} <= $random;
+		
+		#1 $finish;
+	end
+	endmodule
+
+// Placeholder for RefModule as it was used in the golden testbench
+module RefModule (
+	input a,
+	input b,
+	output out_assign,
+	output out_alwaysblock
+);
+	// Assuming simple AND gate implementation for reference
+	assign out_assign = a & b;
+	always @(*).
+		out_alwaysblock = a & b;
+	endmodule
+
+// The DUT module implementation based on specification (AND gate)
+module TopModule (
+    input  logic a,
+    input  logic b,
+    output logic out_assign,
+    output logic out_alwaysblock
+);
+    // AND gate using assign statement
+    assign out_assign = a & b;
+
+    // AND gate using combinational always block
+    always @(*).
+    	out_alwaysblock = a & b;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_alwaysblock;
+		int errortime_out_alwaysblock;
+		int clocks;
+		// State capture for first mismatch reporting
+		logic err_a_capture;
+		logic err_b_capture;
+		logic err_out_assign_ref_capture;
+		logic err_out_alwaysblock_ref_capture;
+		logic err_out_assign_dut_capture;
+		logic err_out_alwaysblock_dut_capture;
+	} stats;
+	
+	stats stats1;
+	
+	// Waveform monitoring signals from stimulus_gen
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+
+	// Capture variables for reporting
+	logic captured_a, captured_b, captured_out_assign_ref, captured_out_alwaysblock_ref, captured_out_assign_dut, captured_out_alwaysblock_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb, a, b, out_assign_ref, out_assign_dut, out_alwaysblock_ref, out_alwaysblock_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b );
+	RefModule good1 (
+		.a,
+		.b,
+		.out_assign(out_assign_ref),
+		.out_alwaysblock(out_alwaysblock_ref) );
+	
+	TopModule top_module1 (
+		a,
+		b,
+		out_assign(out_assign_dut),
+		out_alwaysblock(out_alwaysblock_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end	task
+	
+	// State tracking initialization
+	initial begin
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_out_assign = 0;
+		stats1.errortime_out_assign = 0;
+		stats1.errors_out_alwaysblock = 0;
+		stats1.errortime_out_alwaysblock = 0;
+		stats1.clocks = 0;
+	end
+
+	// Verification: Simplifies to direct equality check
+	assign tb_match = ( { out_assign_ref, out_alwaysblock_ref } === { out_assign_dut, out_alwaysblock_dut } );
+
+	// Original error counting logic
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		
+		// Out_assign check (Simplified comparison to maintain structure)
+		if (out_assign_ref !== out_assign_dut)
+		begin 
+			if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+			sstats1.errors_out_assign = stats1.errors_out_assign+1'b1;
+		end
+		
+		// Out_alwaysblock check (Simplified comparison to maintain structure)
+		if (out_alwaysblock_ref !== out_alwaysblock_dut)
+		begin 
+			if (stats1.errors_out_alwaysblock == 0) stats1.errortime_out_alwaysblock = $time;
+			sstats1.errors_out_alwaysblock = stats1.errors_out_alwaysblock+1'b1;
+	end
+	end
+
+	// Capture state when the FIRST error occurs (stats1.errors transitions to 1)
+	always @(posedge clk, negedge clk)
+	begin
+		if (stats1.errors == 1 && stats1.clocks > 0) begin
+			captured_a <= a;
+			captured_b <= b;
+			captured_out_assign_ref <= out_assign_ref;
+			captured_out_alwaysblock_ref <= out_alwaysblock_ref;
+			captured_out_assign_dut <= out_assign_dut;
+			captured_out_alwaysblock_dut <= out_alwaysblock_dut;
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final reporting block - IMPROVED
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("--- First Mismatch Details (Time: %0d) ---", stats1.errortime);
+			$display("Inputs: a = %b, b = %b", captured_a, captured_b);
+			$display("Expected Outputs: out_assign = %b, out_alwaysblock = %b", captured_out_assign_ref, captured_out_alwaysblock_ref);
+			$display("Actual Outputs: out_assign = %b, out_alwaysblock = %b", captured_out_assign_dut, captured_out_alwaysblock_dut);
+		end
+	end
+
+endmodule
+[2026-05-14 15:55:35,565 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:55:35,566 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+// Replicating stimulus_gen as provided in the golden testbench
+module stimulus_gen (
+	input clk,
+	output reg a, b,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+	// Add two ports to module stimulus_gen:
+	//    output [511:0] wavedrom_title
+	//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+	initial begin
+		int count; count = 0;
+		{a,b} <= 1'b0;
+		wavedrom_start("AND gate");
+		repeat(10) @(posedge clk)
+			{a,b} <= count++;
+		wavedrom_stop();
+		
+		repeat(200) @(posedge clk, negedge clk)
+			{b,a} <= $random;
+		
+		#1 $finish;
+	end
+	endmodule
+
+
+// Placeholder for RefModule as it was used in the golden testbench
+module RefModule (
+	input a,
+	input b,
+	output out_assign,
+	output out_alwaysblock
+);
+	// Assuming simple AND gate implementation for reference
+	assign out_assign = a & b;
+	always @(*) begin
+		out_alwaysblock = a & b;
+	end
+endmodule
+
+
+// The DUT module implementation based on specification (AND gate)
+module TopModule (
+    input  logic a,
+    input  logic b,
+    output logic out_assign,
+    output logic out_alwaysblock
+);
+    // AND gate using assign statement
+    assign out_assign = a & b;
+
+    // AND gate using combinational always block
+    always @(*) begin
+        out_alwaysblock = a & b;
+    end
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_out_assign;
+		int errortime_out_assign;
+		int errors_out_alwaysblock;
+		int errortime_out_alwaysblock;
+		int clocks;
+		// State capture for first mismatch reporting
+		logic err_a_capture;
+		logic err_b_capture;
+		logic err_out_assign_ref_capture;
+		logic err_out_alwaysblock_ref_capture;
+		logic err_out_assign_dut_capture;
+		logic err_out_alwaysblock_dut_capture;
+	} stats;
+	
+	stats stats1;
+	
+	
+	// Waveform monitoring signals from stimulus_gen
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic a;
+	logic b;
+	logic out_assign_ref;
+	logic out_assign_dut;
+	logic out_alwaysblock_ref;
+	logic out_alwaysblock_dut;
+
+	// Capture variables for reporting
+	logic captured_a, captured_b, captured_out_assign_ref, captured_out_alwaysblock_ref, captured_out_assign_dut, captured_out_alwaysblock_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb, a, b, out_assign_ref, out_assign_dut, out_alwaysblock_ref, out_alwaysblock_dut );
+	end
+
+	
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.a,
+		.b );
+	RefModule good1 (
+		.a,
+		.b,
+		out_assign(out_assign_ref),
+		out_alwaysblock(out_alwaysblock_ref) );
+	
+	TopModule top_module1 (
+		a,
+		b,
+		out_assign(out_assign_dut),
+		out_alwaysblock(out_alwaysblock_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end	task
+	
+	
+	// State tracking initialization
+	initial begin
+		stats1.errors = 0;
+		stats1.errortime = 0;
+		stats1.errors_out_assign = 0;
+		stats1.errortime_out_assign = 0;
+		stats1.errors_out_alwaysblock = 0;
+		stats1.errortime_out_alwaysblock = 0;
+		stats1.clocks = 0;
+	end
+
+	
+	// Verification: Simplifies to direct equality check
+	assign tb_match = ( { out_assign_ref, out_alwaysblock_ref } === { out_assign_dut, out_alwaysblock_dut } );
+	
+	// Original error counting logic
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+			end
+		
+		// Out_assign check (Simplified comparison to maintain structure)
+		if (out_assign_ref !== out_assign_dut)
+		begin 
+			if (stats1.errors_out_assign == 0) stats1.errortime_out_assign = $time;
+			sstats1.errors_out_assign = stats1.errors_out_assign+1'b1;
+		end
+		
+		// Out_alwaysblock check (Simplified comparison to maintain structure)
+		if (out_alwaysblock_ref !== out_alwaysblock_dut)
+		begin 
+			if (stats1.errors_out_alwaysblock == 0) stats1.errortime_out_alwaysblock = $time;
+			sstats1.errors_out_alwaysblock = stats1.errors_out_alwaysblock+1'b1;
+		end
+	end
+
+	// Capture state when the FIRST error occurs (stats1.errors transitions to 1)
+	always @(posedge clk, negedge clk)
+	begin
+		if (stats1.errors == 1 && stats1.clocks > 0) begin
+			captured_a <= a;
+			captured_b <= b;
+			captured_out_assign_ref <= out_assign_ref;
+			captured_out_alwaysblock_ref <= out_alwaysblock_ref;
+			captured_out_assign_dut <= out_assign_dut;
+			captured_out_alwaysblock_dut <= out_alwaysblock_dut;
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final reporting block - IMPROVED
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+			$display("--- First Mismatch Details (Time: %0d) ---", stats1.errortime);
+			$display("Inputs: a = %b, b = %b", captured_a, captured_b);
+			$display("Expected Outputs: out_assign = %b, out_alwaysblock = %b", captured_out_assign_ref, captured_out_alwaysblock_ref);
+			$display("Actual Outputs: out_assign = %b, out_alwaysblock = %b", captured_out_assign_dut, captured_out_alwaysblock_dut);
+		end
+	end
+
+endmodule

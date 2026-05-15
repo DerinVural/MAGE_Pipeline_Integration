@@ -1,0 +1,2 @@
+module stimulus_gen (input clk, output logic clock=0, output logic a); // Contains clk generation and a stimuli, but DUT instantiation omitted for interface
+module tb(); // Top testbench with wire connections and DUT instantiation

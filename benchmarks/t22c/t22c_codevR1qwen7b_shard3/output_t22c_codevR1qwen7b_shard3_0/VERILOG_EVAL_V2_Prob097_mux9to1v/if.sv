@@ -1,0 +1,1 @@
+module TopModule (a, b, c, d, e, f, g, h, i, sel, out); logic [15:0] a,b,c,d,e,f,g,h,i; logic [3:0] sel; logic [15:0] out; endmodule

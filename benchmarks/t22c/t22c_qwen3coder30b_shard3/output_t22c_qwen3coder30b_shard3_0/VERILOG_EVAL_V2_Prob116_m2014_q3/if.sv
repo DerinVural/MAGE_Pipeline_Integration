@@ -1,0 +1,4 @@
+module TopModule (
+    input [3:0] x,
+    output f
+);

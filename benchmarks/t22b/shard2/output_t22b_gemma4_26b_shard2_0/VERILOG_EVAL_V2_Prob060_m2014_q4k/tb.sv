@@ -1,0 +1,151 @@
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic in, resetn
+);
+
+    initial begin
+        repeat(100) @(posedge clk) begin
+            in <= $random;
+            resetn <= ($random & 7) != 0;
+        end
+        repeat(100) @(posedge clk, negedge clk) begin
+            in <= $random;
+            resetn <= ($random & 7) != 0;
+        end
+        
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_out;
+        int errortime_out;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic resetn;
+    logic in;
+    logic out_ref;
+    logic out_dut;
+
+    // Queues for mismatch display
+    logic in_q [$];
+    logic resetn_q [$];
+    logic out_dut_q [$];
+    logic out_ref_q [$];
+    localparam MAX_QUEUE_SIZE = 10;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,clk,resetn,in,out_ref,out_dut );
+    end
+
+    wire tb_match;        // Verification
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .* ,
+        .resetn,
+        .in );
+
+    // RefModule is assumed to be provided by the environment
+    RefModule good1 (
+        .clk,
+        .resetn,
+        .in,
+        .out(out_ref) );
+        
+    TopModule top_module1 (
+        .clk,
+        .resetn,
+        .in,
+        .out(out_dut) );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    // Verification Logic
+    assign tb_match = ( { out_ref } === ( { out_ref } ^ { out_dut } ^ { out_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        // Maintain Queues
+        if (in_q.size() >= MAX_QUEUE_SIZE) begin
+            in_q.delete(0);
+            resetn_q.delete(0);
+            out_dut_q.delete(0);
+            out_ref_q.delete(0);
+        end
+        in_q.push_back(in);
+        resetn_q.push_back(resetn);
+        out_dut_q.push_back(out_dut);
+        out_ref_q.push_back(out_ref);
+
+        stats1.clocks++;
+        
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+        end
+
+        if (out_ref !== ( out_ref ^ out_dut ^ out_ref )) begin
+            if (stats1.errors_out == 0) stats1.errortime_out = $time;
+            stats1.errors_out = stats1.errors_out + 1'b1;
+
+            // Display first mismatch details
+            if (stats1.errors_out == 1) begin
+                $display("Mismatch detected at time %t", $time);
+                $display("Last %0d cycles of simulation:", in_q.size());
+                for (int i = 0; i < in_q.size(); i++) begin
+                    $display("Cycle %0d, reset %b, input %b, got output %b, exp output %b", 
+                             i, resetn_q[i], in_q[i], out_dut_q[i], out_ref_q[i]);
+                end
+            end
+        end
+    end
+
+    final begin
+        if (stats1.errors_out == 0) begin
+            $display("SIMULATION PASSED");
+            $display("Hint: Output '%s' has no mismatches.", "out");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors_out, stats1.errortime_out);
+            $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+        end
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+    
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+endmodule

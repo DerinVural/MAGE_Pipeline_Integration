@@ -1,0 +1,11 @@
+`interface IOInterface;
+logic clk;
+logic a;
+logic b;
+logic sel_b1;
+logic sel_b2;
+logic out_assign;
+logic out_always;
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+endinterface;

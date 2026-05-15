@@ -1,0 +1,1 @@
+`interface TopModule_if; logic clk; logic areset; logic train_valid; logic train_taken; logic [1:0] state; endinterface

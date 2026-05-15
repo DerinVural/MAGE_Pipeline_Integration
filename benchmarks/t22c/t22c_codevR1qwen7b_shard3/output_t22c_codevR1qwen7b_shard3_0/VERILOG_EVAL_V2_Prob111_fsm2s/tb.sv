@@ -1,0 +1,1 @@
+/* Testbench code using golden's structure */ module stimulus_gen(...); ... endmodule module RefModule(...); ... endmodule module tb(); ... endmodule

@@ -1,0 +1,925 @@
+[2026-05-14 15:38:09,836 - mage.agent - INFO] Initial tb:
+[2026-05-14 15:38:09,838 - mage.agent - INFO] // --- Testbench for TopModule ---
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generator (Kept from original)
+module stimulus_gen (
+	input clk,
+	output logic [7:0] in
+);
+	initial begin
+		repeat(100) @(posedge clk, negedge clk)
+		in <= $random;
+		$finish;
+	end
+	endmodule
+
+module tb();
+
+	// Stats structure (Kept from original)
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_parity;
+		int errortime_parity;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// Waveform debugging signals (Kept from original)
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	// DUT and Reference Signals	
+	logic [7:0] in;
+	logic parity_ref; // Reference parity from RefModule
+	logic parity_dut; // Output from TopModule (DUT)
+
+	// Mismatch detection signals
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate Stimulus
+	stimulus_gen stim1 (
+		.clk, 
+		.* , 
+		.in );
+	
+	// Instantiate Reference Module	
+	RefModule good1 (
+		.in, 
+		.parity(parity_ref) );
+	
+	// Instantiate DUT	
+	TopModule top_module1 (
+		.in, 
+		.parity(parity_dut) );
+
+	// Task for timing delay (Kept from original)	
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+	
+	// Testbench variables
+	logic strobe = 0;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch, in, parity_ref, parity_dut );
+		end
+
+	// --- Combinational Logic Mismatch Check and Counting ---
+	// Since the logic is combinational, we check for mismatch immediately after inputs change.
+	// We must maintain the original functional check:
+	// assign tb_match = ( { parity_ref } === ( { parity_ref } ^ { parity_dut } ^ { parity_ref } ) );
+	// This simplifies to: tb_match = (parity_dut === 0);
+	
+	always @(in or parity_ref or parity_dut) begin
+		// Re-evaluating the original, strange matching condition
+		tb_match = ( { parity_ref } === ( { parity_ref } ^ { parity_dut } ^ { parity_ref } ) );
+
+		// Original Error Counting Logic (Sequential update based on clock edge)
+		// We need to capture the state *at* the clock edge for counting, as per original TB structure.
+	end
+
+	// Clocked counting logic (Kept from original structure)
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Update errors based on the state *before* this clock edge if it was a mismatch
+		// Since this is combinational, we use the current state (tb_mismatch) for counting.
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			end
+		
+		// Original parity error counting logic
+		if (parity_ref !== ( parity_ref ^ parity_dut ^ parity_ref ))
+		begin 
+			if (stats1.errors_parity == 0) stats1.errortime_parity = $time;
+			stats1.errors_parity = stats1.errors_parity+1'b1; 
+		end
+	end
+
+	// --- Combinational Mismatch Display Logic (First Mismatch) ---
+	// Since this is combinational, we monitor the change in mismatch status.
+	// We use a flag to only display on the very first occurrence.
+	
+	reg mismatch_detected_flag = 0;
+	
+	always @(tb_mismatch)
+	begin
+		if (tb_mismatch && !mismatch_detected_flag)
+		begin
+			$display("\n========================================================================");
+			$display("*** FIRST MISMATCH DETECTED AT TIME %0t ***", $time);
+			$display("========================================================================");
+			$display("Cycle Count at Mismatch: %0d", stats1.clocks);
+			$display("--- Input Signals ---");
+			$display("Input in: %h (Binary: %b)", in, in);
+			$display("--- Output Signals ---");
+			$display("DUT Output parity_dut: %b (Hex: %h)", parity_dut, parity_dut);
+			$display("Reference parity_ref: %b (Hex: %h)", parity_ref, parity_ref);
+			$display("--- Expected Output ---");
+			// Expected output is derived from the original mismatch check:
+			// Expected = { parity_ref } ^ { parity_dut } ^ { parity_ref } = 0
+			$display("Expected Parity (based on original check): 0 (Hex: 00)");
+			$display("========================================================================");
+			mismatch_detected_flag = 1;
+		end
+	end
+
+	// --- Simulation Control and Final Report ---
+	initial begin
+		// Wait for stimulus to run
+		end
+
+		// Wait for simulation to finish or timeout
+		end
+
+		// Final Reporting Logic (Replaces original final block)
+		if (stats1.errors > 0 || stats1.errors_parity > 0) begin
+			// Check parity errors first if both metrics exist
+			if (stats1.errors_parity > 0) begin
+				$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d.", stats1.errors_parity, stats1.errortime_parity);
+				// Display all errors for completeness, though the prompt asks for only the first detected error
+				$display("Note: Total sample errors: %0d out of %0d samples.", stats1.errors, stats1.clocks);
+				$display("Note: Total parity errors: %0d.", stats1.errors_parity);
+			end
+			// If only sample errors occurred (and parity errors were zero)
+			else if (stats1.errors > 0) begin
+				$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d.", stats1.errors, stats1.errortime);
+				$display("Note: Total parity errors: 0.");
+			end
+			// If both error types occurred, the parity failure time (errortime_parity) should be prioritized if it represents a more critical failure, but sticking to the rule structure: if any mismatch exists, report failure.
+			if (stats1.errors > 0 && stats1.errors_parity > 0) begin
+				// Report based on sample error timing if it occurred first, otherwise parity error timing
+				if (stats1.errortime < stats1.errortime_parity) begin
+					$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d.", stats1.errors, stats1.errortime);
+					$display("Note: Parity error detected first at time %0d.", stats1.errortime_parity);
+				end else begin
+					$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d.", stats1.errors_parity, stats1.errortime_parity);
+					$display("Note: Sample error detected first at time %0d.", stats1.errortime);
+				end
+			end
+			
+			// If no errors
+			else begin
+				$display("SIMULATION PASSED");
+			end
+			
+			$display("Simulation finished at %0d ps", $time);
+			$display("Total mismatched samples: %0d out of %0d samples.", stats1.errors, stats1.clocks);
+			$display("Total parity mismatches: %0d.", stats1.errors_parity);
+		end
+		$finish;
+	end
+
+   // Add timeout after 100K cycles (Kept from original)
+   initial begin
+     #1000000
+     if (!($time >= $finish_time)) begin
+        $display("TIMEOUT");
+        $finish();
+     end
+   end
+
+endmodule
+
+// Dummy definitions required because the original TB referenced them
+module RefModule (input logic [7:0] in, output logic parity);
+endmodule
+[2026-05-14 15:38:09,838 - mage.agent - INFO] Initial if:
+[2026-05-14 15:38:09,838 - mage.agent - INFO] module TopModule (
+    input logic [7:0] in,
+    output logic parity
+);
+endmodule
+[2026-05-14 15:38:09,844 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  in     (8 bits)
+ - output parity
+
+Parity checking is often used as a simple method of detecting errors when
+transmitting data through an imperfect channel. The module should compute
+a parity bit for an 8-bit byte (which will add a 9th bit to the byte). We
+will use "even" parity, where the parity bit is just the XOR of all 8
+data bits.
+
+
+[2026-05-14 15:38:25,577 - mage.agent - INFO] Initial rtl:
+[2026-05-14 15:38:25,577 - mage.agent - INFO] module TopModule (
+    input logic [7:0] in,
+    output logic parity
+);
+
+    // Even parity is calculated by XORing all bits of the input vector.
+    // The reduction operator '^' performs this operation efficiently.
+    assign parity = ^in;
+
+endmodule
+[2026-05-14 15:38:35,917 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 15:39:31,102 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:39:31,102 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generator (Kept from original)
+module stimulus_gen (
+	input clk,
+	output logic [7:0] in
+);
+	initial begin
+		repeat(100) @(posedge clk, negedge clk)
+		in <= $random;
+	end
+	
+endmodule
+
+// Helper task for displaying signals
+task display_signal(input string name, input logic value, input int width);
+	$display("    [%s] Value: %h (Binary: %b)", name, value, value);
+endtask
+
+task display_signal_array(input string name, input logic [7:0] value);
+	$display("    [%s] Value: %h (Binary: %b)", name, value, value);
+endtask
+
+module tb();
+	// Stats Structure
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_parity;
+		int errortime_parity;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// Waveform Control (Kept from original)
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	// Clock Generation		
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	// DUT Signals
+	logic [7:0] in;
+	logic parity_ref;
+	logic parity_dut;
+
+	// Testbench Match & Mismatch
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+
+	// Variables to capture first mismatch state
+	logic [7:0] captured_in; 
+	logic captured_parity_dut; 
+	logic captured_parity_ref;
+	int first_mismatch_time = -1;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Note: Original dumpvars included tb_mismatch, which is derived
+		$dumpvars(1, stim1.clk, tb_mismatch, in, parity_ref, parity_dut );
+	end
+
+	// Instantiate Stimulus Generator
+	stimulus_gen stim1 (
+		.clk, 
+		in
+	);
+	
+	// Instantiate Reference Module (Assumed definition exists externally or is simple)
+	// Since RefModule definition is not provided, we assume it correctly computes parity_ref
+	RefModule good1 (
+		.in, 
+		.parity(parity_ref) );
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		in, 
+		.parity(parity_dut) );
+
+	// Timing Task (Kept from original)
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	// === Main Simulation Control and Monitoring ===
+	initial begin
+		// Wait for initial setup phase to complete before starting detailed logging
+		@(posedge clk);
+		$display("--- Starting Simulation ---");
+	end
+
+	// Main Verification Logic
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { parity_ref } === ( { parity_ref } ^ { parity_dut } ^ { parity_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+
+		// --- 1. Check tb_match Mismatch ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				first_mismatch_time = $time;
+				captured_in = in;
+				captured_parity_dut = parity_dut;
+				captured_parity_ref = parity_ref;
+			end
+			stats1.errors++;
+		end
+
+		// --- 2. Check Parity Specific Mismatch ---
+		if (parity_ref !== ( parity_ref ^ parity_dut ^ parity_ref ))
+		begin 
+			if (stats1.errors_parity == 0) begin
+				stats1.errortime_parity = $time;
+				// If this is the first overall error, capture it
+			if (first_mismatch_time == -1) begin
+					first_mismatch_time = $time;
+					captured_in = in;
+					captured_parity_dut = parity_dut;
+					captured_parity_ref = parity_ref;
+				end
+			end
+			stats1.errors_parity = stats1.errors_parity+1'b1; 
+		end
+	end
+
+	// Timeout
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Reporting Block
+	final begin
+		$display("\n======================================================");
+		if (stats1.errors > 0 || stats1.errors_parity > 0) begin
+				int total_mismatches = stats1.errors + stats1.errors_parity;
+				int first_error_time = (first_mismatch_time != -1) ? first_mismatch_time : 0;
+				
+				$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_error_time);
+				$display("\n--- Details of First Mismatch at Time %0d ps ---", first_error_time);
+				$display("Input Signal (in): ");
+				display_signal_array("in", captured_in);
+				$display("DUT Output (parity_dut): ");
+				display_signal( "parity_dut", captured_parity_dut, 1);
+				$display("Expected Output (parity_ref): ");
+				display_signal( "parity_ref", captured_parity_ref, 1);
+				$display("------------------------------------------------------");
+		end else begin
+				$display("SIMULATION PASSED");
+				$display("Total samples processed: %0d
+", stats1.clocks);
+		end
+		$display("Simulation finished at %0d ps", $time);
+		end
+
+	endmodule
+
+[2026-05-14 15:41:07,431 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:41:07,431 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generator (Kept from original)
+module stimulus_gen (
+	input clk,
+	output logic [7:0] in
+);
+	initial begin
+		repeat(100) @(posedge clk, negedge clk)
+		in <= $random;
+	end
+	
+endmodule
+
+// Helper task for displaying signals
+task display_signal(input string name, input logic value, input int width);
+	$display("    [%s] Value: %h (Binary: %b)", name, value, value);
+endtask
+
+task display_signal_array(input string name, input logic [7:0] value);
+	$display("    [%s] Value: %h (Binary: %b)", name, value);
+endtask
+
+module tb();
+	// Stats Structure
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_parity;
+		int errortime_parity;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// Waveform Control (Kept from original)
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	// Clock Generation	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	// DUT Signals
+	logic [7:0] in;
+	logic parity_ref;
+	logic parity_dut;
+
+	// Testbench Match & Mismatch
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Variables to capture first mismatch state
+	logic [7:0] captured_in;
+	logic captured_parity_dut;
+	logic captured_parity_ref;
+	int first_mismatch_time = -1;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Matching the original dumpvars structure
+		$dumpvars(1, stim1.clk, tb_mismatch, in, parity_ref, parity_dut );
+	end
+
+	// Instantiate Stimulus Generator
+	stimulus_gen stim1 (
+		.clk, 
+		in
+	);
+	
+	// Instantiate Reference Module (Assuming RefModule exists)
+	RefModule good1 (
+		.in, 
+		.parity(parity_ref) );
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		in, 
+		.parity(parity_dut) );
+
+	// Timing Task (Kept from original)
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+	task
+
+	// === Main Simulation Control and Monitoring ===
+	initial begin
+		// Wait for initial setup phase to complete before starting detailed logging
+		@(posedge clk);
+		$display("--- Starting Simulation ---");
+	end
+
+	// Main Verification Logic
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { parity_ref } === ( { parity_ref } ^ { parity_dut } ^ { parity_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// --- 1. Check tb_match Mismatch ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				first_mismatch_time = $time;
+				captured_in = in;
+				captured_parity_dut = parity_dut;
+				captured_parity_ref = parity_ref;
+				end
+			sstats1.errors++;
+		end
+		
+		// --- 2. Check Parity Specific Mismatch ---
+		if (parity_ref !== ( parity_ref ^ parity_dut ^ parity_ref ))
+		begin 
+			if (stats1.errors_parity == 0) begin
+				stats1.errortime_parity = $time;
+				// If this is the first overall error, capture it
+			if (first_mismatch_time == -1) begin
+					first_mismatch_time = $time;
+					captured_in = in;
+					captured_parity_dut = parity_dut;
+					captured_parity_ref = parity_ref;
+				end
+			end
+			sstats1.errors_parity = stats1.errors_parity+1'b1; 
+		end
+	end
+
+	// Timeout
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Reporting Block
+	final begin
+		$display("
+======================================================");
+		if (stats1.errors > 0 || stats1.errors_parity > 0) begin
+			int total_mismatches = stats1.errors + stats1.errors_parity;
+			// Use captured_in state if available, otherwise use current time as fallback for first error time
+			int first_error_time = (first_mismatch_time != -1) ? first_mismatch_time : 0;
+			
+			// Required Failure Message Format
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_error_time);
+			$display("
+--- Details of First Mismatch at Time %0d ps ---", first_error_time);
+			$display("Input Signal (in): ");
+			display_signal_array("in", captured_in);
+			$display("DUT Output (parity_dut): ");
+			display_signal("parity_dut", captured_parity_dut, 1);
+			$display("Expected Output (parity_ref): ");
+			display_signal("parity_ref", captured_parity_ref, 1);
+			$display("------------------------------------------------------");
+		end else begin
+			// Required Success Message Format
+			$display("SIMULATION PASSED");
+			end
+		$display("Simulation finished at %0d ps", $time);
+	end
+
+endmodule
+[2026-05-14 15:42:36,415 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:42:36,415 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generator (Kept from original)
+module stimulus_gen (
+	input clk,
+	output logic [7:0] in
+);
+	initial begin
+		repeat(100) @(posedge clk, negedge clk)
+		in <= $random;
+	end
+	endmodule
+
+// Helper task for displaying signals
+task display_signal(input string name, input logic value, input int width);
+	$display("    [%s] Value: %h (Binary: %b)", name, value, value);
+endtask
+
+task display_signal_array(input string name, input logic [7:0] value);
+	// Width is 8 bits, which is <= 64, so we display binary
+	$display("    [%s] Value: %h (Binary: %b)", name, value, value);
+endtask
+
+module tb();
+	// Stats Structure
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_parity;
+		int errortime_parity;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// Waveform Control (Kept from original)
+
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	// Clock Generation	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	// DUT Signals
+	logic [7:0] in;
+	logic parity_ref;
+	logic parity_dut;
+
+	// Testbench Match & Mismatch
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Variables to capture first mismatch state
+	logic [7:0] captured_in;
+	logic captured_parity_dut;
+	logic captured_parity_ref;
+	int first_mismatch_time = -1;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Matching the original dumpvars structure
+		$dumpvars(1, stim1.clk, tb_mismatch, in, parity_ref, parity_dut );
+	end
+
+	// Instantiate Stimulus Generator
+	stimulus_gen stim1 (
+		.clk, 
+		in
+	);
+	
+	// Instantiate Reference Module (Assuming RefModule exists)
+	RefModule good1 (
+		.in, 
+		.parity(parity_ref) );
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		in, 
+		.parity(parity_dut) );
+
+	// Timing Task (Kept from original)
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	// === Main Simulation Control and Monitoring ===
+	initial begin
+		// Wait for initial setup phase to complete before starting detailed logging
+		@(posedge clk);
+		$display("--- Starting Simulation ---");
+	end
+
+	// Main Verification Logic
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { parity_ref } === ( { parity_ref } ^ { parity_dut } ^ { parity_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// --- 1. Check tb_match Mismatch ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				first_mismatch_time = $time;
+				captured_in = in;
+				captured_parity_dut = parity_dut;
+				captured_parity_ref = parity_ref;
+				end
+			sstats1.errors++;
+		end
+		
+		// --- 2. Check Parity Specific Mismatch ---
+		if (parity_ref !== ( parity_ref ^ parity_dut ^ parity_ref ))
+		begin 
+			if (stats1.errors_parity == 0) begin
+				stats1.errortime_parity = $time;
+				// If this is the first overall error, capture it
+			if (first_mismatch_time == -1) begin
+					first_mismatch_time = $time;
+					captured_in = in;
+					captured_parity_dut = parity_dut;
+					captured_parity_ref = parity_ref;
+				end
+			end
+			sstats1.errors_parity = stats1.errors_parity+1'b1; 
+		end
+	end
+
+	// Timeout
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Reporting Block
+	final begin
+		$display("
+======================================================");
+		if (stats1.errors > 0 || stats1.errors_parity > 0) begin
+			int total_mismatches = stats1.errors + stats1.errors_parity;
+			int first_error_time = (first_mismatch_time != -1) ? first_mismatch_time : 0;
+		
+			// Required Failure Message Format
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_error_time);
+			$display("
+--- Details of First Mismatch at Time %0d ps ---", first_error_time);
+			$display("Input Signal (in): ");
+			display_signal_array("in", captured_in);
+			$display("DUT Output (parity_dut): ");
+			display_signal("parity_dut", captured_parity_dut, 1);
+			$display("Expected Output (parity_ref): ");
+			display_signal("parity_ref", captured_parity_ref, 1);
+			$display("------------------------------------------------------");
+		end else begin
+			// Required Success Message Format
+			$display("SIMULATION PASSED");
+		end
+		$display("Simulation finished at %0d ps", $time);
+	end
+
+endmodule
+
+[2026-05-14 15:43:31,469 - mage.agent - INFO] Revised tb:
+[2026-05-14 15:43:31,469 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Stimulus Generator (Kept from original)
+module stimulus_gen (
+	input clk,
+	output logic [7:0] in
+);
+	initial begin
+		repeat(100) @(posedge clk, negedge clk)
+		in <= $random;
+	end
+	endmodule
+
+// Helper task for displaying signals
+task display_signal(input string name, input logic value, input int width);
+	$display("    [%s] Value: %h (Binary: %b)", name, value, value);
+endtask
+
+task display_signal_array(input string name, input logic [7:0] value);
+	// Width is 8 bits, which is <= 64, so we display binary
+	$display("    [%s] Value: %h (Binary: %b)", name, value, value);
+endtask
+
+module tb();
+	// Stats Structure
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_parity;
+		int errortime_parity;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// Waveform Control (Kept from original)
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	// Clock Generation	
+	reg clk=0;
+	initial forever
+		h#5 clk = ~clk;
+
+	// DUT Signals
+	logic [7:0] in;
+	logic parity_ref;
+	logic parity_dut;
+
+	// Testbench Match & Mismatch
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Variables to capture first mismatch state
+	logic [7:0] captured_in;
+	logic captured_parity_dut;
+	logic captured_parity_ref;
+	int first_mismatch_time = -1;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Matching the original dumpvars structure
+		$dumpvars(1, stim1.clk, tb_mismatch, in, parity_ref, parity_dut );
+	end
+
+	// Instantiate Stimulus Generator
+	stimulus_gen stim1 (
+		.clk, 
+		in
+	);
+	
+	// Instantiate Reference Module (Assuming RefModule exists)
+	// NOTE: RefModule definition is required for simulation but is assumed present.
+	RefModule good1 (
+		.in, 
+		.parity(parity_ref) );
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		in, 
+		.parity(parity_dut) );
+
+	// Timing Task (Kept from original)
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+
+	// Task placeholder for structural completeness, matching original
+task 
+
+	// === Main Simulation Control and Monitoring ===
+	initial begin
+		// Wait for initial setup phase to complete before starting detailed logging
+		@(posedge clk);
+		$display("--- Starting Simulation ---");
+	end
+
+	// Main Verification Logic
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { parity_ref } === ( { parity_ref } ^ { parity_dut } ^ { parity_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// --- 1. Check tb_match Mismatch ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				first_mismatch_time = $time;
+				captured_in = in;
+				captured_parity_dut = parity_dut;
+				captured_parity_ref = parity_ref;
+			end
+			sstats1.errors++;
+		end
+		
+		// --- 2. Check Parity Specific Mismatch ---
+		if (parity_ref !== ( parity_ref ^ parity_dut ^ parity_ref ))
+		begin 
+			if (stats1.errors_parity == 0) begin
+				stats1.errortime_parity = $time;
+				// If this is the first overall error, capture it
+			if (first_mismatch_time == -1) begin
+					first_mismatch_time = $time;
+					captured_in = in;
+					captured_parity_dut = parity_dut;
+					captured_parity_ref = parity_ref;
+				end
+			end
+			sstats1.errors_parity = stats1.errors_parity+1'b1; 
+		end
+	end
+
+	// Timeout
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Final Reporting Block
+	final begin
+		$display("\n====================================================\n");
+		if (stats1.errors > 0 || stats1.errors_parity > 0) begin
+			int total_mismatches = stats1.errors + stats1.errors_parity;
+			// Use captured_in state if available, otherwise use current time as fallback for first error time
+			int first_error_time = (first_mismatch_time != -1) ? first_mismatch_time : 0;
+			
+			// Required Failure Message Format
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", total_mismatches, first_error_time);
+			$display("\n--- Details of First Mismatch at Time %0d ps ---", first_error_time);
+			$display("Input Signal (in): ");
+			display_signal_array("in", captured_in);
+			$display("DUT Output (parity_dut): ");
+			display_signal("parity_dut", captured_parity_dut, 1);
+			$display("Expected Output (parity_ref): ");
+			display_signal("parity_ref", captured_parity_ref, 1);
+			$display("------------------------------------------------------");
+		end else begin
+			// Required Success Message Format
+			$display("SIMULATION PASSED");
+			end
+		$display("Simulation finished at %0d ps", $time);
+	end
+
+endmodule

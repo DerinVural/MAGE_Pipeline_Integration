@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output reg [7:0] d, output reg reset); ... endmodule

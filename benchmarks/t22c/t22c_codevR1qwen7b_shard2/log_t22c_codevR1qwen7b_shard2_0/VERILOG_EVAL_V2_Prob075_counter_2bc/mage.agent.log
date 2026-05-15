@@ -1,0 +1,194 @@
+[2026-05-14 12:34:18,107 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:34:18,108 - mage.agent - INFO] `timescale 1ps/1ps
+module tb();
+    reg clk = 0;
+    reg areset;
+    reg train_valid;
+    reg train_taken;
+    wire [1:0] state;
+    reg [1:0] state_ref;
+    reg tb_match;
+    reg [3:0] input_queue [0:3];
+    reg [1:0] got_state_queue [0:3];
+    reg [1:0] golden_state_queue [0:3];
+    reg reset_queue [0:3];
+    localparam MAX_QUEUE_SIZE = 4;
+
+    always #(5) clk = ~clk;
+
+    initial begin
+        areset = 1;
+        #10 areset = 0;
+        $dumpfile("wave.vcd");
+        $dumpvars(1, tb, clk, areset, train_valid, train_taken, state, state_ref);
+    end
+
+    // Instantiate DUT and reference
+    TopModule top_inst (
+        .clk(clk),
+        .areset(areset),
+        .train_valid(train_valid),
+        .train_taken(train_taken),
+        .state(state)
+    );
+
+    RefModule ref_inst (
+        .clk(clk),
+        .areset(areset),
+        .train_valid(train_valid),
+        .train_taken(train_taken),
+        .state(state_ref)
+    );
+
+    // Check for mismatches
+    always @(posedge clk, negedge clk) begin
+        if (input_queue.size() >= MAX_QUEUE_SIZE -1) begin
+            input_queue.delete(0);
+            got_state_queue.delete(0);
+            golden_state_queue.delete(0);
+            reset_queue.delete(0);
+        end
+        input_queue.push_back({clk, areset, train_valid, train_taken});
+        got_state_queue.push_back(state);
+        golden_state_queue.push_back(state_ref);
+        reset_queue.push_back(areset);
+
+        if (state !== state_ref) begin
+            $display("SIMULATION FAILED - 1 MISMATCHES DETECTED, FIRST AT TIME %0t", $time);
+            $display("Last %0d cycles of simulation:", input_queue.size());
+            for (int i =0; i < input_queue.size(); i=i+1) begin
+                if (i ==0) begin
+                    $display("Got Mismatch at");
+                end else begin
+                    $display("Cycle %0d, reset %b, inputs %h, got state %h, expected %h",
+                        i, reset_queue[i], input_queue[i], got_state_queue[i], golden_state_queue[i]);
+                end
+            end
+            $finish;
+        end
+    end
+
+    // Add timeout after 100K cycles
+    initial begin #100000 $display("TIMEOUT"); $finish; end
+
+endmodule
+
+module RefModule (
+    input clk,
+    input areset,
+    input train_valid,
+    input train_taken,
+    output reg [1:0] state = 2'b01
+);
+    always @(posedge clk) begin
+        if (areset) state <= 2'b01;
+        else begin
+            if (train_valid) begin
+                if (train_taken) state <= (state == 3) ? state : state +1;
+                else state <= (state == 0) ? state : state -1;
+            end
+        end
+    end
+endmodule
+[2026-05-14 12:34:18,109 - mage.agent - INFO] Initial if:
+[2026-05-14 12:34:18,109 - mage.agent - INFO] module TopModule (
+    input clk,
+    input areset,
+    input train_valid,
+    input train_taken,
+    output logic [1:0] state
+);
+[2026-05-14 12:34:18,114 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+ - input  train_valid
+ - input  train_taken
+ - output state (2 bits)
+
+The module should implement a two-bit saturating counter. The counter
+increments (up to a maximum of 3) when train_valid = 1 and
+train_taken = 1. It decrements (down to a minimum of 0) when
+train_valid = 1 and train_taken = 0. When not training (train_valid = 0),
+the counter keeps its value unchanged. areset is a positive edge
+triggered asynchronous reset that resets the counter to weakly not-taken
+(2'b01). Output state[1:0] is the two-bit counter value. Assume all
+sequential logic is triggered on the positive edge of the clock.
+
+
+[2026-05-14 12:34:22,384 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:34:22,384 - mage.agent - INFO] module TopModule (
+    input clk,
+    input areset,
+    input train_valid,
+    input train_taken,
+    output logic [1:0] state
+);
+
+    // Initialize state to 01 on reset, else update logic
+    logic [1:0] next_state;
+
+    always @(*) begin
+        if (areset) begin
+            next_state = 2'b01;
+        end else begin
+            if (!train_valid) begin
+                next_state = state;
+            end else begin
+                if (train_taken) begin
+                    next_state = (state == 2'b11) ? state : state + 1;
+                end else begin
+                    next_state = (state == 2'b00) ? state : state - 1;
+                end
+            end
+        end
+    end
+
+    // Sequential logic with asynchronous reset
+    always @(posedge clk or posedge areset) begin
+        if (areset) begin
+            state <= 2'b01;
+        end else begin
+            state <= next_state;
+        end
+    end
+
+endmodule
+[2026-05-14 12:34:23,346 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 12:34:39,087 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:34:39,087 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen(
+    input clk,
+    output logic areset,
+    output logic train_valid,
+    output logic train_taken,
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable,
+    output logic wavedrom_hide_after_time,
+    input tb_match,
+    input tb_mismatch,
+    input [1:0] state_ref,
+    input [1:0] state_dut,
+    input tb_mismatch_state
+);
+    task wavedrom_start(input[511:0] title = ""); endtask
+    task wavedrom_stop; #1; endtask
+    reg reset;
+    task reset_test(input async=0); bit arfail, srfail, datafail; @(posedge clk); @(posedge clk) reset <= 0; repeat(3) @(posedge clk); @(negedge clk) begin datafail = !tb_match; reset <= 1; end @(posedge clk) arfail = !tb_match; @(posedge clk) begin srfail = !tb_match; reset <= 0; end if (srfail) $display("Hint: Your reset doesn't seem to be working."); else if (arfail && (async || !datafail)) $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous"); endtask assign areset = reset; logic train_taken_r; assign train_taken = train_valid ? train_taken_r : 1'bx;
+    initial begin
+        @(posedge clk); @(posedge clk) reset <= 1; @(posedge clk) reset <= 0; train_taken_r <= 1; train_valid <= 1; wavedrom_start("Asynchronous reset"); reset_test(1); wavedrom_stop(); @(posedge clk) reset <= 1; train_taken_r <= 1; train_valid <= 0; @(posedge clk) reset <= 0; wavedrom_start("Count up, then down"); train_taken_r <= 0; @(posedge clk) train_valid <= 1; @(posedge clk) train_valid <= 0; @(posedge clk) train_valid <= 1; @(posedge clk) train_valid <= 1; @(posedge clk) train_valid <= 1; @(posedge clk) train_valid <= 0; @(posedge clk) train_valid <= 1; train_taken_r <= 0; @(posedge clk) train_valid <= 1; @(posedge clk) train_valid <= 0; @(posedge clk) train_valid <= 1; @(posedge clk) train_valid <= 1; @(posedge clk) train_valid <= 0; @(posedge clk) train_valid <= 1; repeat(1000) @(posedge clk, negedge clk) {train_valid, train_taken_r} <= {$urandom}; #1 $finish; end endmodule
+module tb();
+    typedef struct packed { int errors; int errortime; int errors_state; int errortime_state; int clocks; } stats;
+    stats stats1;
+    wire [511:0] wavedrom_title; wire wavedrom_enable; int wavedrom_hide_after_time;
+    reg clk=0; initial forever #5 clk = ~clk;
+    logic areset; logic train_valid; logic train_taken; logic [1:0] state_ref; logic [1:0] state_dut;
+    initial begin $dumpfile("wave.vcd"); $dumpvars(1, stim1.clk, tb_mismatch, clk, areset, train_valid, train_taken, state_ref, state_dut); end
+    wire tb_match; wire tb_mismatch = ~tb_match; stimulus_gen stim1( .clk(clk), .areset(areset), .train_valid(train_valid), .train_taken(train_taken), .wavedrom_title(wavedrom_title), .wavedrom_enable(wavedrom_enable), .wavedrom_hide_after_time(wavedrom_hide_after_time) ); RefModule good1( .clk(clk), .areset(areset), .train_valid(train_valid), .train_taken(train_taken), .state(state_ref) ); TopModule top_module1( .clk(clk), .areset(areset), .train_valid(train_valid), .train_taken(train_taken), .state(state_dut) ); bit strobe=0; task wait_for_end_of_timestep; repeat(5) begin strobe <= !strobe; @(strobe); end endtask final begin if (stats1.errors_state) $display("Hint: Output 'state' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_state, stats1.errortime_state); else $display("SIMULATION PASSED"); $display("Simulation finished at %0d ps", $time); $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks); end
+    assign tb_match = ( { state_ref } === ( { state_ref } ^ { state_dut } ^ { state_ref } ) ); always @(posedge clk, negedge clk) begin stats1.clocks++; if (!tb_match) begin if (stats1.errors == 0) stats1.errortime = $time; stats1.errors++; end if (state_ref !== ( state_ref ^ state_dut ^ state_ref )) begin if (stats1.errors_state == 0) stats1.errortime_state = $time; stats1.errors_state += 1; end end initial #1000000 $finish; endmodule

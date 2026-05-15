@@ -1,0 +1,139 @@
+[2026-05-14 12:19:57,500 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:19:57,501 - mage.agent - INFO] The testbench code includes the modules stimulus_gen and tb. stimulus_gen has tasks for wavedrom and reset testing. The tb module instantiates the DUT (TopModule), golden model (RefModule), and stimulus. It uses posedge/negedge clk to check mismatches, tracks errors, and displays the result. The queue for mismatch display uses input_queue, got_queue, golden_queue, and reset_queue. Mismatch detection triggers display of the first error. Also includes timeout handling. Signal widths and assignments are as per the original code, with logic types where needed.
+[2026-05-14 12:19:57,501 - mage.agent - INFO] Initial if:
+[2026-05-14 12:19:57,502 - mage.agent - INFO] module stimulus_gen (input clk, output logic areset, output logic predict_valid, output predict_taken, output logic train_mispredicted, output train_taken, output [31:0] train_history, input tb_match, output reg [511:0] wavedrom_title, output reg wavedrom_enable, output int wavedrom_hide_after_time); // Other ports like wavedrom signals
+endmodule
+module tb(); // Testbench structure with clk, signals and instantiations of stimulus_gen, RefModule, TopModule
+endmodule
+[2026-05-14 12:19:57,508 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+ - input  predict_valid
+ - input  predict_taken
+ - input  train_mispredicted
+ - input  train_taken
+ - input  train_history   (32 bits)
+ - output predict_history (32 bits)
+
+The module should implement a 32-bit global history shift register,
+including support for rolling back state in response to a pipeline flush
+caused by a branch misprediction. When a branch prediction is made
+(predict_valid = 1), shift in predict_taken from the LSB side to update
+the branch history for the predicted branch. (predict_history[0] is the
+direction of the youngest branch.) When a branch misprediction occurs
+(train_mispredicted = 1), load the branch history register with the
+history after the completion of the mispredicted branch. This is the
+history before the mispredicted branch (train_history) concatenated with
+the actual result of the branch (train_taken). If both a prediction and
+misprediction occur at the same time, the misprediction takes precedence,
+because the pipeline flush will also flush out the branch that is
+currently making a prediction. predict_history is the value of the branch
+history register. areset is a positive edge triggered asynchronous reset
+that resets the history counter to zero. Assume all sequential logic is
+triggered on the positive edge of the clock.
+
+
+[2026-05-14 12:23:42,340 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:23:42,340 - mage.agent - INFO] module stimulus_gen (
+    input logic clk,
+    output logic areset,
+    output logic predict_valid,
+    output logic predict_taken,
+    output logic train_mispredicted,
+    output logic train_taken,
+    output logic [31:0] train_history,
+    input tb_match,
+    output logic [511:0] wavedrom_title,
+    output logic wavedrom_enable,
+    output logic wavedrom_hide_after_time
+);
+
+localparam TRAIN = 0, PREDICT = 1;
+
+logic state;
+logic [31:0] timer;
+logic error_detected;
+logic [31:0] history_reg;
+logic [31:0] history_reg_temp;
+
+initial begin
+    state = TRAIN;
+    timer = 0;
+    error_detected = 0;
+    history_reg = 0;
+    areset = 1;
+    predict_valid = 0;
+    train_mispredicted = 0;
+    train_taken = 0;
+    wavedrom_title = 0;
+    wavedrom_enable = 0;
+    wavedrom_hide_after_time = 0;
+end
+
+always @(posedge clk) begin
+    if (timer >= 1000) begin
+        areset <= 0;
+        timer <= 0;
+    end else begin
+        timer <= timer + 1;
+    end
+end
+
+always @(posedge clk) begin
+    if (areset) begin
+        state <= TRAIN;
+        timer <= 0;
+    end else begin
+        timer <= timer + 1;
+        case (state)
+            TRAIN: if (timer % 50 == 0) state <= PREDICT;
+            PREDICT: begin
+                if (timer % 100 == 0) state <= TRAIN;
+                if (timer % 10 == 0 && !error_detected) begin
+                    predict_valid <= 1;
+                    predict_taken <= (timer % 2 == 0);
+                end
+            end
+        endcase
+    end
+end
+
+always @(posedge clk) begin
+    if (train_mispredicted) begin
+        history_reg <= {history_reg[30:0], train_taken};
+    end else if (predict_valid && tb_match && !train_mispredicted) begin
+        history_reg <= {history_reg[30:0], predict_taken};
+    end
+end
+
+assign train_history = history_reg;
+
+always @(posedge clk) begin
+    if (timer >= 10000 && !error_detected) begin
+        error_detected <= 1;
+        wavedrom_title <= "Timeout";
+        wavedrom_enable <= 1;
+        wavedrom_hide_after_time <= 5000;
+    end
+end
+
+always @(posedge clk) begin
+    if (state == PREDICT && predict_valid)
+        wavedrom_enable <= 1;
+    else if (error_detected)
+        wavedrom_enable <= 0;
+end
+
+endmodule
+
+module tb();
+    reg clk;
+    reg tb_match;
+    wire [31:0] train_history;
+    wire [31:0] predict_history;
+endmodule
+[2026-05-14 12:23:43,723 - mage.agent - INFO] Fallback from display queue to display moment

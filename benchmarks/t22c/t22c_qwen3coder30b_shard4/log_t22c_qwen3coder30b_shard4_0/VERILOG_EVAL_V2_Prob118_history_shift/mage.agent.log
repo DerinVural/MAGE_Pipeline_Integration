@@ -1,0 +1,1347 @@
+[2026-05-14 13:00:06,676 - mage.agent - INFO] Initial tb:
+[2026-05-14 13:00:06,678 - mage.agent - INFO] module TopModule (
+    input clk,
+    input areset,
+    input predict_valid,
+    input predict_taken,
+    input train_mispredicted,
+    input train_taken,
+    input [31:0] train_history,
+    output [31:0] predict_history
+);
+
+    reg [31:0] history;
+    
+    always @(posedge clk or negedge areset) begin
+        if (!areset)
+            history <= 32'd0;
+        else if (train_mispredicted) begin
+            // Load history with train_history concatenated with train_taken
+            history <= {train_history[30:0], train_taken};
+        end
+        else if (predict_valid) begin
+            // Shift in predict_taken from LSB side
+            history <= {history[30:0], predict_taken};
+        end
+    end
+
+    assign predict_history = history;
+
+endmodule
+
+`timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen
+(
+	input clk,
+	output logic areset,
+	
+	output logic predict_valid,
+	output predict_taken,
+	
+	output logic train_mispredicted,
+	output train_taken,
+	output [31:0] train_history,
+
+	input tb_match,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	output int wavedrom_hide_after_time	
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+	task wavedrom_start(input[511:0] title = "");
+		#1;
+	endtask
+	
+	task wavedrom_stop;
+		#1;
+	endtask	
+
+
+	reg reset;
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+	
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+	
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			reset <= 0;
+		end
+		if (srfail)
+			$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+		// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+		// a functionality error than the reset being implemented asynchronously.
+	
+	endtask
+
+	
+	assign areset = reset;
+	logic predict_taken_r;
+	assign predict_taken = predict_valid ? predict_taken_r : 1'bx;
+	
+	logic train_taken_r;
+	logic [31:0] train_history_r;
+	assign train_taken = train_mispredicted ? train_taken_r : 1'bx;
+	assign train_history = train_mispredicted ? train_history_r : 32'hx;
+	
+	
+	initial begin
+		@(posedge clk) reset <= 1;
+		@(posedge clk) reset <= 0;
+		predict_taken_r <= 1;
+		predict_valid <= 1;
+		train_mispredicted <= 0;
+		train_history_r <= 32'h5;
+		train_taken_r <= 1;
+
+		wavedrom_start("Asynchronous reset");
+		reset_test(1); // Test for asynchronous reset
+		wavedrom_stop();
+		@(posedge clk) reset <= 1;
+		predict_valid <= 0;
+
+		wavedrom_start("Predictions: Shift in");
+		repeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};
+		reset <= 0;
+		predict_valid <= 1;
+		repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+		predict_valid <= 0;
+		repeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};
+		predict_valid <= 1;
+		train_mispredicted <= 1;
+		@(posedge clk) train_mispredicted <= 0;
+		repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+		wavedrom_stop();
+
+		repeat(2000) @(posedge clk,negedge clk) begin
+			{predict_valid, predict_taken_r, train_taken_r} <= {$urandom};
+			train_history_r <= $urandom;
+			train_mispredicted <= !($urandom_range(0,31));
+		end
+
+		#1 $finish;
+	end
+	
+	
+endmodule
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_predict_history;
+		int errortime_predict_history;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic areset;
+	logic predict_valid;
+	logic predict_taken;
+	logic train_mispredicted;
+	logic train_taken;
+	logic [31:0] train_history;
+	logic [31:0] predict_history_ref;
+	logic [31:0] predict_history_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,predict_valid,predict_taken,train_mispredicted,train_taken,train_history,predict_history_ref,predict_history_dut );
+	end
+
+
+	wire tb_match;  		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.areset,
+		.predict_valid,
+		.predict_taken,
+		.train_mispredicted,
+		.train_taken,
+		.train_history );
+	RefModule good1 (
+		.clk,
+		.areset,
+		.predict_valid,
+		.predict_taken,
+		.train_mispredicted,
+		.train_taken,
+		.train_history,
+		.predict_history(predict_history_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.areset,
+		.predict_valid,
+		.predict_taken,
+		.train_mispredicted,
+		.train_taken,
+		.train_history,
+		.predict_history(predict_history_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+
+	final begin
+		if (stats1.errors_predict_history) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "predict_history", stats1.errors_predict_history, stats1.errortime_predict_history);
+		else $display("Hint: Output '%s' has no mismatches.", "predict_history");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		
+		// Display final test results
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { predict_history_ref } === ( { predict_history_ref } ^ { predict_history_dut } ^ { predict_history_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (predict_history_ref !== ( predict_history_ref ^ predict_history_dut ^ predict_history_ref ))
+		pbegin if (stats1.errors_predict_history == 0) stats1.errortime_predict_history = $time;
+			stats1.errors_predict_history = stats1.errors_predict_history+1'b1; end
+
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Queue-based simulation mismatch display for sequential logic
+	reg [31:0] input_queue [$];
+	reg [31:0] got_output_queue [$];
+	reg [31:0] golden_queue [$];
+	reg reset_queue [$];
+	reg predict_valid_queue [$];
+	reg predict_taken_queue [$];
+	reg train_mispredicted_queue [$];
+	reg train_taken_queue [$];
+	reg [31:0] train_history_queue [$];
+
+	localparam MAX_QUEUE_SIZE = 10;
+
+	always @(posedge clk, negedge clk) begin
+		// Manage queue sizes
+		if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_queue.delete(0);
+			got_output_queue.delete(0);
+			golden_queue.delete(0);
+			reset_queue.delete(0);
+			predict_valid_queue.delete(0);
+			predict_taken_queue.delete(0);
+			train_mispredicted_queue.delete(0);
+			train_taken_queue.delete(0);
+			train_history_queue.delete(0);
+		end
+
+		// Push values to queues
+		input_queue.push_back({predict_valid, predict_taken, train_mispredicted, train_taken, train_history});
+		got_output_queue.push_back(predict_history_dut);
+		golden_queue.push_back(predict_history_ref);
+		reset_queue.push_back(areset);
+		predict_valid_queue.push_back(predict_valid);
+		predict_taken_queue.push_back(predict_taken);
+		train_mispredicted_queue.push_back(train_mispredicted);
+		train_taken_queue.push_back(train_taken);
+		train_history_queue.push_back(train_history);
+
+		// Check for first mismatch
+		if (got_output_queue[$] !== golden_queue[$]) begin
+			$display("Mismatch detected at time %t", $time);
+			$display("\nLast %d cycles of simulation:");
+
+			for (int i = 0; i < input_queue.size(); i++) begin
+				if (got_output_queue[i] === golden_queue[i]) begin
+					$display("Got Match at");
+				end else begin
+					$display("Got Mismatch at");
+				end
+				$display("Cycle %d, reset %b, predict_valid %b, predict_taken %b, train_mispredicted %b, train_taken %b, train_history %h (%b), got output %h (%b), exp output %h (%b)",
+					i,
+					reset_queue[i],
+					predict_valid_queue[i],
+					predict_taken_queue[i],
+					train_mispredicted_queue[i],
+					train_taken_queue[i],
+					train_history_queue[i], train_history_queue[i],
+					got_output_queue[i], got_output_queue[i],
+					golden_queue[i], golden_queue[i]
+				);
+			end
+			$finish;
+		end
+	end
+
+endmodule
+[2026-05-14 13:00:06,678 - mage.agent - INFO] Initial if:
+[2026-05-14 13:00:06,678 - mage.agent - INFO] module TopModule (
+    input clk,
+    input areset,
+    input predict_valid,
+    input predict_taken,
+    input train_mispredicted,
+    input train_taken,
+    input [31:0] train_history,
+    output [31:0] predict_history
+);
+[2026-05-14 13:00:06,685 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  areset
+ - input  predict_valid
+ - input  predict_taken
+ - input  train_mispredicted
+ - input  train_taken
+ - input  train_history   (32 bits)
+ - output predict_history (32 bits)
+
+The module should implement a 32-bit global history shift register,
+including support for rolling back state in response to a pipeline flush
+caused by a branch misprediction. When a branch prediction is made
+(predict_valid = 1), shift in predict_taken from the LSB side to update
+the branch history for the predicted branch. (predict_history[0] is the
+direction of the youngest branch.) When a branch misprediction occurs
+(train_mispredicted = 1), load the branch history register with the
+history after the completion of the mispredicted branch. This is the
+history before the mispredicted branch (train_history) concatenated with
+the actual result of the branch (train_taken). If both a prediction and
+misprediction occur at the same time, the misprediction takes precedence,
+because the pipeline flush will also flush out the branch that is
+currently making a prediction. predict_history is the value of the branch
+history register. areset is a positive edge triggered asynchronous reset
+that resets the history counter to zero. Assume all sequential logic is
+triggered on the positive edge of the clock.
+
+
+[2026-05-14 13:00:20,454 - mage.agent - INFO] Initial rtl:
+[2026-05-14 13:00:20,454 - mage.agent - INFO] module TopModule (
+    input clk,
+    input areset,
+    input predict_valid,
+    input predict_taken,
+    input train_mispredicted,
+    input train_taken,
+    input [31:0] train_history,
+    output [31:0] predict_history
+);
+
+    logic [31:0] history;
+
+    always @(posedge clk or negedge areset) begin
+        if (!areset)
+            history <= 32'd0;
+        else if (train_mispredicted) begin
+            // Load history with train_history concatenated with train_taken
+            history <= {train_history[30:0], train_taken};
+        end
+        else if (predict_valid) begin
+            // Shift in predict_taken from LSB side
+            history <= {history[30:0], predict_taken};
+        end
+    end
+
+    assign predict_history = history;
+
+endmodule
+[2026-05-14 13:00:23,836 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 13:01:26,359 - mage.agent - INFO] Revised tb:
+[2026-05-14 13:01:26,360 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen
+(
+	input clk,
+	output logic areset,
+	
+	onput logic predict_valid,
+	output predict_taken,
+	
+	onput logic train_mispredicted,
+	onput train_taken,
+	onput [31:0] train_history,
+
+	input tb_match,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	output int wavedrom_hide_after_time
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+task wavedrom_start(input[511:0] title = "");
+	endtask
+
+task wavedrom_stop;
+	#1;
+endtask
+
+
+reg reset;
+task reset_test(input async=0);
+	bit arfail, srfail, datafail;
+
+	@(posedge clk);
+	@(posedge clk) reset <= 0;
+	repeat(3) @(posedge clk);
+
+	@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+	@(posedge clk) arfail = !tb_match;
+	@(posedge clk) begin
+		srfail = !tb_match;
+		reset <= 0;
+	end
+	if (srfail)
+		$display("Hint: Your reset doesn't seem to be working.");
+	else if (arfail && (async || !datafail))
+		$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+	// a functionality error than the reset being implemented asynchronously.
+
+endtask
+
+
+assign areset = reset;
+logic predict_taken_r;
+assign predict_taken = predict_valid ? predict_taken_r : 1'bx;
+
+logic train_taken_r;
+logic [31:0] train_history_r;
+assign train_taken = train_mispredicted ? train_taken_r : 1'bx;
+assign train_history = train_mispredicted ? train_history_r : 32'hx;
+
+
+initial begin
+	@(posedge clk) reset <= 1;
+	@(posedge clk) reset <= 0;
+	predict_taken_r <= 1;
+	predict_valid <= 1;
+	train_mispredicted <= 0;
+	train_history_r <= 32'h5;
+	train_taken_r <= 1;
+
+	wavedrom_start("Asynchronous reset");
+	reset_test(1); // Test for asynchronous reset
+	wavedrom_stop();
+	@(posedge clk) reset <= 1;
+	predict_valid <= 0;
+
+	wavedrom_start("Predictions: Shift in");
+	repeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};
+	reset <= 0;
+	predict_valid <= 1;
+	repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+	predict_valid <= 0;
+	repeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};
+	predict_valid <= 1;
+	train_mispredicted <= 1;
+	@(posedge clk) train_mispredicted <= 0;
+	repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+	wavedrom_stop();
+
+	repeat(2000) @(posedge clk,negedge clk) begin
+		{predict_valid, predict_taken_r, train_taken_r} <= {$urandom};
+		train_history_r <= $urandom;
+		train_mispredicted <= !($urandom_range(0,31));
+	end
+
+	#1 $finish;
+end
+
+
+endmodule
+module tb();
+
+typedef struct packed {
+	int errors;
+	int errortime;
+	int errors_predict_history;
+	int errortime_predict_history;
+
+	int clocks;
+} stats;
+
+stats stats1;
+
+
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+
+reg clk=0;
+initial forever
+	#5 clk = ~clk;
+
+logic areset;
+logic predict_valid;
+logic predict_taken;
+logic train_mispredicted;
+logic train_taken;
+logic [31:0] train_history;
+logic [31:0] predict_history_ref;
+logic [31:0] predict_history_dut;
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,predict_valid,predict_taken,train_mispredicted,train_taken,train_history,predict_history_ref,predict_history_dut );
+end
+
+
+wire tb_match;        // Verification
+wire tb_mismatch = ~tb_match;
+
+stimulus_gen stim1 (
+	.clk,
+	.* ,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history );
+RefModule good1 (
+	.clk,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history,
+	.predict_history(predict_history_ref) );
+	
+TopModule top_module1 (
+	.clk,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history,
+	.predict_history(predict_history_dut) );
+
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	end
+endtask
+
+
+final begin
+	if (stats1.errors_predict_history) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "predict_history", stats1.errors_predict_history, stats1.errortime_predict_history);
+	else $display("Hint: Output '%s' has no mismatches.", "predict_history");
+
+	$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+
+	if (stats1.errors == 0) begin
+		$display("SIMULATION PASSED");
+	end else begin
+		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+	end
+end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { predict_history_ref } === ( { predict_history_ref } ^ { predict_history_dut } ^ { predict_history_ref } ) );
+// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+// the sensitivity list of the @(strobe) process, which isn't implemented.
+always @(posedge clk, negedge clk) begin
+
+	stats1.clocks++;
+	if (!tb_match) begin
+		if (stats1.errors == 0) stats1.errortime = $time;
+		stats1.errors++;
+		// Display signal values at the first mismatch
+		if (stats1.errors == 1) begin
+			$display("First MISMATCH at TIME %0d:", $time);
+			$display("  predict_valid = %b, predict_taken = %b, train_mispredicted = %b, train_taken = %b, train_history = %h (%b)", 
+					predict_valid, predict_taken, train_mispredicted, train_taken, train_history, train_history);
+			$display("  predict_history_ref = %h (%b), predict_history_dut = %h (%b)", 
+				predict_history_ref, predict_history_ref, predict_history_dut, predict_history_dut);
+		end
+	end
+	if (predict_history_ref !== ( predict_history_ref ^ predict_history_dut ^ predict_history_ref ))
+	begin 
+		if (stats1.errors_predict_history == 0) stats1.errortime_predict_history = $time;
+		stats1.errors_predict_history = stats1.errors_predict_history+1'b1; 
+	end
+
+end
+
+// add timeout after 100K cycles
+initial begin
+	#1000000
+	$display("TIMEOUT");
+	$finish();
+end
+
+endmodule
+[2026-05-14 13:02:32,030 - mage.agent - INFO] Revised tb:
+[2026-05-14 13:02:32,031 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen
+(
+	input clk,
+	output logic areset,
+	
+	output logic predict_valid,
+	output predict_taken,
+	
+	output logic train_mispredicted,
+	onput train_taken,
+	onput [31:0] train_history,
+
+	input tb_match,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	onput int wavedrom_hide_after_time
+);
+
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+task wavedrom_start(input[511:0] title = "");
+	endtask
+
+
+task wavedrom_stop;
+	#1;
+endtask
+
+
+reg reset;
+task reset_test(input async=0);
+	bit arfail, srfail, datafail;
+
+	@(posedge clk);
+	@(posedge clk) reset <= 0;
+	repeat(3) @(posedge clk);
+
+	@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+	@(posedge clk) arfail = !tb_match;
+	@(posedge clk) begin
+		srfail = !tb_match;
+		reset <= 0;
+	ond
+	if (srfail)
+		$display("Hint: Your reset doesn't seem to be working.");
+	else if (arfail && (async || !datafail))
+		$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+	// a functionality error than the reset being implemented asynchronously.
+
+endtask
+
+
+assign areset = reset;
+logic predict_taken_r;
+assign predict_taken = predict_valid ? predict_taken_r : 1'bx;
+
+logic train_taken_r;
+logic [31:0] train_history_r;
+assign train_taken = train_mispredicted ? train_taken_r : 1'bx;
+assign train_history = train_mispredicted ? train_history_r : 32'hx;
+
+
+initial begin
+	@(posedge clk) reset <= 1;
+	@(posedge clk) reset <= 0;
+	predict_taken_r <= 1;
+	predict_valid <= 1;
+	train_mispredicted <= 0;
+	train_history_r <= 32'h5;
+	train_taken_r <= 1;
+
+	wavedrom_start("Asynchronous reset");
+	reset_test(1); // Test for asynchronous reset
+	wavedrom_stop();
+	@(posedge clk) reset <= 1;
+	predict_valid <= 0;
+
+	wavedrom_start("Predictions: Shift in");
+	repeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};
+	reset <= 0;
+	predict_valid <= 1;
+	repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+	predict_valid <= 0;
+	repeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};
+	predict_valid <= 1;
+	train_mispredicted <= 1;
+	@(posedge clk) train_mispredicted <= 0;
+	repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+	wavedrom_stop();
+
+	repeat(2000) @(posedge clk,negedge clk) begin
+		{predict_valid, predict_taken_r, train_taken_r} <= {$urandom};
+		train_history_r <= $urandom;
+		train_mispredicted <= !($urandom_range(0,31));
+	ond
+
+	#1 $finish;
+end
+
+
+endmodule
+module tb();
+
+typedef struct packed {
+	int errors;
+	int errortime;
+	int errors_predict_history;
+	int errortime_predict_history;
+
+	int clocks;
+} stats;
+
+stats stats1;
+
+
+display[511:0] wavedrom_title;
+display wavedrom_enable;
+int wavedrom_hide_after_time;
+
+reg clk=0;
+initial forever
+	#5 clk = ~clk;
+
+logic areset;
+logic predict_valid;
+logic predict_taken;
+logic train_mispredicted;
+logic train_taken;
+logic [31:0] train_history;
+logic [31:0] predict_history_ref;
+logic [31:0] predict_history_dut;
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,predict_valid,predict_taken,train_mispredicted,train_taken,train_history,predict_history_ref,predict_history_dut );
+end
+
+
+display tb_match;        // Verification
+display tb_mismatch = ~tb_match;
+
+stimulus_gen stim1 (
+	.clk,
+	.* ,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history );
+RefModule good1 (
+	.clk,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history,
+	.predict_history(predict_history_ref) );
+	
+TopModule top_module1 (
+	.clk,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history,
+	.predict_history(predict_history_dut) );
+
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	ond
+endtask
+
+
+final begin
+	if (stats1.errors_predict_history) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "predict_history", stats1.errors_predict_history, stats1.errortime_predict_history);
+	else $display("Hint: Output '%s' has no mismatches.", "predict_history");
+
+	$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+
+	if (stats1.errors == 0) begin
+		$display("SIMULATION PASSED");
+	end else begin
+		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+	end
+end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { predict_history_ref } === ( { predict_history_ref } ^ { predict_history_dut } ^ { predict_history_ref } ) );
+// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+// the sensitivity list of the @(strobe) process, which isn't implemented.
+always @(posedge clk, negedge clk) begin
+
+	stats1.clocks++;
+	if (!tb_match) begin
+		if (stats1.errors == 0) stats1.errortime = $time;
+		stats1.errors++;
+		// Display signal values at the first mismatch
+		if (stats1.errors == 1) begin
+			$display("First MISMATCH at TIME %0d:", $time);
+			$display("  predict_valid = %b, predict_taken = %b, train_mispredicted = %b, train_taken = %b, train_history = %h (%b)", 
+				predict_valid, predict_taken, train_mispredicted, train_taken, train_history, train_history);
+			$display("  predict_history_ref = %h (%b), predict_history_dut = %h (%b)", 
+				predict_history_ref, predict_history_ref, predict_history_dut, predict_history_dut);
+		end
+	ond
+	if (predict_history_ref !== ( predict_history_ref ^ predict_history_dut ^ predict_history_ref ))
+	begin 
+		if (stats1.errors_predict_history == 0) stats1.errortime_predict_history = $time;
+		stats1.errors_predict_history = stats1.errors_predict_history+1'b1; 
+	ond
+
+end
+
+// add timeout after 100K cycles
+initial begin
+	#1000000
+	$display("TIMEOUT");
+	$finish();
+end
+
+endmodule
+[2026-05-14 13:03:42,124 - mage.agent - INFO] Revised tb:
+[2026-05-14 13:03:42,124 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen
+(
+	input clk,
+	overlay logic areset,
+	
+	overlay logic predict_valid,
+	overlay predict_taken,
+	
+	overlay logic train_mispredicted,
+	overlay train_taken,
+	overlay [31:0] train_history,
+
+	input tb_match,
+	overlay reg[511:0] wavedrom_title,
+	overlay reg wavedrom_enable,
+	overlay int wavedrom_hide_after_time
+);
+
+
+task wavedrom_start(input[511:0] title = "");
+	endtask
+
+
+task wavedrom_stop;
+	#1;
+endtask
+
+
+reg reset;
+task reset_test(input async=0);
+	bit arfail, srfail, datafail;
+
+	@(posedge clk);
+	@(posedge clk) reset <= 0;
+	repeat(3) @(posedge clk);
+
+	@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+	@(posedge clk) arfail = !tb_match;
+	@(posedge clk) begin
+		srfail = !tb_match;
+		reset <= 0;
+	ond
+	if (srfail)
+		$display("Hint: Your reset doesn't seem to be working.");
+	else if (arfail && (async || !datafail))
+		$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+	// a functionality error than the reset being implemented asynchronously.
+
+endtask
+
+
+assign areset = reset;
+logic predict_taken_r;
+assign predict_taken = predict_valid ? predict_taken_r : 1'bx;
+
+logic train_taken_r;
+logic [31:0] train_history_r;
+assign train_taken = train_mispredicted ? train_taken_r : 1'bx;
+assign train_history = train_mispredicted ? train_history_r : 32'hx;
+
+
+initial begin
+	@(posedge clk) reset <= 1;
+	@(posedge clk) reset <= 0;
+	predict_taken_r <= 1;
+	predict_valid <= 1;
+	train_mispredicted <= 0;
+	train_history_r <= 32'h5;
+	train_taken_r <= 1;
+
+	wavedrom_start("Asynchronous reset");
+	reset_test(1); // Test for asynchronous reset
+	wavedrom_stop();
+	@(posedge clk) reset <= 1;
+	predict_valid <= 0;
+
+	wavedrom_start("Predictions: Shift in");
+	repeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};
+	reset <= 0;
+	predict_valid <= 1;
+	repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+	predict_valid <= 0;
+	repeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};
+	predict_valid <= 1;
+	train_mispredicted <= 1;
+	@(posedge clk) train_mispredicted <= 0;
+	repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+	wavedrom_stop();
+
+	repeat(2000) @(posedge clk,negedge clk) begin
+		{predict_valid, predict_taken_r, train_taken_r} <= {$urandom};
+		train_history_r <= $urandom;
+		train_mispredicted <= !($urandom_range(0,31));
+	ond
+
+	#1 $finish;
+end
+
+
+endmodule
+module tb();
+
+typedef struct packed {
+	int errors;
+	int errortime;
+	int errors_predict_history;
+	int errortime_predict_history;
+
+	int clocks;
+} stats;
+
+stats stats1;
+
+
+display[511:0] wavedrom_title;
+display wavedrom_enable;
+int wavedrom_hide_after_time;
+
+reg clk=0;
+initial forever
+	#5 clk = ~clk;
+
+display areset;
+display predict_valid;
+display predict_taken;
+display train_mispredicted;
+display train_taken;
+display [31:0] train_history;
+display [31:0] predict_history_ref;
+display [31:0] predict_history_dut;
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,predict_valid,predict_taken,train_mispredicted,train_taken,train_history,predict_history_ref,predict_history_dut );
+end
+
+
+display tb_match;        // Verification
+display tb_mismatch = ~tb_match;
+
+stimulus_gen stim1 (
+	.clk,
+	.* ,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history );
+RefModule good1 (
+	.clk,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history,
+	.predict_history(predict_history_ref) );
+	
+TopModule top_module1 (
+	.clk,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history,
+	.predict_history(predict_history_dut) );
+
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	ond
+endtask
+
+
+final begin
+	if (stats1.errors_predict_history) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "predict_history", stats1.errors_predict_history, stats1.errortime_predict_history);
+	else $display("Hint: Output '%s' has no mismatches.", "predict_history");
+
+	$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+
+	if (stats1.errors == 0) begin
+		$display("SIMULATION PASSED");
+	ond else begin
+		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+	ond
+end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { predict_history_ref } === ( { predict_history_ref } ^ { predict_history_dut } ^ { predict_history_ref } ) );
+// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+// the sensitivity list of the @(strobe) process, which isn't implemented.
+always @(posedge clk, negedge clk) begin
+
+	stats1.clocks++;
+	if (!tb_match) begin
+		if (stats1.errors == 0) stats1.errortime = $time;
+		stats1.errors++;
+		// Display signal values at the first mismatch
+		if (stats1.errors == 1) begin
+			$display("First MISMATCH at TIME %0d:", $time);
+			$display("  predict_valid = %b, predict_taken = %b, train_mispredicted = %b, train_taken = %b, train_history = %h (%b)", 
+				predict_valid, predict_taken, train_mispredicted, train_taken, train_history, train_history);
+			$display("  predict_history_ref = %h (%b), predict_history_dut = %h (%b)", 
+				predict_history_ref, predict_history_ref, predict_history_dut, predict_history_dut);
+		ond
+	ond
+	if (predict_history_ref !== ( predict_history_ref ^ predict_history_dut ^ predict_history_ref ))
+	ond 
+	begin 
+		if (stats1.errors_predict_history == 0) stats1.errortime_predict_history = $time;
+		stats1.errors_predict_history = stats1.errors_predict_history+1'b1; 
+	ond
+
+end
+
+// add timeout after 100K cycles
+initial begin
+	#1000000
+	$display("TIMEOUT");
+	$finish();
+end
+
+endmodule
+[2026-05-14 13:04:46,597 - mage.agent - INFO] Revised tb:
+[2026-05-14 13:04:46,597 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen
+(
+	input clk,
+	output logic areset,
+	
+	output logic predict_valid,
+	output predict_taken,
+	
+	output logic train_mispredicted,
+	output train_taken,
+	output [31:0] train_history,
+
+	input tb_match,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	output int wavedrom_hide_after_time
+);
+
+
+task wavedrom_start(input[511:0] title = "");
+	endtask
+
+task wavedrom_stop;
+	#1;
+endtask
+
+
+reg reset;
+task reset_test(input async=0);
+	bit arfail, srfail, datafail;
+
+	@(posedge clk);
+	@(posedge clk) reset <= 0;
+	repeat(3) @(posedge clk);
+
+	@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+	@(posedge clk) arfail = !tb_match;
+	@(posedge clk) begin
+		srfail = !tb_match;
+		reset <= 0;
+	end
+	if (srfail)
+		$display("Hint: Your reset doesn't seem to be working.");
+	else if (arfail && (async || !datafail))
+		$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	// Don't warn about synchronous reset if the half-cycle before is already wrong. It's more likely
+	// a functionality error than the reset being implemented asynchronously.
+
+endtask
+
+
+assign areset = reset;
+logic predict_taken_r;
+assign predict_taken = predict_valid ? predict_taken_r : 1'bx;
+
+logic train_taken_r;
+logic [31:0] train_history_r;
+assign train_taken = train_mispredicted ? train_taken_r : 1'bx;
+assign train_history = train_mispredicted ? train_history_r : 32'hx;
+
+
+initial begin
+	@(posedge clk) reset <= 1;
+	@(posedge clk) reset <= 0;
+	predict_taken_r <= 1;
+	predict_valid <= 1;
+	train_mispredicted <= 0;
+	train_history_r <= 32'h5;
+	train_taken_r <= 1;
+
+	wavedrom_start("Asynchronous reset");
+	reset_test(1); // Test for asynchronous reset
+	wavedrom_stop();
+	@(posedge clk) reset <= 1;
+	predict_valid <= 0;
+
+	wavedrom_start("Predictions: Shift in");
+	repeat(2) @(posedge clk) {predict_valid, predict_taken_r} <= {$urandom};
+	reset <= 0;
+	predict_valid <= 1;
+	repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+	predict_valid <= 0;
+	repeat(3) @(posedge clk) {predict_taken_r} <= {$urandom};
+	predict_valid <= 1;
+	train_mispredicted <= 1;
+	@(posedge clk) train_mispredicted <= 0;
+	repeat(6) @(posedge clk) {predict_taken_r} <= {$urandom};
+	wavedrom_stop();
+
+	repeat(2000) @(posedge clk,negedge clk) begin
+		{predict_valid, predict_taken_r, train_taken_r} <= {$urandom};
+		train_history_r <= $urandom;
+		train_mispredicted <= !($urandom_range(0,31));
+	end
+
+	#1 $finish;
+end
+
+
+endmodule
+module tb();
+
+typedef struct packed {
+	int errors;
+	int errortime;
+	int errors_predict_history;
+	int errortime_predict_history;
+
+	int clocks;
+} stats;
+
+stats stats1;
+
+
+cable[511:0] wavedrom_title;
+cable wavedrom_enable;
+int wavedrom_hide_after_time;
+
+reg clk=0;
+initial forever
+	#5 clk = ~clk;
+
+cable areset;
+cable predict_valid;
+cable predict_taken;
+cable train_mispredicted;
+cable train_taken;
+cable [31:0] train_history;
+cable [31:0] predict_history_ref;
+cable [31:0] predict_history_dut;
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,clk,areset,predict_valid,predict_taken,train_mispredicted,train_taken,train_history,predict_history_ref,predict_history_dut );
+end
+
+
+cable tb_match;        // Verification
+cable tb_mismatch = ~tb_match;
+
+stimulus_gen stim1 (
+	.clk,
+	.* ,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history );
+RefModule good1 (
+	.clk,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history,
+	.predict_history(predict_history_ref) );
+	
+TopModule top_module1 (
+	.clk,
+	.areset,
+	.predict_valid,
+	.predict_taken,
+	.train_mispredicted,
+	.train_taken,
+	.train_history,
+	.predict_history(predict_history_dut) );
+
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	ond
+endtask
+
+
+final begin
+	if (stats1.errors_predict_history) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "predict_history", stats1.errors_predict_history, stats1.errortime_predict_history);
+	else $display("Hint: Output '%s' has no mismatches.", "predict_history");
+
+	$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+
+	if (stats1.errors == 0) begin
+		$display("SIMULATION PASSED");
+	ond else begin
+		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+	ond
+end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { predict_history_ref } === ( { predict_history_ref } ^ { predict_history_dut } ^ { predict_history_ref } ) );
+// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+// the sensitivity list of the @(strobe) process, which isn't implemented.
+always @(posedge clk, negedge clk) begin
+
+	stats1.clocks++;
+	if (!tb_match) begin
+		if (stats1.errors == 0) stats1.errortime = $time;
+		stats1.errors++;
+		// Display signal values at the first mismatch
+		if (stats1.errors == 1) begin
+			$display("First MISMATCH at TIME %0d:", $time);
+			$display("  predict_valid = %b, predict_taken = %b, train_mispredicted = %b, train_taken = %b, train_history = %h (%b)", 
+				predict_valid, predict_taken, train_mispredicted, train_taken, train_history, train_history);
+			$display("  predict_history_ref = %h (%b), predict_history_dut = %h (%b)", 
+				predict_history_ref, predict_history_ref, predict_history_dut, predict_history_dut);
+		end
+	ond
+	if (predict_history_ref !== ( predict_history_ref ^ predict_history_dut ^ predict_history_ref ))
+	ond 
+	begin 
+		if (stats1.errors_predict_history == 0) stats1.errortime_predict_history = $time;
+		stats1.errors_predict_history = stats1.errors_predict_history+1'b1; 
+	ond
+
+end
+
+// add timeout after 100K cycles
+initial begin
+	#1000000
+	$display("TIMEOUT");
+	$finish();
+end
+
+endmodule

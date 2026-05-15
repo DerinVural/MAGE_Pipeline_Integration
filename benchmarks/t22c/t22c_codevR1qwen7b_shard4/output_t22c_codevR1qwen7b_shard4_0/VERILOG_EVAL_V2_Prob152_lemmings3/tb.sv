@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output logic areset, output logic bump_left, bump_right, ground, dig, output [511:0] wavedrom_title, output wavedrom_enable, input tb_match); reg reset; assign areset = reset; task reset_test(input async=0); ... endtask ... endmodule module tb(); ... endmodule

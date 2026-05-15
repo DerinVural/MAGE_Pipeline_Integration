@@ -1,0 +1,244 @@
+[2026-05-12 18:11:56,950 - mage.agent - INFO] TB Gen BYPASSED — loaded golden testbench from ./verilog-eval/dataset_spec-to-rtl/Prob128_fsm_ps2_test.sv
+[2026-05-12 18:11:56,953 - mage.agent - INFO] Initial tb:
+[2026-05-12 18:11:56,953 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic [7:0] in,
+	output logic reset
+);
+
+	initial begin
+		repeat(200) @(negedge clk) begin
+			in <= $random;
+			reset <= !($random & 31);
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_done;
+		int errortime_done;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [7:0] in;
+	logic reset;
+	logic done_ref;
+	logic done_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,in,reset,done_ref,done_dut );
+	end
+
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in,
+		.reset );
+	RefModule good1 (
+		.clk,
+		.in,
+		.reset,
+		.done(done_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.in,
+		.reset,
+		.done(done_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors_done) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "done", stats1.errors_done, stats1.errortime_done);
+		else $display("Hint: Output '%s' has no mismatches.", "done");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { done_ref } === ( { done_ref } ^ { done_dut } ^ { done_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+		begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			stats1.errors_done = stats1.errors_done+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+
+[2026-05-12 18:11:56,953 - mage.agent - INFO] Initial if:
+[2026-05-12 18:11:56,953 - mage.agent - INFO] 
+[2026-05-12 18:11:56,956 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - input  in (8 bits)
+ - output done
+
+The PS/2 mouse protocol sends messages that are three bytes long.
+However, within a continuous byte stream, it's not obvious where messages
+start and end. The only indication is that the first byte of each three
+byte message always has in[3]=1 (but in[3] of the other two bytes may be
+1 or 0 depending on data).
+
+The module should implement a finite state machine that will search for
+message boundaries when given an input byte stream. The algorithm we'll
+use is to discard bytes until we see one with in[3]=1. We then assume
+that this is byte 1 of a message, and signal the receipt of a message
+once all 3 bytes have been received (done). The FSM should signal done in
+the cycle immediately after the third byte of each message was
+successfully received. Reset should be active high synchronous. Assume
+all sequential logic is triggered on the positive edge of the clock.
+
+
+[2026-05-12 18:11:56,957 - mage.rtl_generator - INFO] RTL generator input message: [ChatMessage(role=<MessageRole.SYSTEM: 'system'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYou are an expert in RTL design. You can always write SystemVerilog code with no syntax errors and always reach correct functionality.\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nPlease write a module in SystemVerilog RTL language regarding to the given natural language specification.\nTry to understand the requirements above and give reasoning steps in natural language to achieve it.\nIn addition, try to give advice to avoid syntax error.\nAn SystemVerilog RTL module always starts with a line starting with the keyword \'module\' followed by the module name.\nIt ends with the keyword \'endmodule\'.\n\n[Hints]:\nFor implementing kmap (Karnaugh map), you need to think step by step.\nCarefully example how the kmap in input_spec specifies the order of the inputs.\nNote that x[i] in x[N:1] means x[i-1] in x[N-1:0].\nThen find the inputs corresponding to output=1, 0, and don\'t-care for each case.\n\nNote in Verilog, for a signal "logic x[M:N]" where M > N, you CANNOT reversely select bits from it like x[1:2];\nInstead, you should use concatations like {x[1], x[2]}.\n\nThe module interface should EXACTLY MATCH module_interface if given.\nOtherwise, should EXACTLY MATCH with the description in input_spec.\n(Including the module name, input/output ports names, and their types)\n\n\n\nHere are some examples of RTL SystemVerilog code:\nExample 1:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement a XOR gate.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic in0,\n            input  logic in1,\n            output logic out\n        );\n\n            assign out = in0 ^ in1;\n\n        endmodule\n    </module>\n</example>\nExample 2:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement an 8-bit registered incrementer.\n        The 8-bit input is first registered and then incremented by one on the next cycle.\n        The reset input is active high synchronous and should reset the output to zero.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic       clk,\n            input  logic       reset,\n            input  logic [7:0] in_,\n            output logic [7:0] out\n        );\n\n            // Sequential logic\n            logic [7:0] reg_out;\n            always @( posedge clk ) begin\n                if ( reset )\n                reg_out <= 0;\n                else\n                reg_out <= in_;\n            end\n\n            // Combinational logic\n            logic [7:0] temp_wire;\n            always @(*) begin\n                temp_wire = reg_out + 1;\n            end\n\n            // Structural connections\n            assign out = temp_wire;\n\n        endmodule\n    </module>\n</example>\nExample 3:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        The module should implement an n-bit registered incrementer where the bitwidth is specified by the parameter nbits.\n        The n-bit input is first registered and then incremented by one on the next cycle.\n        The reset input is active high synchronous and should reset the output to zero.\n    </input_spec>\n    <module>\n        module TopModule #(\n            parameter nbits\n        )(\n            input  logic             clk,\n            input  logic             reset,\n            input  logic [nbits-1:0] in_,\n            output logic [nbits-1:0] out\n        );\n\n            // Sequential logic\n            logic [nbits-1:0] reg_out;\n            always @( posedge clk ) begin\n                if ( reset )\n                reg_out <= 0;\n                else\n                reg_out <= in_;\n            end\n\n            // Combinational logic\n            logic [nbits-1:0] temp_wire;\n            always @(*) begin\n                temp_wire = reg_out + 1;\n            end\n\n            // Structural connections\n            assign out = temp_wire;\n\n        endmodule\n    </module>\n</example>\nExample 4:\n<example>\n    <input_spec>\n        Implement the SystemVerilog module based on the following description.\n        Assume that sigals are positive clock/clk triggered unless otherwise stated.\n\n        Build a finite-state machine that takes as input a serial bit stream,\n            and outputs a one whenever the bit stream contains two consecutive one\'s.\n        The output is one on the cycle _after_ there are two consecutive one\'s.\n        The reset input is active high synchronous,\n            and should reset the finite-state machine to an appropriate initial state.\n    </input_spec>\n    <module>\n        module TopModule(\n            input  logic clk,\n            input  logic reset,\n            input  logic in_,\n            output logic out\n        );\n\n            // State enum\n            localparam STATE_A = 2\'b00;\n            localparam STATE_B = 2\'b01;\n            localparam STATE_C = 2\'b10;\n\n            // State register\n            logic [1:0] state;\n            logic [1:0] state_next;\n            always @(posedge clk) begin\n                if ( reset )\n                state <= STATE_A;\n                else\n                state <= state_next;\n            end\n\n            // Next state combinational logic\n            always @(*) begin\n                state_next = state;\n                case ( state )\n                STATE_A: state_next = ( in_ ) ? STATE_B : STATE_A;\n                STATE_B: state_next = ( in_ ) ? STATE_C : STATE_A;\n                STATE_C: state_next = ( in_ ) ? STATE_C : STATE_A;\n                endcase\n            end\n\n            // Output combinational logic\n            always @(*) begin\n                out = 1\'b0;\n                case ( state )\n                STATE_A: out = 1\'b0;\n                STATE_B: out = 1\'b0;\n                STATE_C: out = 1\'b1;\n                endcase\n            end\n\n        endmodule\n    </module>\n</example>\n\n<input_spec>\n\nI would like you to implement a module named TopModule with the following\ninterface. All input and output ports are one bit unless otherwise\nspecified.\n\n - input  clk\n - input  reset\n - input  in (8 bits)\n - output done\n\nThe PS/2 mouse protocol sends messages that are three bytes long.\nHowever, within a continuous byte stream, it\'s not obvious where messages\nstart and end. The only indication is that the first byte of each three\nbyte message always has in[3]=1 (but in[3] of the other two bytes may be\n1 or 0 depending on data).\n\nThe module should implement a finite state machine that will search for\nmessage boundaries when given an input byte stream. The algorithm we\'ll\nuse is to discard bytes until we see one with in[3]=1. We then assume\nthat this is byte 1 of a message, and signal the receipt of a message\nonce all 3 bytes have been received (done). The FSM should signal done in\nthe cycle immediately after the third byte of each message was\nsuccessfully received. Reset should be active high synchronous. Assume\nall sequential logic is triggered on the positive edge of the clock.\n\n\n</input_spec>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nAnother agent has generated a testbench regarding the given input_spec:\n<testbench>\n`timescale 1 ps/1 ps\n`define OK 12\n`define INCORRECT 13\n\n\nmodule stimulus_gen (\n\tinput clk,\n\toutput logic [7:0] in,\n\toutput logic reset\n);\n\n\tinitial begin\n\t\trepeat(200) @(negedge clk) begin\n\t\t\tin <= $random;\n\t\t\treset <= !($random & 31);\n\t\tend\n\n\t\t#1 $finish;\n\tend\n\t\nendmodule\n\nmodule tb();\n\n\ttypedef struct packed {\n\t\tint errors;\n\t\tint errortime;\n\t\tint errors_done;\n\t\tint errortime_done;\n\n\t\tint clocks;\n\t} stats;\n\t\n\tstats stats1;\n\t\n\t\n\twire[511:0] wavedrom_title;\n\twire wavedrom_enable;\n\tint wavedrom_hide_after_time;\n\t\n\treg clk=0;\n\tinitial forever\n\t\t#5 clk = ~clk;\n\n\tlogic [7:0] in;\n\tlogic reset;\n\tlogic done_ref;\n\tlogic done_dut;\n\n\tinitial begin \n\t\t$dumpfile("wave.vcd");\n\t\t$dumpvars(1, stim1.clk, tb_mismatch ,clk,in,reset,done_ref,done_dut );\n\tend\n\n\n\twire tb_match;\t\t// Verification\n\twire tb_mismatch = ~tb_match;\n\t\n\tstimulus_gen stim1 (\n\t\t.clk,\n\t\t.* ,\n\t\t.in,\n\t\t.reset );\n\tRefModule good1 (\n\t\t.clk,\n\t\t.in,\n\t\t.reset,\n\t\t.done(done_ref) );\n\t\t\n\tTopModule top_module1 (\n\t\t.clk,\n\t\t.in,\n\t\t.reset,\n\t\t.done(done_dut) );\n\n\t\n\tbit strobe = 0;\n\ttask wait_for_end_of_timestep;\n\t\trepeat(5) begin\n\t\t\tstrobe <= !strobe;  // Try to delay until the very end of the time step.\n\t\t\t@(strobe);\n\t\tend\n\tendtask\t\n\n\t\n\tfinal begin\n\t\tif (stats1.errors_done) $display("Hint: Output \'%s\' has %0d mismatches. First mismatch occurred at time %0d.", "done", stats1.errors_done, stats1.errortime_done);\n\t\telse $display("Hint: Output \'%s\' has no mismatches.", "done");\n\n\t\t$display("Hint: Total mismatched samples is %1d out of %1d samples\\n", stats1.errors, stats1.clocks);\n\t\t$display("Simulation finished at %0d ps", $time);\n\t\t$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);\n\tend\n\t\n\t// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.\n\tassign tb_match = ( { done_ref } === ( { done_ref } ^ { done_dut } ^ { done_ref } ) );\n\t// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute\n\t// the sensitivity list of the @(strobe) process, which isn\'t implemented.\n\talways @(posedge clk, negedge clk) begin\n\n\t\tstats1.clocks++;\n\t\tif (!tb_match) begin\n\t\t\tif (stats1.errors == 0) stats1.errortime = $time;\n\t\t\tstats1.errors++;\n\t\tend\n\t\tif (done_ref !== ( done_ref ^ done_dut ^ done_ref ))\n\t\tbegin if (stats1.errors_done == 0) stats1.errortime_done = $time;\n\t\t\tstats1.errors_done = stats1.errors_done+1\'b1; end\n\n\tend\n\n   // add timeout after 100K cycles\n   initial begin\n     #1000000\n     $display("TIMEOUT");\n     $finish();\n   end\n\nendmodule\n\n\n</testbench>\n')]), ChatMessage(role=<MessageRole.USER: 'user'>, additional_kwargs={}, blocks=[TextBlock(block_type='text', text='\nYour response will be processed by a program, not human.\nSo, please STRICTLY FOLLOW the output format given as XML tag content below to generate a VALID JSON OBJECT:\n<output_format>\n{\n    "reasoning": "All reasoning steps and advices to avoid syntax error",\n    "module": "Pure SystemVerilog code, a complete module"\n}\n</output_format>\nDO NOT include any other information in your response, like \'json\', \'reasoning\' or \'<output_format>\'.\n\nOther requirements:\n1. Don\'t use state_t to define the parameter. Use `localparam` or Use \'reg\' or \'logic\' for signals as registers or Flip-Flops.\n2. Declare all ports and signals as logic.\n3. Not all the sequential logic need to be reset to 0 when reset is asserted,\n    but these without-reset logic should be initialized to a known value with an initial block instead of being X.\n4. For combinational logic with an always block do not explicitly specify the sensitivity list; instead use always @(*).\n5. NEVER USE \'inside\' operator in RTL code. Code like \'state inside {STATE_B, STATE_C, STATE_D}\' should NOT be used.\n6. Never USE \'unique\' or \'unique0\' keywords in RTL code. Code like \'unique case\' should NOT be used.\n')])]
+[2026-05-12 18:11:56,958 - mage.token_counter - INFO] TokenCounter count_chat [agent=RTLGenerator] at temp: 0.85, top_p: 0.95
+[2026-05-12 18:12:51,151 - mage.rtl_generator - INFO] Token count: in        0 tokens, out        0 tokens
+[2026-05-12 18:12:51,151 - mage.rtl_generator - INFO] {
+    "reasoning": "1. **Analyze the requirement**: We need to implement a FSM that detects the start of a 3-byte message. A message starts when `in[3] == 1`. Once the first byte is detected, we wait for two more bytes. After the third byte is received, the `done` signal should be high for one cycle.\n2. **Identify FSM States**:\n    - `IDLE`: Searching for the first byte of a message. We stay here as long as `in[3]` is 0. If `in[3]` is 1, we transition to `BYTE2`.\n    - `BYTE2`: The second byte of the message has been received. Transition to `BYTE3` regardless of the input.\n    - `BYTE3`: The third byte has been received. In the next cycle, we should signal `done`. After signaling `done`, we return to `IDLE`. However, there is a subtlety: what if the third byte of the current message also has `in[3]=1`? The prompt says 'discard bytes until we see one with in[3]=1'. This implies that if the 3rd byte has `in[3]=1`, it should be treated as the start of a *new* message. But the rule says 'signal done in the cycle immediately after the third byte... was received'.\n3. **Refined FSM States**:\n    - `SEARCH`: Looking for `in[3] == 1`. Transition to `WAIT_BYTE2` when found.\n    - `WAIT_BYTE2`: We just saw Byte 1. Next cycle is Byte 2. Transition to `WAIT_BYTE3`.\n    - `WAIT_BYTE3`: We just saw Byte 2. Next cycle is Byte 3. Transition to `DONE_STATE`.\n    - `DONE_STATE`: We just saw Byte 3. Output `done = 1`. Transition to `SEARCH` (or `WAIT_BYTE2` if the current `in[3]` is 1).\n4. **Handling the 'done' signal timing**: The prompt says 'signal done in the cycle immediately after the third byte... was successfully received'. This means if Byte 3 arrives at cycle $T$, `done` is high at cycle $T+1$.\n5. **Implementation Details**:\n    - Use `localparam` for states.\n    - Use `always @(posedge clk)` for sequential logic with synchronous reset.\n    - Use `always @(*)` for combinational logic.\n    - To handle the 're-start' logic: if we are in the state where we just received the 3rd byte, and the current `in[3]` is 1, we should ideally transition to a state that treats this as Byte 1. However, the simplest way is: State 0 (IDLE/SEARCH), State 1 (received 1st), State 2 (received 2nd). When in State 2 and a new clock edge hits, we have finished 3 bytes. We output `done` and move to a state based on the current `in[3]`.\n6. **Final State Machine Logic**:\n    - `S_SEARCH`: If `in[3]`, next is `S_B2`. Else next is `S_SEARCH`.\n    - `S_B2`: Next is `S_B3`.\n    - `S_B3`: We have just received the 3rd byte. The `done` signal will be high in the transition from `S_B3` to the next state. If `in[3]`, next is `S_B2` (treating this as the 1st byte), else `S_SEARCH`.\n    - To make `done` high in the cycle *after* the 3rd byte, `done` should be a registered signal or a combinational signal derived from being in state `S_B3`.\n    - Let's use: `S_IDLE` (searching), `S_BYTE2` (got byte 1), `S_BYTE3` (got byte 2). When in `S_BYTE3`, the next cycle we have received byte 3. So we trigger `done` and move to `S_IDLE` or `S_BYTE2`.\n    - Actually, let's use a counter/state approach: \n        - `STATE_IDLE`: waiting for `in[3]`. If `in[3]`, `state <= STATE_BYTE2`. \n        - `STATE_BYTE2`: received byte 1. `state <= STATE_BYTE3`.\n        - `STATE_BYTE3`: received byte 2. `state <= STATE_DONE`.\n        - `STATE_DONE`: received byte 3. `done` is 1. If `in[3]`, `state <= STATE_BYTE2`, else `state <= STATE_IDLE`.\n7. **Advice to avoid syntax errors**: \n    - Always ensure `always @(*)` blocks cover all possible cases to avoid latches (though not strictly required for a simple FSM, it is good practice).\n    - Ensure port names and types match the specification exactly.\n    - Use `logic` for all signals as requested.\n    - Check bit-width of `in` (8 bits).",
+    "module": "module TopModule(\n    input  logic       clk,\n    input  logic       reset,\n    input  logic [7:0] in,\n    output logic       done\n);\n\n    // State definitions\n    localparam STATE_IDLE  = 2'b00;\n    localparam STATE_BYTE2 = 2'b01;\n    localparam STATE_BYTE3 = 2'b10;\n    localparam STATE_DONE  = 2'b11;\n\n    logic [1:0] state;\n    logic [1:0] state_next;\n\n    // Sequential logic\n    always @(posedge clk) begin\n        if (reset) begin\n            state <= STATE_IDLE;\n        end else begin\n            state <= state_next;\n        end\n    end\n\n    // Next state combinational logic\n    always @(*) begin\n        state_next = state;\n        case (state)\n            STATE_IDLE:\n                if (in[3])\n                    state_next = STATE_BYTE2;\n                else\n                    state_next = STATE_IDLE;\n\n            STATE_BYTE2:\n                state_next = STATE_BYTE3;\n\n            STATE_BYTE3:\n                state_next = STATE_DONE;\n\n            STATE_DONE:\n                if (in[3])\n                    state_next = STATE_BYTE2;\n                else\n                    state_next = STATE_IDLE;\n\n            default:\n                state_next = STATE_IDLE;\n        endcase\n    end\n\n    // Output logic\n    // done is high in the cycle immediately after the third byte is received.\n    // Since the transition to STATE_DONE happens after the 3rd byte is clocked in,\n    // being in STATE_DONE means the 3rd byte was received in the previous cycle.\n    always @(*) begin\n        if (state == STATE_DONE) \n            done = 1'b1;\n        else\n            done = 1'b0;\n    end\n\nendmodule"
+}
+[2026-05-12 18:12:51,155 - mage.bash_tools - INFO] Running command: iverilog -t null -Wall -Winfloop -Wno-timescale -g2012 -o /dev/null ./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/rtl.sv
+[2026-05-12 18:12:51,191 - mage.sim_reviewer - INFO] Syntax check is_pass: True, 
+output: {
+    "stdout": "",
+    "stderr": ""
+}
+[2026-05-12 18:12:51,195 - mage.agent - INFO] Initial rtl:
+[2026-05-12 18:12:51,195 - mage.agent - INFO] module TopModule(
+    input  logic       clk,
+    input  logic       reset,
+    input  logic [7:0] in,
+    output logic       done
+);
+
+    // State definitions
+    localparam STATE_IDLE  = 2'b00;
+    localparam STATE_BYTE2 = 2'b01;
+    localparam STATE_BYTE3 = 2'b10;
+    localparam STATE_DONE  = 2'b11;
+
+    logic [1:0] state;
+    logic [1:0] state_next;
+
+    // Sequential logic
+    always @(posedge clk) begin
+        if (reset) begin
+            state <= STATE_IDLE;
+        end else begin
+            state <= state_next;
+        end
+    end
+
+    // Next state combinational logic
+    always @(*) begin
+        state_next = state;
+        case (state)
+            STATE_IDLE:
+                if (in[3])
+                    state_next = STATE_BYTE2;
+                else
+                    state_next = STATE_IDLE;
+
+            STATE_BYTE2:
+                state_next = STATE_BYTE3;
+
+            STATE_BYTE3:
+                state_next = STATE_DONE;
+
+            STATE_DONE:
+                if (in[3])
+                    state_next = STATE_BYTE2;
+                else
+                    state_next = STATE_IDLE;
+
+            default:
+                state_next = STATE_IDLE;
+        endcase
+    end
+
+    // Output logic
+    // done is high in the cycle immediately after the third byte is received.
+    // Since the transition to STATE_DONE happens after the 3rd byte is clocked in,
+    // being in STATE_DONE means the 3rd byte was received in the previous cycle.
+    always @(*) begin
+        if (state == STATE_DONE) 
+            done = 1'b1;
+        else
+            done = 1'b0;
+    end
+
+endmodule
+[2026-05-12 18:12:51,195 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -o ./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/sim_output.vvp ./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/tb.sv ./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob128_fsm_ps2_ref.sv; vvp -n ./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/sim_output.vvp
+[2026-05-12 18:12:51,261 - mage.sim_reviewer - INFO] Simulation is_pass: True, mismatch_cnt: 0, golden_tb_format: True
+output: {
+    "stdout": "VCD info: dumpfile wave.vcd opened for output.\n./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/tb.sv:18: $finish called at 2001 (1ps)\nHint: Output 'done' has no mismatches.\nHint: Total mismatched samples is 0 out of 400 samples\n\nSimulation finished at 2001 ps\nMismatches: 0 in 400 samples\n",
+    "stderr": ""
+}
+[2026-05-12 18:12:51,262 - mage.token_counter - INFO] RTLGenerator cnt         : in        0 tokens, out        0 tokens
+[2026-05-12 18:12:51,262 - mage.token_counter - INFO] Total cnt                : in        0 tokens, out        0 tokens
+[2026-05-12 18:12:51,262 - mage.token_counter - INFO] Total cost               : $0.00 USD
+[2026-05-12 18:12:51,268 - mage.bash_tools - INFO] Running command: iverilog -Wall -Winfloop -Wno-timescale -g2012 -s tb -o ./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/sim_golden.vvp ./verilog-eval/dataset_spec-to-rtl/Prob128_fsm_ps2_test.sv ./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/rtl.sv ./verilog-eval/dataset_spec-to-rtl/Prob128_fsm_ps2_ref.sv; vvp -n ./output_t22_gemma4_26b_smoke_0/VERILOG_EVAL_V2_Prob128_fsm_ps2/sim_golden.vvp
+[2026-05-12 18:12:51,336 - mage.sim_reviewer - INFO] Golden simulation is_pass: True, 
+output: {
+    "stdout": "VCD info: dumpfile wave.vcd opened for output.\n./verilog-eval/dataset_spec-to-rtl/Prob128_fsm_ps2_test.sv:18: $finish called at 2001 (1ps)\nHint: Output 'done' has no mismatches.\nHint: Total mismatched samples is 0 out of 400 samples\n\nSimulation finished at 2001 ps\nMismatches: 0 in 400 samples\n",
+    "stderr": ""
+}

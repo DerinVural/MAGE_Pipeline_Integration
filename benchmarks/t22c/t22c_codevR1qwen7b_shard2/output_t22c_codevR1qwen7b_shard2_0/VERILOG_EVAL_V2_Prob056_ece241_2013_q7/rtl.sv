@@ -1,0 +1,1 @@
+module TopModule(input logic clk, input logic j, input logic k, output logic Q); logic Qold = 0; always @(posedge clk) Qold <= Q; always @(posedge clk) Q <= (j == 0 && k == 0) ? Qold : (j == 0 && k == 1) ? 0 : (j == 1 && k == 0) ? 1 : ~Qold; endmodule

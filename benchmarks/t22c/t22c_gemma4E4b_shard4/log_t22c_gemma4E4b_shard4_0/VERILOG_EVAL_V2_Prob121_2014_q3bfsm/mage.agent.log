@@ -1,0 +1,556 @@
+[2026-05-14 11:45:50,481 - mage.agent - INFO] Initial tb:
+[2026-05-14 11:45:50,482 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic reset,
+	output logic x
+);
+	
+	initial begin
+		reset = 1;
+		x = 0;
+		@(posedge clk);
+		@(posedge clk);
+		reset = 0;
+		@(posedge clk);
+		@(posedge clk);
+		
+		repeat(500) @(negedge clk) begin
+		reset <= !($random & 63);
+		x <= $random;
+		end
+		#1 $finish;
+	end
+
+endmodule
+
+module RefModule (
+    input clk,
+    input reset,
+    input x,
+    output z
+);
+    // Placeholder for golden reference module implementation
+    // Assuming it implements the specification correctly for golden comparison.
+    assign z = x; 
+endmodule
+
+module TopModule (
+    input clk,
+    input reset,
+    input x,
+    output z
+);
+    // FSM Implementation based on specification
+    logic [2:0] state;
+    logic [2:0] next_state;
+    
+    always @(posedge clk)
+    begin
+        if (reset) begin
+            state <= 3'b000;
+        end else begin
+            state <= next_state;
+        end
+    end
+
+    always @(*) begin
+        next_state = state;
+        z = 1'b0;
+
+        case (state) 
+            3'b000: begin
+                if (x == 0) next_state = 3'b000;
+                else next_state = 3'b001;
+                z = 1'b0;
+            end
+            3'b001: begin
+                if (x == 0) next_state = 3'b001;
+                else next_state = 3'b100;
+                z = 1'b0;
+            end
+            3'b010: begin
+                if (x == 0) next_state = 3'b010;
+                else next_state = 3'b001;
+                z = 1'b0;
+            end
+            3'b011: begin
+                if (x == 0) next_state = 3'b001;
+                else next_state = 3'b010;
+                z = 1'b1;
+            end
+            3'b100: begin
+                if (x == 0) next_state = 3'b011;
+                else next_state = 3'b100;
+                z = 1'b1;
+            end
+            default: next_state = 3'b000; // Safety
+        endcase
+    end
+
+endmodule
+
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_z;
+		int errortime_z;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic x;
+	logic z_ref;
+	logic z_dut;
+
+	// --- Queue Definitions for Mismatch Detection ---
+	// State size is 3 bits, MAX_QUEUE_SIZE = 8
+	localparam MAX_QUEUE_SIZE = 8;
+	
+	// Queue elements must match the width of the signals
+	reg [1:0] x_queue [MAX_QUEUE_SIZE-1:0]; // x is 1 bit
+	reg z_dut_queue [MAX_QUEUE_SIZE-1:0];   // z is 1 bit
+	reg z_ref_queue [MAX_QUEUE_SIZE-1:0];   // z_ref is 1 bit
+	reg reset_queue [MAX_QUEUE_SIZE-1:0];   // reset is 1 bit
+	
+	// Tracking first mismatch time for queue reporting
+	reg mismatch_detected_flag = 0;
+	reg [63:0] first_mismatch_time = 0;
+	
+	// --- Testbench Setup ---
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,x,z_ref,z_dut );
+	end
+
+	wire tb_match; 
+	// Original verification logic implies z_ref === z_dut
+	assign tb_match = ( z_ref === z_dut );
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.reset, // Note: The golden testbench uses .* here, but stimulus_gen only defines reset/x outputs, so we map explicitly.
+		x, 
+		.clk, // Required by stim1 definition, though redundant if map is used
+		.reset, // Required by stim1 definition
+		.x
+	);
+	RefModule good1 (
+		.clk, 
+		.reset, 
+		x, 
+		z_ref 
+	);
+	
+	TopModule top_module1 (
+		.clk, 
+		.reset, 
+		x, 
+		z_dut 
+	);
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	// Queueing and Verification Logic
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+
+		// 1. Queue Management: Shift data if full
+		if (input_queue.size() >= MAX_QUEUE_SIZE) begin
+			// Since we are using fixed arrays/FIFO logic conceptually, we shift all elements
+			for (int i = 0; i < MAX_QUEUE_SIZE - 1; i++) begin
+				x_queue[i] <= x_queue[i+1];
+			z_dut_queue[i] <= z_dut_queue[i+1];
+			z_ref_queue[i] <= z_ref_queue[i+1];
+			reset_queue[i] <= reset_queue[i+1];
+			end
+		end
+
+		// 2. Push current data to the last slot
+		x_queue[MAX_QUEUE_SIZE-1] <= x;
+		z_dut_queue[MAX_QUEUE_SIZE-1] <= z_dut;
+		z_ref_queue[MAX_QUEUE_SIZE-1] <= z_ref;
+		reset_queue[MAX_QUEUE_SIZE-1] <= reset;
+
+		// 3. Check for mismatch and update error counts
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time; // Original logic
+			stats1.errors++;
+			end
+		
+		// Update Z error count (following original complex logic, although redundant with tb_match)
+		if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+		begin 
+			if (stats1.errors_z == 0) stats1.errortime_z = $time;
+			sstats1.errors_z = stats1.errors_z+1'b1;
+		end
+		
+		// 4. Queue Mismatch Detection (New Requirement)
+		if (!mismatch_detected_flag && !tb_match) begin
+			mismatch_detected_flag = 1;
+			first_mismatch_time = $time;
+			$display("\n=======================================================================");
+			$display("QUEUE-BASED MISMATCH DETECTED AT TIME %0t", $time);
+			$display("\nLast %0d cycles of simulation:", MAX_QUEUE_SIZE);
+
+			// Display Queue Content
+			for (int i = 0; i < MAX_QUEUE_SIZE; i++) begin
+				// Check if the sample at index i was a match (This is complex to track perfectly, 
+				// we display the values and note the mismatch occurred at the latest time step).
+				// Since we only flag the *first* mismatch, we display all stored data up to this point.
+				$display("Cycle %d, reset %b, input x=%b, got output z_dut=%b, exp output z_ref=%b",
+				i,
+				reset_queue[i],
+				x_queue[i],
+				z_dut_queue[i],
+				z_ref_queue[i]
+			);
+			end
+			$display("=======================================================================");
+		end
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		if (!mismatch_detected_flag) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", first_mismatch_time);
+		end
+		$finish();
+	end
+
+endmodule
+[2026-05-14 11:45:50,483 - mage.agent - INFO] Initial if:
+[2026-05-14 11:45:50,483 - mage.agent - INFO] module TopModule (
+    input clk,
+    input reset,
+    input x,
+    output z
+);
+endmodule
+[2026-05-14 11:45:50,488 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - input  x
+ - output z
+
+The module should implement a finite-state machine with the
+state-assigned table shown below. Reset should synchronous active high
+reset the FSM to state 000. Assume all sequential logic is triggered on
+the positive edge of the clock.
+
+  Present state y[2:0] | Next state y[2:0] x=0, Next state y[2:0] x=1 | Output z
+  000 | 000, 001 | 0
+  001 | 001, 100 | 0
+  010 | 010, 001 | 0
+  011 | 001, 010 | 1
+  100 | 011, 100 | 1
+
+
+[2026-05-14 11:46:42,737 - mage.agent - INFO] Initial rtl:
+[2026-05-14 11:46:42,737 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic reset,
+    input  logic x,
+    output logic z
+);
+
+    // State definition
+    localparam S_000 = 3'b000;
+    localparam S_001 = 3'b001;
+    localparam S_010 = 3'b010;
+    localparam S_011 = 3'b011;
+    localparam S_100 = 3'b100;
+    localparam S_OTHER = 3'b000; // Safety default for unlisted states
+
+    // State registers
+    logic [2:0] state;
+    logic [2:0] next_state;
+
+    // State register updates (Sequential Logic)
+    always @(posedge clk)
+    begin
+        if (reset)
+        begin
+            state <= S_000;
+        end
+        else
+        begin
+            state <= next_state;
+        end
+    end
+
+    // Initialization for known state (Requirement #3)
+    initial
+    begin
+        state = S_000;
+    end
+
+    // Next State and Output Logic (Combinational Logic)
+    always @(*)
+    begin
+        // Default assignments
+        next_state = state;
+        z = 1'b0; // Default output is 0
+
+        case (state)
+            S_000:
+            begin
+                if (x == 0) next_state = S_000; // Table: 000, 000 | 0
+                else next_state = S_001;      // Table: 000, 001 | 0
+                z = 1'b0;
+            end
+            S_001:
+            begin
+                if (x == 0) next_state = S_001; // Table: 001, 001 | 0
+                else next_state = S_100;      // Table: 001, 100 | 0
+                z = 1'b0;
+            end
+            S_010:
+            begin
+                if (x == 0) next_state = S_010; // Table: 010, 010 | 0
+                else next_state = S_001;      // Table: 010, 001 | 0
+                z = 1'b0;
+            end
+            S_011:
+            begin
+                if (x == 0) next_state = S_001; // Table: 011, 001 | 1
+                else next_state = S_010;      // Table: 011, 010 | 1
+                z = 1'b1;
+            end
+            S_100:
+            begin
+                if (x == 0) next_state = S_011; // Table: 100, 011 | 1
+                else next_state = S_100;      // Table: 100, 100 | 1
+                z = 1'b1;
+            end
+            default:
+            begin
+                next_state = S_OTHER; // Transition to safe state
+                z = 1'b0;
+            end
+        endcase
+    end
+
+endmodule
+[2026-05-14 11:46:49,987 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 11:48:03,185 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:48:03,186 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Assuming RefModule and TopModule exist elsewhere or are placeholders for compilation
+module RefModule (input clk, input reset, input x, output z);
+    assign z = x;
+endmodule
+
+module TopModule (
+    input  clk,
+    input  reset,
+    input  x,
+    output z
+);
+    // FSM implementation based on input_spec would go here
+    // For TB compilation, we use a simple assignment to satisfy the interface
+    assign z = x;
+endmodule
+
+module stimulus_gen (
+	input clk,
+	output logic reset,
+	output logic x
+);
+	initial begin
+		reset = 1;
+		x = 0;
+		@(posedge clk);
+		@(posedge clk);
+		reset = 0;
+		@(posedge clk);
+		@(posedge clk);
+		
+		repeat(500) @(negedge clk) begin
+		reset <= !($random & 63);
+		x <= $random;
+		end
+		h#1 $finish;
+	end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_z;
+		int errortime_z;
+		int clocks;
+		// To track the time of the *first* mismatch
+		int first_mismatch_time;
+		end
+	}\n	stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic x;
+	logic z_ref;
+	logic z_dut;
+
+	// Variables to store first mismatch details
+	time first_error_time = 0;
+	int first_error_type = 0; // 0: General, 1: Z Output
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch, clk, reset, x, z_ref, z_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, // Note: stimulus_gen uses clk, but the connection in golden TB is .clk, .*, .reset, .x -- assuming clk is driven by tb clock
+		.reset, // Golden TB uses .* for clk, so we must map it explicitly if we change the port list here. Sticking to golden TB structure.
+		.x 
+	);
+	// Based on golden TB instantiation: stim1 ( .clk, .* , .reset, .x );
+// We must map the signals correctly based on the structure of stimulus_gen defined above (clk, reset, x)
+	stimulus_gen stim1 (
+		.clk(clk),
+		.reset(reset),
+		x(x)
+	);
+	
+	RefModule good1 (
+		.clk, // Assuming RefModule also uses tb clock
+		.reset,
+		x,
+		z(z_ref) );
+	
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		x,
+		z(z_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	// Helper task to display signals in HEX and BIN format if width <= 64
+	task display_signal(input string name, input logic value);
+	begin
+		$display("%-20s: Value = %b (0x%h)", name, value, value);
+	end
+task
+
+	initial begin
+		stats1 = '{errors: 0, errortime: 0, errors_z: 0, errortime_z: 0, clocks: 0, first_mismatch_time: 0};
+		$display("--- Simulation Start ---");
+	end
+
+	final begin
+		$display("\n========================================");
+		if (stats1.errors == 0 && stats1.errors_z == 0)
+			$display("SIMULATION PASSED");
+		else
+			$display("SIMULATION FAILED - x MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.first_mismatch_time);
+		$display("========================================");
+	end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { z_ref } === ( { z_ref } ^ { z_dut } ^ { z_ref } ) );
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+
+		// --- General Mismatch Check ---
+		if (!tb_match) begin
+			if (stats1.errors == 0) begin
+				stats1.errortime = $time;
+				stats1.first_mismatch_time = $time;
+				stats1.first_error_type = 0; // General mismatch
+			end
+			sstats1.errors++;
+			
+			// Display details on first mismatch
+			if (stats1.errors == 1) begin
+				$display("\n!!! FIRST GENERAL MISMATCH DETECTED AT TIME %0d !!!", $time);
+				$display("Inputs: clk=%b, reset=%b, x=%b", clk, reset, x);
+				$display("Outputs: z_dut=%b (0x%h), z_ref=%b (0x%h)", z_dut, z_dut, z_ref, z_ref);
+			end
+		end
+
+		// --- Z Output Mismatch Check ---
+		if (z_ref !== ( z_ref ^ z_dut ^ z_ref ))
+		begin 
+			if (stats1.errors_z == 0) begin
+				stats1.errortime_z = $time;
+				stats1.first_mismatch_time = $time;
+				stats1.first_error_type = 1; // Z output mismatch
+			end
+			sstats1.errors_z = stats1.errors_z+1'b1;
+			
+			// Display details on first Z output mismatch
+			if (stats1.errors_z == 1) begin
+				$display("\n!!! FIRST Z OUTPUT MISMATCH DETECTED AT TIME %0d !!!", $time);
+				$display("Inputs: clk=%b, reset=%b, x=%b", clk, reset, x);
+				$display("Outputs: z_dut=%b (0x%h), z_ref=%b (0x%h)", z_dut, z_dut, z_ref, z_ref);
+			end
+		end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("\nTIMEOUT REACHED.");
+     $finish();
+   end
+
+endmodule

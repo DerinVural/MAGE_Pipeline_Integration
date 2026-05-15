@@ -1,0 +1,800 @@
+[2026-05-14 11:50:15,375 - mage.agent - INFO] Initial tb:
+[2026-05-14 11:50:15,377 - mage.agent - INFO] `timescale 1ps / 1ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg p1a,
+	output reg p1b,
+	output reg p1c,
+	output reg p1d,
+	output reg p2a,
+	output reg p2b,
+	output reg p2c,
+	output reg p2d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+task wavedrom_start(input[511:0] title = "");
+	$display("WaveDrom Title: \"%s\"
+", title);
+	wavedrom_title = title;
+endtask
+
+function void wavedrom_stop;
+	$display("WaveDrom stop
+");
+	wavedrom_enable = 0;
+	wavedrom_title = 512'b0;
+endfunction
+
+initial begin
+	integer count = 0;
+	{p1a, p1b, p1c, p1d} = 4'b0;
+	{p2a, p2b, p2c, p2d} = 4'b0;
+	wavedrom_start("Two NAND gates");
+	repeat(20) @(posedge clk) begin
+		{p1a, p1b, p1c, p1d} = count;
+		{p2a, p2b, p2c, p2d} = count + 1;
+		count = count + 1;
+	end
+	wavedrom_stop();
+
+	repeat(200) @(posedge clk, negedge clk) begin
+		{p1a, p1b, p1c, p1d, p2a, p2b, p2c, p2d} = $random;
+		wavedrom_enable = 1;
+		wavedrom_title = 512'b0;
+	end
+
+	#1 $finish;
+end
+
+module tb ();
+
+typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_p1y;
+		int errortime_p1y;
+		int errors_p2y;
+		int errortime_p2y;
+
+		int clocks;
+	} stats;
+
+	stats stats1;
+
+	logic p1a,
+		 p1b,
+		 p1c,
+		 p1d,
+		 p2a,
+		 p2b,
+		 p2c,
+		 p2d,
+		 p1y_ref,
+		 p1y_dut,
+		 p2y_ref,
+		 p2y_dut,
+		 wavedrom_title,
+		 wavedrom_enable;
+
+	reg clk = 0;
+	initial forever
+		#5 clk = ~clk;
+
+	initial begin
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch, p1a, p1b, p1c, p1d, p2a, p2b, p2c, p2d, p1y_ref, p1y_dut, p2y_ref, p2y_dut, wavedrom_title, wavedrom_enable);
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+
+	stimulus_gen stim1 (
+		.clk(clk),
+		.*,
+		.p1a,
+		.p1b,
+		.p1c,
+		.p1d,
+		.p2a,
+		.p2b,
+		.p2c,
+		.p2d );
+
+	RefModule good1 (
+		.p1a,
+		.p1b,
+		.p1c,
+		.p1d,
+		.p2a,
+		.p2b,
+		.p2c,
+		.p2d,
+		.p1y(p1y_ref),
+		.p2y(p2y_ref) );
+
+	TopModule_top_module1 (
+		.p1a,
+		.p1b,
+		.p1c,
+		.p1d,
+		.p2a,
+		.p2b,
+		.p2c,
+		.p2d,
+		.p1y(p1y_dut),
+		.p2y(p2y_dut) );
+
+	integer strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end
+	endtask
+
+	localparam MAX_QUEUE_SIZE = 10;
+	reg [MAX_QUEUE_SIZE-1:0] input_queue [$];
+	reg [MAX_QUEUE_SIZE-1:0] got_output_queue [$];
+	reg [MAX_QUEUE_SIZE-1:0] golden_queue [$];
+	reg [MAX_QUEUE_SIZE-1:0] reset_queue [$];
+	reg [$:0] time_queue [$];
+
+	always @(posedge clk, negedge clk) begin
+		if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_queue.delete(0);
+			got_output_queue.delete(0);
+			golden_queue.delete(0);
+			reset_queue.delete(0);
+			time_queue.delete(0);
+		end
+
+		input_queue.push_back({p1a, p1b, p1c, p1d, p2a, p2b, p2c, p2d});
+		got_output_queue.push_back({p1y_dut, p2y_dut});
+		golden_queue.push_back({p1y_ref, p2y_ref});
+		reset_queue.push_back(wavedrom_enable);
+		time_queue.push_back($time);
+
+		if (({p1y_ref, p2y_ref} !== ({p1y_ref, p2y_ref} ^ {p1y_dut, p2y_dut} ^ {p1y_ref, p2y_ref}))) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			$display("Mismatch detected at time %0d", $time);
+			$display("First mismatch occurred at time %0d", time_queue[0]);
+			$display("Cycle %0d, reset %b, inputs %x, got outputs %x, expected outputs %x",
+						time_queue[0],
+						reset_queue[0],
+						{p1a, p1b, p1c, p1d, p2a, p2b, p2c, p2d},
+						{p1y_dut, p2y_dut},
+						{p1y_ref, p2y_ref}
+			);
+		end
+	end
+
+	final begin
+		if (stats1.errors == 0)
+			$display("Simulation PASSED");
+		else
+			$display("Simulation FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		$finish;
+	end
+
+	assign tb_match = ({p1y_ref, p2y_ref} === ({p1y_ref, p2y_ref} ^ {p1y_dut, p2y_dut} ^ {p1y_ref, p2y_ref}));
+endmodule
+[2026-05-14 11:50:15,377 - mage.agent - INFO] Initial if:
+[2026-05-14 11:50:15,377 - mage.agent - INFO] interface TopModule_io (
+    logic p1a,
+    logic p1b,
+    logic p1c,
+    logic p1d,
+    logic p2a,
+    logic p2b,
+    logic p2c,
+    logic p2d,
+    logic p1y,
+    logic p2y,
+    logic [511:0] wavedrom_title,
+    logic wavedrom_enable
+);
+[2026-05-14 11:50:15,382 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  p1a
+ - input  p1b
+ - input  p1c
+ - input  p1d
+ - input  p2a
+ - input  p2b
+ - input  p2c
+ - input  p2d
+ - output p1y
+ - output p2y
+
+The 7400-series integrated circuits are a series of digital chips with a
+few gates each. The 7420 is a chip with two 4-input NAND gates. The
+module should implement the same functionality as the 7420 chip.
+
+
+[2026-05-14 11:50:18,550 - mage.agent - INFO] Initial rtl:
+[2026-05-14 11:50:18,551 - mage.agent - INFO] module TopModule(
+    input  logic p1a,
+    input  logic p1b,
+    input  logic p1c,
+    input  logic p1d,
+    input  logic p2a,
+    input  logic p2b,
+    input  logic p2c,
+    input  logic p2d,
+    output logic p1y,
+    output logic p2y
+);
+
+    // Perform NAND operation for p1y
+    assign p1y = ~(p1a & p1b & p1c & p1d);
+
+    // Perform NAND operation for p2y
+    assign p2y = ~(p2a & p2b & p2c & p2d);
+
+endmodule
+[2026-05-14 11:50:19,805 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 11:50:41,952 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:50:41,952 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+  input clk,
+  output reg p1a, p1b, p1c, p1d,
+  output reg p2a, p2b, p2c, p2d,
+  output reg[511:0] wavedrom_title,
+  output reg wavedrom_enable
+);
+
+task wavedrom_start(input[511:0] title = "");
+endtask	
+
+task wavedrom_stop;
+  #1;
+endtask	
+
+
+initial begin
+  int count; count = 0;
+  {p1a,p1b,p1c,p1d} <= 4'h0; 		
+  {p2a,p2b,p2c,p2d} <= 4'h0; 		
+  wavedrom_start("Two NAND gates");
+  repeat(20) @(posedge clk) begin
+    {p1a,p1b,p1c,p1d} <= count; 		
+    {p2a,p2b,p2c,p2d} <= count+1; 		
+    count = count + 1;
+  end
+  wavedrom_stop();
+
+  repeat(200) @(posedge clk,negedge clk) begin
+    {p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d} <= $random; 		
+  end
+
+  #1 $finish;
+end
+
+endmodule
+
+module tb();
+
+typedef struct packed {
+  int errors;
+  int errortime;
+  int errors_p1y;
+  int errortime_p1y;
+  int errors_p2y;
+  int errortime_p2y;
+
+  int clocks;
+} stats;
+
+stats stats1;
+
+
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+
+reg clk=0;
+initial forever
+  #5 clk = ~clk;
+
+logic p1a;
+logic p1b;
+logic p1c;
+logic p1d;
+logic p2a;
+logic p2b;
+logic p2c;
+logic p2d;
+logic p1y_ref;
+logic p1y_dut;
+logic p2y_ref;
+logic p2y_dut;
+
+initial begin 
+  $dumpfile("wave.vcd");
+  $dumpvars(1, stim1.clk, tb_mismatch ,p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d,p1y_ref,p1y_dut,p2y_ref,p2y_dut );
+end
+
+wire tb_match; 		// Verification
+wire tb_mismatch = ~tb_match;
+
+stimulus_gen stim1 (
+  .clk(clk),
+  .*,
+  .p1a(p1a),
+  .p1b(p1b),
+  .p1c(p1c),
+  .p1d(p1d),
+  .p2a(p2a),
+  .p2b(p2b),
+  .p2c(p2c),
+  .p2d(p2d)
+);
+RefModule good1 (
+  .p1a(p1a),
+  .p1b(p1b),
+  .p1c(p1c),
+  .p1d(p1d),
+  .p2a(p2a),
+  .p2b(p2b),
+  .p2c(p2c),
+  .p2d(p2d),
+  .p1y(p1y_ref),
+  .p2y(p2y_ref)
+);
+
+TopModule top_module1 (
+  .p1a(p1a),
+  .p1b(p1b),
+  .p1c(p1c),
+  .p1d(p1d),
+  .p2a(p2a),
+  .p2b(p2b),
+  .p2c(p2c),
+  .p2d(p2d),
+  .p1y(p1y_dut),
+  .p2y(p2y_dut)
+);
+
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+  repeat(5) begin
+    strobe <= !strobe;  // Try to delay until the very end of the time step.
+    @(strobe);
+  end
+endtask	
+
+
+final begin
+  if (stats1.errors_p1y) $display("Hint: Output '\"%s\"' has %0d mismatches. First mismatch occurred at time %0d.", "p1y", stats1.errors_p1y, stats1.errortime_p1y);
+  else $display("Hint: Output '\"%s\"' has no mismatches.", "p1y");
+  if (stats1.errors_p2y) $display("Hint: Output '\"%s\"' has %0d mismatches. First mismatch occurred at time %0d.", "p2y", stats1.errors_p2y, stats1.errortime_p2y);
+  else $display("Hint: Output '\"%s\"' has no mismatches.", "p2y");
+
+  $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+  $display("Simulation finished at %0d ps", $time);
+  $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { p1y_ref, p2y_ref } === ( { p1y_ref, p2y_ref } ^ { p1y_dut, p2y_dut } ^ { p1y_ref, p2y_ref } ) );
+// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+// the sensitivity list of the @(strobe) process, which isn't implemented.
+always @(posedge clk, negedge clk) begin
+
+  stats1.clocks++;
+  if (!tb_match) begin
+    if (stats1.errors == 0) stats1.errortime = $time;
+    stats1.errors++;
+  end
+  if (p1y_ref !== ( p1y_ref ^ p1y_dut ^ p1y_ref ))
+  begin if (stats1.errors_p1y == 0) stats1.errortime_p1y = $time;
+    stats1.errors_p1y = stats1.errors_p1y+1'b1; end
+  if (p2y_ref !== ( p2y_ref ^ p2y_dut ^ p2y_ref ))
+  begin if (stats1.errors_p2y == 0) stats1.errortime_p2y = $time;
+    stats1.errors_p2y = stats1.errors_p2y+1'b1; end
+
+end
+
+ // add timeout after 100K cycles
+ initial begin
+   #1000000
+   $display("TIMEOUT");
+   $finish();
+ end
+
+endmodule
+
+
+[2026-05-14 11:51:04,200 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:51:04,200 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg p1a, p1b, p1c, p1d,
+	output reg p2a, p2b, p2c, p2d,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable
+);
+
+task wavedrom_start(input[511:0] title = "");
+endtask	
+
+task wavedrom_stop;
+	#1;
+endtask	
+
+initial begin
+	int count; count = 0;
+	{p1a,p1b,p1c,p1d} <= 4'h0; 					// Initialize inputs
+	{p2a,p2b,p2c,p2d} <= 4'h0; 					// Initialize inputs
+	wavedrom_start("Two NAND gates");
+	repeat(20) @(posedge clk) begin
+		{p1a,p1b,p1c,p1d} <= count; 				// Sequentially set inputs
+		{p2a,p2b,p2c,p2d} <= count+1; 				// Sequentially set inputs
+		count = count + 1;
+	end
+	wavedrom_stop();
+
+	repeat(200) @(posedge clk,negedge clk) begin
+		{p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d} <= $random; 		// Randomize inputs
+	end
+	
+	#1 $finish;
+end
+
+endmodule
+
+module tb();
+
+typedef struct packed {
+	path_to_json_string json_string;
+		int errors;
+		int errortime;
+		int errors_p1y;
+		int errortime_p1y;
+		int errors_p2y;
+		int errortime_p2y;
+		int clocks;
+	} stats;
+
+	stats stats1;
+
+	signal wavedrom_title;
+	signal wavedrom_enable;
+	integer wavedrom_hide_after_time;
+
+	signal clk := 0;
+	after every rising_edge(clk) {
+		clk := ~clk;
+	}
+
+	signal p1a;
+	signal p1b;
+	signal p1c;
+	signal p1d;
+	signal p2a;
+	signal p2b;
+	signal p2c;
+	signal p2d;
+	signal p1y_ref;
+	signal p1y_dut;
+	signal p2y_ref;
+	signal p2y_dut;
+
+	after every posedge clk {
+		if ((errortime != 0) || (errors > 0)) {
+			$display($time & " Simulation FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", errors, errortime);
+		} else {
+			$display($time & " SIMULATION PASSED");
+		}
+	}
+
+	stimulus_gen stim1 (
+		.clk(clk),
+		.*,
+		.p1a(p1a),
+		.p1b(p1b),
+		.p1c(p1c),
+		.p1d(p1d),
+		.p2a(p2a),
+		.p2b(p2b),
+		.p2c(p2c),
+		.p2d(p2d)
+	);
+	RefModule good1 (
+		.p1a(p1a),
+		.p1b(p1b),
+		.p1c(p1c),
+		.p1d(p1d),
+		.p2a(p2a),
+		.p2b(p2b),
+		.p2c(p2c),
+		.p2d(p2d),
+		.p1y(p1y_ref),
+		.p2y(p2y_ref)
+	);
+	TopModule top_module1 (
+		.p1a(p1a),
+		.p1b(p1b),
+		.p1c(p1c),
+		.p1d(p1d),
+		.p2a(p2a),
+		.p2b(p2b),
+		.p2c(p2c),
+		.p2d(p2d),
+		.p1y(p1y_dut),
+		.p2y(p2y_dut)
+	);
+
+	signal strobe := 0;
+	procedure wait_for_end_of_timestep() is
+	begin
+		for integer i := 0 to 4 do begin
+			strobe := ~strobe;
+			after every strobe {
+			}
+		end
+	end
+
+	before every posedge clk {
+		stats1.clocks := stats1.clocks + 1;
+		if (errortime = 0 && errors > 0) {
+			errortime := $time;
+		}
+		if (errors > 0) {
+			errors := errors + 1;
+		}
+		if ((p1y_ref != (p1y_ref xor p1y_dut xor p1y_ref)) && (errortime_p1y = 0)) {
+			errortime_p1y := $time;
+		}
+		if ((p1y_ref != (p1y_ref xor p1y_dut xor p1y_ref))) {
+			errortime_p1y := errortime_p1y + 1;
+		}
+		if ((p2y_ref != (p2y_ref xor p2y_dut xor p2y_ref)) && (errortime_p2y = 0)) {
+			errortime_p2y := $time;
+		}
+		if ((p2y_ref != (p2y_ref xor p2y_dut xor p2y_ref))) {
+			errortime_p2y := errortime_p2y + 1;
+		}
+	}
+
+	before every posedge clk {
+		if (errortime != 0 || errors > 0) {
+			$display($time & " Simulation FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", errors, errortime);
+		} else {
+			$display($time & " SIMULATION PASSED");
+		}
+	}
+
+	after every posedge clk {
+		if ($time >= 1000000) {
+			$display($time & " TIMEOUT");
+			$finish;
+		}
+	}
+endmodule
+[2026-05-14 11:51:23,027 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:51:23,027 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module tb;
+typedef struct packed {
+	int errors;
+	int errortime;
+	int errors_p1y;
+	int errortime_p1y;
+	int errors_p2y;
+	int errortime_p2y;
+	int clocks;
+} stats;
+stats stats1;
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+reg clk=0;
+initial forever
+	#5 clk = ~clk;
+logic p1a;
+logic p1b;
+logic p1c;
+logic p1d;
+logic p2a;
+logic p2b;
+logic p2c;
+logic p2d;
+logic p1y_ref;
+logic p1y_dut;
+logic p2y_ref;
+logic p2y_dut;
+initial begin 	$dumpfile("wave.vcd");	$dumpvars(1, stim1.clk, tb_mismatch ,p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d,p1y_ref,p1y_dut,p2y_ref,p2y_dut );endwire tb_match;wire tb_mismatch = ~tb_match;
+stimulus_gen stim1 (.clk(clk),.*,.p1a(p1a),.p1b(p1b),.p1c(p1c),.p1d(p1d),.p2a(p2a),.p2b(p2b),.p2c(p2c),.p2d(p2d));RefModule good1 (.p1a(p1a),.p1b(p1b),.p1c(p1c),.p1d(p1d),.p2a(p2a),.p2b(p2b),.p2c(p2c),.p2d(p2d),.p1y(p1y_ref),.p2y(p2y_ref));TopModule top_module1 (.p1a(p1a),.p1b(p1b),.p1c(p1c),.p1d(p1d),.p2a(p2a),.p2b(p2b),.p2c(p2c),.p2d(p2d),.p1y(p1y_dut),.p2y(p2y_dut));bit strobe = 0;task wait_for_end_of_timestep;repeat(5) beginstrobe <= !strobe; @(strobe);endendtaskfinal beginif (stats1.errors_p1y) $display("Hint: Output '\"p1y\"' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_p1y, stats1.errortime_p1y);else $display("Hint: Output '\"p1y\"' has no mismatches.");if (stats1.errors_p2y) $display("Hint: Output '\"p2y\"' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_p2y, stats1.errortime_p2y);else $display("Hint: Output '\"p2y\"' has no mismatches.");$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);$display("Simulation finished at %0d ps", $time);$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);end// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.assign tb_match = ( { p1y_ref, p2y_ref } === ( { p1y_ref, p2y_ref } ^ { p1y_dut, p2y_dut } ^ { p1y_ref, p2y_ref } ) );// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute// the sensitivity list of the @(strobe) process, which isn't implemented.always @(posedge clk, negedge clk) beginstats1.clocks++;if (!tb_match) beginif (stats1.errors == 0) stats1.errortime = $time;stats1.errors++;endif (p1y_ref !== ( p1y_ref ^ p1y_dut ^ p1y_ref ))begin if (stats1.errors_p1y == 0) stats1.errortime_p1y = $time;stats1.errors_p1y = stats1.errors_p1y+1'b1; endif (p2y_ref !== ( p2y_ref ^ p2y_dut ^ p2y_ref ))begin if (stats1.errors_p2y == 0) stats1.errortime_p2y = $time;stats1.errors_p2y = stats1.errors_p2y+1'b1; endend// add timeout after 100K cyclesinitial begin#1000000$display("TIMEOUT");$finish();endendmodule
+[2026-05-14 11:51:47,280 - mage.agent - INFO] Revised tb:
+[2026-05-14 11:51:47,280 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+  input clk,
+  output reg p1a, p1b, p1c, p1d,
+  output reg p2a, p2b, p2c, p2d,
+  output reg[511:0] wavedrom_title,
+  output reg wavedrom_enable
+);
+
+// Add two ports to module stimulus_gen:
+//    output [511:0] wavedrom_title
+//    output reg wavedrom_enable
+
+task wavedrom_start(input[511:0] title = "");
+endtask	
+
+task wavedrom_stop;
+  #1;
+endtask	
+
+
+initial begin
+  int count; count = 0;
+  {p1a,p1b,p1c,p1d} <= 4'h0; 		// Initialize inputs
+  {p2a,p2b,p2c,p2d} <= 4'h0; 		// Initialize inputs
+  wavedrom_start("Two NAND gates");
+  repeat(20) @(posedge clk) begin
+    {p1a,p1b,p1c,p1d} <= count; 		// Sequentially set inputs
+    {p2a,p2b,p2c,p2d} <= count+1; 		// Sequentially set inputs
+    count = count + 1;
+  end
+  wavedrom_stop();
+
+  repeat(200) @(posedge clk,negedge clk) begin
+    {p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d} <= $random; 		// Randomize inputs
+  end
+  
+  #1 $finish;
+end
+
+endmodule
+
+module tb();
+
+typedef struct packed {
+  int errors;
+  int errortime;
+  int errors_p1y;
+  int errortime_p1y;
+  int errors_p2y;
+  int errortime_p2y;
+  int clocks;
+} stats;
+
+stats stats1;
+
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+reg clk=0;
+initial forever
+  #5 clk = ~clk;
+
+logic p1a;
+logic p1b;
+logic p1c;
+logic p1d;
+logic p2a;
+logic p2b;
+logic p2c;
+logic p2d;
+logic p1y_ref;
+logic p1y_dut;
+logic p2y_ref;
+logic p2y_dut;
+
+initial begin 
+  $dumpfile("wave.vcd");
+  $dumpvars(1, stim1.clk, tb_mismatch ,p1a,p1b,p1c,p1d,p2a,p2b,p2c,p2d,p1y_ref,p1y_dut,p2y_ref,p2y_dut );
+end
+
+wire tb_match; 		// Verification
+wire tb_mismatch = ~tb_match;
+
+stimulus_gen stim1 (
+  .clk(clk),
+  .*,
+  .p1a(p1a),
+  .p1b(p1b),
+  .p1c(p1c),
+  .p1d(p1d),
+  .p2a(p2a),
+  .p2b(p2b),
+  .p2c(p2c),
+  .p2d(p2d)
+);
+RefModule good1 (
+  .p1a(p1a),
+  .p1b(p1b),
+  .p1c(p1c),
+  .p1d(p1d),
+  .p2a(p2a),
+  .p2b(p2b),
+  .p2c(p2c),
+  .p2d(p2d),
+  .p1y(p1y_ref),
+  .p2y(p2y_ref)
+);
+TopModule top_module1 (
+  .p1a(p1a),
+  .p1b(p1b),
+  .p1c(p1c),
+  .p1d(p1d),
+  .p2a(p2a),
+  .p2b(p2b),
+  .p2c(p2c),
+  .p2d(p2d),
+  .p1y(p1y_dut),
+  .p2y(p2y_dut)
+);
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+  repeat(5) begin
+    strobe <= !strobe;  // Try to delay until the very end of the time step.
+    @(strobe);
+  end
+endtask	
+
+final begin
+  if (stats1.errors_p1y) $display("Hint: Output '\"p1y\"' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_p1y, stats1.errortime_p1y);
+  else $display("Hint: Output '\"p1y\"' has no mismatches.");
+  if (stats1.errors_p2y) $display("Hint: Output '\"p2y\"' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_p2y, stats1.errortime_p2y);
+  else $display("Hint: Output '\"p2y\"' has no mismatches.");
+
+  if (stats1.errors) $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+  else $display("SIMULATION PASSED");
+
+  $display("Simulation finished at %0d ps", $time);
+  $display("Mismatches: %0d in %0d samples", stats1.errors, stats1.clocks);
+end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { p1y_ref, p2y_ref } === ( { p1y_ref, p2y_ref } ^ { p1y_dut, p2y_dut } ^ { p1y_ref, p2y_ref } ) );
+// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+// the sensitivity list of the @(strobe) process, which isn't implemented.
+always @(posedge clk, negedge clk) begin
+
+  stats1.clocks++;
+  if (!tb_match) begin
+    if (stats1.errors == 0) stats1.errortime = $time;
+    stats1.errors++;
+  end
+  if (p1y_ref !== ( p1y_ref ^ p1y_dut ^ p1y_ref ))
+  begin if (stats1.errors_p1y == 0) stats1.errortime_p1y = $time;
+    stats1.errors_p1y = stats1.errors_p1y+1'b1; end
+  if (p2y_ref !== ( p2y_ref ^ p2y_dut ^ p2y_ref ))
+  begin if (stats1.errors_p2y == 0) stats1.errortime_p2y = $time;
+    stats1.errors_p2y = stats1.errors_p2y+1'b1; end
+
+end
+
+// add timeout after 100K cycles
+initial begin
+  #1000000
+  $display("TIMEOUT");
+  $finish();
+end
+
+endmodule
+
+

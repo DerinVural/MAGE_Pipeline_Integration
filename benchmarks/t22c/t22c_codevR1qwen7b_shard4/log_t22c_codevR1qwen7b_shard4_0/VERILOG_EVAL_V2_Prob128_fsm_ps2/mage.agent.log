@@ -1,0 +1,492 @@
+[2026-05-14 12:58:52,259 - mage.agent - INFO] Initial tb:
+[2026-05-14 12:58:52,260 - mage.agent - INFO] `timescale 1ps/1ps
+
+module stimulus_gen (
+    input clk,
+    output logic [7:0] in,
+    output logic reset
+);
+
+    initial begin
+        repeat(200) @(negedge clk) begin
+            in <= $random;
+            reset <= !($random & 31);
+        end
+        #1 $finish;
+    end
+
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_done;
+        int errortime_done;
+        int clocks;
+    } stats;
+
+    stats stats1 = '{errors:0, errortime:0, errors_done:0, errortime_done:0, clocks:0};
+
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    logic [7:0] in;
+    logic reset;
+    logic done_ref;
+    logic done_dut;
+
+    wire tb_match, tb_mismatch;
+
+    stimulus_gen stim1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset)
+    );
+
+    RefModule good1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset),
+        .done(done_ref)
+    );
+
+    TopModule top_module1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset),
+        .done(done_dut)
+    );
+
+    // Mismatch check
+    assign tb_match = ( { done_ref } === ( { done_ref } ^ { done_dut } ^ { done_ref } ) );
+    assign tb_mismatch = ~tb_match;
+
+    // Queue logic for display
+    localparam MAX_QUEUE_SIZE = 5;
+    reg [7:0] input_queue [0:MAX_QUEUE_SIZE-1];
+    reg [0:0] got_output_queue [0:MAX_QUEUE_SIZE-1];
+    reg [0:0] golden_queue [0:MAX_QUEUE_SIZE-1];
+    reg [0:0] reset_queue [0:MAX_QUEUE_SIZE-1];
+
+    integer push_ptr = 0;
+    integer pop_ptr = 0;
+
+    // Push to queue on clock edge
+    always @(posedge clk, negedge clk) begin
+        if (push_ptr >= MAX_QUEUE_SIZE) begin
+            push_ptr <= 0;
+        end
+        input_queue[push_ptr] <= in;
+        got_output_queue[push_ptr] <= done_dut;
+        golden_queue[push_ptr] <= done_ref;
+        reset_queue[push_ptr] <= reset;
+        push_ptr <= push_ptr + 1;
+    end
+
+    // Check for first mismatch
+    reg first_mismatch = 0;
+    reg [1:0] error_count_done = 0;
+    reg [1:0] error_count = 0;
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (tb_mismatch && !first_mismatch) begin
+            first_mismatch = 1;
+            $display("Mismatch detected at time %t", $time);
+            $display("Last %d cycles of simulation:", MAX_QUEUE_SIZE);
+            for (int i = 0; i < MAX_QUEUE_SIZE; i++) begin
+                $display("Cycle %d, reset %b, input %h, got output %b, exp output %b",
+                    (push_ptr - i + MAX_QUEUE_SIZE) % MAX_QUEUE_SIZE,
+                    reset_queue[(push_ptr - i + MAX_QUEUE_SIZE) % MAX_QUEUE_SIZE],
+                    input_queue[(push_ptr - i + MAX_QUEUE_SIZE) % MAX_QUEUE_SIZE],
+                    got_output_queue[(push_ptr - i + MAX_QUEUE_SIZE) % MAX_QUEUE_SIZE],
+                    golden_queue[(push_ptr - i + MAX_QUEUE_SIZE) % MAX_QUEUE_SIZE]);
+            end
+        end
+        if (!tb_match) begin
+            error_count++;
+            if (stats1.errors == 0) stats1.errortime = $time;
+        end
+        if (done_ref !== ( done_ref ^ done_dut ^ done_ref )) begin
+            error_count_done++;
+            if (stats1.errors_done == 0) stats1.errortime_done = $time;
+        end
+    end
+
+    // Timeout after 100K cycles
+    initial begin
+        #1000000 $display("TIMEOUT"); $finish();
+    end
+
+    // Simulation end
+    initial begin
+        #10000000; // Adjust as needed for normal finish
+        $finish();
+    end
+
+    final begin
+        if (error_count_done == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", error_count_done, stats1.errortime_done);
+        end
+    end
+endmodule
+[2026-05-14 12:58:52,260 - mage.agent - INFO] Initial if:
+[2026-05-14 12:58:52,260 - mage.agent - INFO] module TopModule (clk, reset, in, done);
+    input clk;
+    input reset;
+    input [7:0] in;
+    output done;
+    // ... logic here
+endmodule
+[2026-05-14 12:58:52,267 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - input  in (8 bits)
+ - output done
+
+The PS/2 mouse protocol sends messages that are three bytes long.
+However, within a continuous byte stream, it's not obvious where messages
+start and end. The only indication is that the first byte of each three
+byte message always has in[3]=1 (but in[3] of the other two bytes may be
+1 or 0 depending on data).
+
+The module should implement a finite state machine that will search for
+message boundaries when given an input byte stream. The algorithm we'll
+use is to discard bytes until we see one with in[3]=1. We then assume
+that this is byte 1 of a message, and signal the receipt of a message
+once all 3 bytes have been received (done). The FSM should signal done in
+the cycle immediately after the third byte of each message was
+successfully received. Reset should be active high synchronous. Assume
+all sequential logic is triggered on the positive edge of the clock.
+
+
+[2026-05-14 12:58:58,943 - mage.agent - INFO] Initial rtl:
+[2026-05-14 12:58:58,944 - mage.agent - INFO] module TopModule (clk, reset, in, done);
+    input logic clk;
+    input logic reset;
+    input logic [7:0] in;
+    output logic done;
+
+    // States
+    localparam IDLE = 2'b00;
+    localparam COLLECT = 2'b01;
+    localparam DONE_STATE = 2'b10;
+
+    reg [1:0] state = IDLE;
+    reg [1:0] next_state;
+    reg [1:0] byte_count = 0;
+    reg [1:0] next_byte_count;
+
+    // State transition
+    always @(*) begin
+        case (state)
+            IDLE: begin
+                next_state = (in[3]) ? COLLECT : IDLE;
+                next_byte_count = 1;
+            end
+            COLLECT: begin
+                if (byte_count == 2) begin
+                    next_state = DONE_STATE;
+                    next_byte_count = 0;
+                end else begin
+                    next_state = COLLECT;
+                    next_byte_count = byte_count + 1;
+                end
+            end
+            DONE_STATE: begin
+                next_state = IDLE;
+                next_byte_count = 0;
+            end
+            default: begin
+                next_state = IDLE;
+                next_byte_count = 0;
+            end
+        endcase
+    end
+
+    // Update state and counters
+    always @(posedge clk) begin
+        if (reset) begin
+            state <= IDLE;
+            byte_count <= 0;
+        end else begin
+            state <= next_state;
+            byte_count <= next_byte_count;
+        end
+    end
+
+    // Output logic
+    assign done = (state == DONE_STATE);
+endmodule
+[2026-05-14 12:59:27,038 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 12:59:42,590 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:59:42,591 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	nput [7:0] in,
+	nput reset
+);
+
+	nitial begin
+		repeat(200) @(negedge clk) begin
+			n = $random;
+			reset <= !($random & 31);
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+	yypedef struct packed {
+		int errors;
+		int errortime;
+		int errors_done;
+		int errortime_done;
+
+		int clocks;
+	} stats;
+
+	stats stats1;
+
+	nire [511:0] wavedrom_title;
+	nire wavedrom_enable;
+	int wavedrom_hide_after_time;
+
+	nreg clk=0;
+	nitial forever
+		#5 clk = ~clk;
+
+	nlogic [7:0] in;
+	nlogic reset;
+	nlogic done_ref;
+	nlogic done_dut;
+
+	ninitial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,in,reset,done_ref,done_dut );
+	end
+
+	nwire tb_match; 
+	nwire tb_mismatch = ~tb_match;
+
+	stimulus_gen stim1 (
+		.clk(clk),
+		.in(in),
+		.reset(reset) );
+	RefModule good1 (
+		.clk(clk),
+		.in(in),
+		.reset(reset),
+		.done(done_ref) );
+	TopModule top_module1 (
+		.clk(clk),
+		.in(in),
+		.reset(reset),
+		.done(done_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			n = !n;
+			@(n);
+		end
+	endtask	
+
+	nfinal begin
+		if (stats1.errors_done) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "done", stats1.errors_done, stats1.errortime_done);
+		ense $display("Hint: Output '%s' has no mismatches.", "done");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		if (stats1.errors) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end else begin
+			$display("SIMULATION PASSED");
+		end
+	end
+
+	n// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	nassign tb_match = ( { done_ref } === ( { done_ref } ^ { done_dut } ^ { done_ref } ) );
+	n// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	n// the sensitivity list of the @(strobe) process, which isn't implemented.
+	nalways @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+		begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			stats1.errors_done = stats1.errors_done+1'b1; end
+		// Display first mismatch
+		if (stats1.errors == 1) begin
+			$display("First Mismatch at time %0d", $time);
+			$display("Input in: %h %b", in, in);
+			$display("Output done_dut: %h %b", done_dut, done_dut);
+			$display("Expected done_ref: %h %b", done_ref, done_ref);
+		end
+	end
+
+	n// add timeout after 100K cycles
+	ninitial begin
+		n = 1000000;
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 12:59:58,800 - mage.agent - INFO] Revised tb:
+[2026-05-14 12:59:58,801 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic [7:0] in,
+    output logic reset
+);
+
+    initial begin
+        repeat(200) @(negedge clk) begin
+            in <= $random;
+            reset <= !($random & 31);
+        end
+        #1 $finish;
+    end
+
+endmodule
+
+module tb();
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_done;
+        int errortime_done;
+        int clocks;
+    } stats;
+
+    stats stats1 = 0;
+
+    wire [511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+
+    reg clk = 0;
+    initial forever #5 clk = ~clk;
+
+    logic [7:0] in;
+    logic reset;
+    logic done_ref;
+    logic done_dut;
+
+    initial begin
+        $dumpfile("wave.vcd");
+        $dumpvars(1, clk, reset, in, done_ref, done_dut);
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+
+    stimulus_gen stim1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset)
+    );
+
+    RefModule good1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset),
+        .done(done_ref)
+    );
+
+    TopModule top_module1 (
+        .clk(clk),
+        .in(in),
+        .reset(reset),
+        .done(done_dut)
+    );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe = !strobe;
+            @(strobe);
+        end
+    endtask
+
+    final begin
+        if (stats1.errors_done)
+            $display("Hint: Output 'done' has %0d mismatches. First mismatch occurred at time %0d.", stats1.errors_done, stats1.errortime_done);
+        else
+            $display("Hint: Output 'done' has no mismatches.");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+        if (stats1.errors)
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        else
+            $display("SIMULATION PASSED");
+    end
+
+    // Verification logic
+    assign tb_match = ({ done_ref } === ( { done_ref } ^ { done_dut } ^ { done_ref } ));
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+            if (stats1.errors == 1) begin
+                $display("First Mismatch at time %0d", $time);
+                $display("Input in: %h %b", in, in);
+                $display("Output done_dut: %h %b", done_dut, done_dut);
+                $display("Expected done_ref: %h %b", done_ref, done_ref);
+            end
+        end
+        if (done_ref !== ( done_ref ^ done_dut ^ done_ref )) begin
+            if (stats1.errors_done == 0) stats1.errortime_done = $time;
+            stats1.errors_done += 1;
+        end
+    end
+
+    initial begin #1000000; $display("TIMEOUT"); $finish(); end
+
+endmodule
+[2026-05-14 13:02:48,429 - mage.agent - INFO] Candidate generation: round 1 / 20
+[2026-05-14 13:02:48,507 - mage.agent - INFO] Candidate generation: round 2 / 20
+[2026-05-14 13:02:48,583 - mage.agent - INFO] Candidate generation: round 3 / 20
+[2026-05-14 13:02:48,658 - mage.agent - INFO] Candidate generation: round 4 / 20
+[2026-05-14 13:02:48,734 - mage.agent - INFO] Candidate generation: round 5 / 20
+[2026-05-14 13:02:48,808 - mage.agent - INFO] Candidate generation: round 6 / 20
+[2026-05-14 13:02:48,878 - mage.agent - INFO] Candidate generation: round 7 / 20
+[2026-05-14 13:02:48,949 - mage.agent - INFO] Candidate generation: round 8 / 20
+[2026-05-14 13:02:49,021 - mage.agent - INFO] Candidate generation: round 9 / 20
+[2026-05-14 13:02:49,094 - mage.agent - INFO] Candidate generation: round 10 / 20
+[2026-05-14 13:02:49,170 - mage.agent - INFO] Candidate generation: round 11 / 20
+[2026-05-14 13:02:49,221 - mage.agent - INFO] Candidate generation: round 12 / 20
+[2026-05-14 13:02:49,292 - mage.agent - INFO] Candidate generation: round 13 / 20
+[2026-05-14 13:02:49,363 - mage.agent - INFO] Candidate generation: round 14 / 20
+[2026-05-14 13:02:49,435 - mage.agent - INFO] Candidate generation: round 15 / 20
+[2026-05-14 13:02:49,505 - mage.agent - INFO] Candidate generation: round 16 / 20
+[2026-05-14 13:02:49,576 - mage.agent - INFO] Candidate generation: round 17 / 20
+[2026-05-14 13:02:49,648 - mage.agent - INFO] Candidate generation: round 18 / 20
+[2026-05-14 13:02:49,721 - mage.agent - INFO] Candidate generation: round 19 / 20
+[2026-05-14 13:02:49,795 - mage.agent - INFO] Candidate generation: round 20 / 20
+[2026-05-14 13:02:49,870 - mage.agent - INFO] Selected candidate: round 1 / 2
+[2026-05-14 13:04:36,783 - mage.agent - INFO] Selected candidate: round 2 / 2

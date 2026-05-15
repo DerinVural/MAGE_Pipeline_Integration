@@ -1,0 +1,1 @@
+module TopModule (clk, reset, s, fr2, fr1, fr0, dfr); input clk; input reset; input [2:0] s; output logic fr2; output logic fr1; output logic fr0; output logic dfr; endmodule

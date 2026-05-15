@@ -1,0 +1,853 @@
+[2026-05-14 14:17:28,948 - mage.agent - INFO] Initial tb:
+[2026-05-14 14:17:28,950 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Assuming RefModule is defined elsewhere and implements the correct adder logic
+module RefModule (
+    input logic [3:0] x,
+    input logic [3:0] y,
+    output logic [4:0] sum
+);
+    // Placeholder for correct adder implementation
+    assign sum = x + y; 
+endmodule
+
+module stimulus_gen (
+	input logic clk,
+	output logic [3:0] x,
+	output logic [3:0] y
+);
+	initial begin
+		repeat(100) @(posedge clk, negedge clk) begin
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+endmodule
+
+module tb();
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_sum;
+		int errortime_sum;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	// Variables to capture first mismatch state
+	logic [3:0] first_error_x;
+	logic [3:0] first_error_y;
+	logic [4:0] first_error_sum_ref;
+	logic [4:0] first_error_sum_dut;
+	integer first_error_detected = 0;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [3:0] x;
+	logic [3:0] y;
+	logic [4:0] sum_ref;
+	logic [4:0] sum_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		// Note: tb_mismatch is derived from tb_match, which is continuous. 
+		// Dumping signals used in continuous logic and clocked logic.
+		$dumpvars(1, tb, x, y, sum_ref, sum_dut, stim1, stats1, first_error_x, first_error_y, first_error_sum_ref, first_error_sum_dut);
+	end
+
+	wire tb_match; 
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.x, 
+		.y 
+	);
+	RefModule good1 (
+		.x, 
+		y, 
+		sum(sum_ref) 
+	);
+	
+	TopModule top_module1 (
+		.x, 
+		y, 
+		sum(sum_dut) 
+	);
+
+	
+	// Task definition is kept from original golden testbench
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+	endtask
+
+	reg strobe = 0;
+	
+	// Simulation Control and Reporting
+	initial begin
+		$display("Starting simulation...");
+		stats1.errors = 0;
+		stats1.errors_sum = 0;
+		stats1.clocks = 0;
+		
+		// Wait for enough cycles to run simulation based on stimulus_gen
+		// The stimulus_gen runs for 100 cycles of clk.
+		repeat(100) @(posedge clk);
+		
+		// Final checks and reporting
+		if (stats1.errors == 0 && stats1.errors_sum == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		
+		$display("Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+	end
+
+	// Original timeout mechanism kept
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	// Verification logic: Simplified based on mathematical equivalence of original check
+	// Original: assign tb_match = ( { sum_ref } === ( { sum_ref } ^ { sum_dut } ^ { sum_ref } ) );
+	// Simplified: sum_ref === sum_dut
+	assign tb_match = (sum_ref === sum_dut);
+
+	// Clocked logic for counting and capturing first error (Combinational Check Logic)
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		
+		// Check 1: Based on tb_match
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			end
+		
+		// Check 2: Based on sum_ref !== ( sum_ref ^ sum_dut ^ sum_ref )
+		if (sum_ref !== ( sum_ref ^ sum_dut ^ sum_ref ))
+		begin 
+			if (stats1.errors_sum == 0) stats1.errortime_sum = $time;
+			sstats1.errors_sum = stats1.errors_sum+1'b1;
+		end
+		end
+
+		// Capture state ONLY upon the first detection of ANY mismatch (Rule 2 application)
+		if (stats1.errors == 1 && stats1.errors_sum == 0) begin
+			// Capture state at the time of the first mismatch (or close to it)
+			first_error_x = x;
+			first_error_y = y;
+			first_error_sum_ref = sum_ref;
+			first_error_sum_dut = sum_dut;
+			end
+		
+		end
+
+	// Final Display Block for First Mismatch (Combinational Logic Requirement)
+	always @(posedge clk, negedge clk) begin
+		if (stats1.errors == 1 && stats1.errors_sum == 0) begin
+			$display("\n====================================================================");
+			$display("FIRST MISMATCH DETECTED AT TIME %0d", $time);
+			$display("====================================================================");
+			$display("Inputs:");
+			$display("  x: HEX=%h, BIN=%b", first_error_x, first_error_x);
+			$display("  y: HEX=%h, BIN=%b", first_error_y, first_error_y);
+			$display("Reference Output (Expected): HEX=%h, BIN=%b", first_error_sum_ref, first_error_sum_ref);
+			$display("DUT Output (Actual): HEX=%h, BIN=%b", first_error_sum_dut, first_error_sum_dut);
+			end
+	end
+
+endmodule
+[2026-05-14 14:17:28,950 - mage.agent - INFO] Initial if:
+[2026-05-14 14:17:28,950 - mage.agent - INFO] module TopModule (
+    input logic [3:0] x,
+    input logic [3:0] y,
+    output logic [4:0] sum
+);
+    // Implementation details omitted as per instructions
+endmodule
+[2026-05-14 14:17:28,956 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  x   (4 bits)
+ - input  y   (4 bits)
+ - output sum (5 bits)
+
+Implement a 4-bit adder with full adders. The output sum should include
+the overflow bit.
+
+
+[2026-05-14 14:17:47,556 - mage.agent - INFO] Initial rtl:
+[2026-05-14 14:17:47,556 - mage.agent - INFO] module TopModule ( 
+    input logic [3:0] x, 
+    input logic [3:0] y, 
+    output logic [4:0] sum 
+);
+
+    // Implementation using SystemVerilog arithmetic operator.
+    // Since x and y are 4-bit, their sum can be up to 15 + 15 = 30 (11110 in binary), 
+    // requiring 5 bits to correctly capture the carry/overflow into sum[4].
+    assign sum = x + y;
+
+endmodule
+[2026-05-14 14:17:54,751 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 14:18:44,060 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:18:44,060 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic [3:0] x,
+	output logic [3:0] y
+);
+
+	initial begin
+		repeat(100) @(posedge clk, negedge clk) begin
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_sum;
+		int errortime_sum;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [3:0] x;
+	logic [3:0] y;
+	logic [4:0] sum_ref; // Expected output
+	logic [4:0] sum_dut; // DUT output
+
+	reg first_mismatch_time = 0;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,x,y,sum_ref,sum_dut );
+	end
+
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate stimulus generator
+	stimulus_gen stim1 (
+		.clk, 
+		.x, 
+		.y 
+	);
+	
+	// Instantiate Reference Model (Golden)
+	RefModule good1 (
+		.x, 
+		y, 
+		sum(sum_ref) 
+	);
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		.x, 
+		y, 
+		sum(sum_dut) 
+	);
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+
+	// --- New Logic for detailed mismatch reporting ---
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+
+		// Original error counting logic
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+
+		// Original sum error counting logic (retained for fidelity)
+		if (sum_ref !== ( sum_ref ^ sum_dut ^ sum_ref ))
+		begin 
+			if (stats1.errors_sum == 0) stats1.errortime_sum = $time;
+			stats1.errors_sum = stats1.errors_sum+1'b1; 
+		end
+		end
+
+		// NEW: Detailed Mismatch Reporting on first error
+		if (!tb_match && stats1.errors == 1) begin
+			$display("
+====================================================");
+			$display("!!! FIRST MISMATCH DETECTED !!!");
+			$display("Time: %0t ps", $time);
+			$display("----------------------------------------------------");
+			$display("Input x:  HEX=%h, BIN=%b", x, x);
+			$display("Input y:  HEX=%h, BIN=%b", y, y);
+			$display("DUT Sum:  HEX=%h, BIN=%b", sum_dut, sum_dut);
+			$display("Expected Sum: HEX=%h, BIN=%b", sum_ref, sum_ref);
+			$display("====================================================");
+		end
+	end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { sum_ref } === ( { sum_ref } ^ { sum_dut } ^ { sum_ref } ) );
+
+	
+	// Final block replacement
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$display("Final statistics: Total Clocks=%0d, Total Mismatches=%0d", stats1.clocks, stats1.errors);
+		$finish();
+	end
+
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+
+// Placeholder modules required by golden testbench for compilation
+module RefModule (input logic [3:0] x, input logic [3:0] y, output logic [4:0] sum);
+	// Assume RefModule implements the correct adder logic for testing purposes
+	endmodule
+
+module TopModule (
+    input logic [3:0] x,
+    input logic [3:0] y,
+    output logic [4:0] sum
+);
+	// Minimal implementation placeholder to allow testbench compilation
+	assign sum = {1'b0, x} + {1'b0, y}; // Simple addition placeholder
+	endmodule
+
+[2026-05-14 14:19:45,856 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:19:45,856 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic [3:0] x,
+	output logic [3:0] y
+);
+	
+	initial begin
+		repeat(100) @(posedge clk, negedge clk) begin
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+	
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_sum;
+		int errortime_sum;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [3:0] x;
+	logic [3:0] y;
+	logic [4:0] sum_ref; // Expected output
+	logic [4:0] sum_dut; // DUT output
+
+	reg first_mismatch_detected = 0;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,x,y,sum_ref,sum_dut );
+	end
+
+
+wire tb_match;
+wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		x,
+		y );
+	
+	// Instantiate Reference Model (Golden)
+	RefModule good1 (
+		x,
+		y,
+		sum(sum_ref) );
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		x,
+		y,
+		sum(sum_dut) );
+
+	
+bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+	
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { sum_ref } === ( { sum_ref } ^ { sum_dut } ^ { sum_ref } ) );
+
+// Clocked logic block for counting and detailed logging
+always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+
+		// Original error counting logic
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+
+		// Original sum error counting logic (retained for fidelity)
+		if (sum_ref !== ( sum_ref ^ sum_dut ^ sum_ref ))
+		begin 
+			if (stats1.errors_sum == 0) stats1.errortime_sum = $time;
+			sstats1.errors_sum = stats1.errors_sum+1'b1; 
+		end
+		end
+
+		// NEW: Detailed Mismatch Reporting on first error
+		if (!tb_match && stats1.errors == 1 && !first_mismatch_detected) begin
+			$display("\n===================================================");
+			$display("!!! FIRST MISMATCH DETECTED !!!");
+			$display("Time: %0t ps", $time);
+			$display("----------------------------------------------------");
+			// Display inputs and outputs in HEX and BIN format
+			$display("Input x:  HEX=%h, BIN=%b", x, x);
+			$display("Input y:  HEX=%h, BIN=%b", y, y);
+			$display("DUT Sum:  HEX=%h, BIN=%b", sum_dut, sum_dut);
+			$display("Expected Sum: HEX=%h, BIN=%b", sum_ref, sum_ref);
+			$display("====================================================\n");
+			first_mismatch_detected = 1;
+		end
+	end
+
+// Final reporting block
+final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$display("Final statistics: Total Clocks=%0d, Total Mismatches=%0d", stats1.clocks, stats1.errors);
+		$finish();
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+
+// Placeholder modules required by golden testbench for compilation
+module RefModule (
+    input logic [3:0] x,
+    input logic [3:0] y,
+    output logic [4:0] sum
+);
+	// Assume RefModule implements the correct adder logic for testing purposes
+endmodule
+
+module TopModule (
+    input logic [3:0] x,
+    input logic [3:0] y,
+    output logic [4:0] sum
+);
+	// Implementation matching specification: 4-bit adder with overflow in 5-bit sum.
+	// SystemVerilog addition handles the carry correctly into the 5th bit.
+	assign sum = x + y;
+endmodule
+[2026-05-14 14:23:29,370 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:23:29,370 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic [3:0] x,
+	output logic [3:0] y
+);
+	
+	initial begin
+		repeat(100) @(posedge clk, negedge clk) begin
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+	
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_sum;
+		int errortime_sum;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [3:0] x;
+	logic [3:0] y;
+	logic [4:0] sum_ref; // Expected output
+	logic [4:0] sum_dut; // DUT output
+
+	reg first_mismatch_detected = 0;
+	
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,x,y,sum_ref,sum_dut );
+	end
+
+
+wire tb_match;
+wire tb_mismatch = ~tb_match;
+	
+	// Instantiate stimulus generator
+	stimulus_gen stim1 (
+		.clk, 
+		.x, 
+		.y );
+	
+	// Instantiate Reference Model (Golden)
+	RefModule good1 (
+		.x, 
+		y, 
+		sum(sum_ref) );
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		.x, 
+		y, 
+		sum(sum_dut) );
+	
+	
+bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+	
+	
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { sum_ref } === ( { sum_ref } ^ { sum_dut } ^ { sum_ref } ) );
+
+// Clocked logic block for counting and detailed logging
+always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+	
+		// Original error counting logic
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+	
+		// Original sum error counting logic (retained for fidelity)
+		if (sum_ref !== ( sum_ref ^ sum_dut ^ sum_ref ))
+		begin 
+			if (stats1.errors_sum == 0) stats1.errortime_sum = $time;
+			sstats1.errors_sum = stats1.errors_sum+1'b1; 
+		end
+		end
+	
+		// NEW: Detailed Mismatch Reporting on first error
+		if (!tb_match && stats1.errors == 1 && !first_mismatch_detected) begin
+			$display("
+===================================================");
+			$display("!!! FIRST MISMATCH DETECTED !!!");
+			$display("Time: %0t ps", $time);
+			$display("----------------------------------------------------");
+			// Display inputs and outputs in HEX and BIN format
+			$display("Input x:  HEX=%h, BIN=%b", x, x);
+			$display("Input y:  HEX=%h, BIN=%b", y, y);
+			$display("DUT Sum:  HEX=%h, BIN=%b", sum_dut, sum_dut);
+			$display("Expected Sum: HEX=%h, BIN=%b", sum_ref, sum_ref);
+			$display("====================================================");
+			first_mismatch_detected = 1;
+		end
+	end
+
+	// Final reporting block
+final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$display("Final statistics: Total Clocks=%0d, Total Mismatches=%0d", stats1.clocks, stats1.errors);
+		fish();
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		fish();
+	end
+
+endmodule
+
+// Placeholder modules required by golden testbench for compilation
+module RefModule (
+	input logic [3:0] x,
+	input logic [3:0] y,
+	output logic [4:0] sum
+);
+	// Assume RefModule implements the correct adder logic for testing purposes
+endmodule
+
+module TopModule (
+	input logic [3:0] x,
+	input logic [3:0] y,
+	output logic [4:0] sum
+);
+	// Implementation matching specification: 4-bit adder with overflow in 5-bit sum.
+	// SystemVerilog addition handles the carry correctly into the 5th bit.
+	assign sum = x + y;
+endmodule
+[2026-05-14 14:27:11,540 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:27:11,540 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output logic [3:0] x,
+	output logic [3:0] y
+);
+	initial begin
+		repeat(100) @(posedge clk, negedge clk) begin
+			{x,y} <= $random;
+		end
+		
+		#1 $finish;
+	end
+endmodule
+
+module tb();
+	
+typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_sum;
+		int errortime_sum;
+		int clocks;
+	} stats;
+	
+stats stats1;
+	
+	
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+	
+reg clk=0;
+initial forever
+		#5 clk = ~clk;
+
+logic [3:0] x;
+logic [3:0] y;
+logic [4:0] sum_ref; // Expected output
+logic [4:0] sum_dut; // DUT output
+
+reg first_mismatch_detected = 0;
+
+initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,x,y,sum_ref,sum_dut );
+end
+
+
+wire tb_match;
+wire tb_mismatch = ~tb_match;
+	
+stimulus_gen stim1 (
+		.clk, 
+		x, 
+		y );
+	
+// Instantiate Reference Model (Golden)
+RefModule good1 (
+		.x, 
+		y, 
+		sum(sum_ref) );
+	
+// Instantiate DUT
+TopModule top_module1 (
+		.x, 
+		y, 
+		sum(sum_dut) );
+
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { sum_ref } === ( { sum_ref } ^ { sum_dut } ^ { sum_ref } ) );
+
+// Clocked logic block for counting and detailed logging
+always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+
+		// Original error counting logic
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.errors++;
+		end
+
+		// Original sum error counting logic (retained for fidelity)
+		if (sum_ref !== ( sum_ref ^ sum_dut ^ sum_ref ))
+		begin 
+			if (stats1.errors_sum == 0) stats1.errortime_sum = $time;
+			sstats1.errors_sum = stats1.errors_sum+1'b1; 
+		end
+	end
+
+		// NEW: Detailed Mismatch Reporting on first error
+		if (!tb_match && stats1.errors == 1 && !first_mismatch_detected) begin
+			$display("
+===================================================");
+			$display("!!! FIRST MISMATCH DETECTED !!!");
+			$display("Time: %0t ps", $time);
+			$display("----------------------------------------------------");
+			// Display inputs and outputs in HEX and BIN format (width <= 64 check is implicitly handled by SystemVerilog format specifiers for these small signals)
+			$display("Input x:  HEX=%h, BIN=%b", x, x);
+			$display("Input y:  HEX=%h, BIN=%b", y, y);
+			display("DUT Sum:  HEX=%h, BIN=%b", sum_dut, sum_dut);
+			$display("Expected Sum: HEX=%h, BIN=%b", sum_ref, sum_ref);
+			$display("====================================================");
+			first_mismatch_detected = 1;
+		end
+	end
+
+// Final reporting block
+final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+		$display("Final statistics: Total Clocks=%0d, Total Mismatches=%0d", stats1.clocks, stats1.errors);
+		$finish();
+end
+
+// add timeout after 100K cycles
+initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+end
+
+endmodule
+
+// Placeholder modules required by golden testbench for compilation
+module RefModule (
+	input logic [3:0] x,
+	input logic [3:0] y,
+	output logic [4:0] sum
+);
+	// Assume RefModule implements the correct adder logic for testing purposes
+endmodule
+
+module TopModule (
+	input logic [3:0] x,
+	input logic [3:0] y,
+	output logic [4:0] sum
+);
+	// Implementation matching specification: 4-bit adder with overflow in 5-bit sum.
+	// SystemVerilog addition handles the carry correctly into the 5th bit.
+	assign sum = x + y;
+endmodule

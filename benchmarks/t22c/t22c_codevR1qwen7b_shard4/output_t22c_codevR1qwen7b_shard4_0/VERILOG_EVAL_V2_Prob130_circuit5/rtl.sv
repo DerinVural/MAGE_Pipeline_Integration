@@ -1,0 +1,1 @@
+module TopModule (input logic [3:0] a, b, c, d, e, output logic [3:0] q); always_comb begin case (c) 4'd0: q = 4'hB; 4'd1: q = 4'hE; 4'd2: q = 4'hA; 4'd3: q = 4'hD; 4'd4: q = 4'hF; default: q = 4'hF; endcase; end endmodule

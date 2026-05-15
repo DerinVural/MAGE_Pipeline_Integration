@@ -1,0 +1,1127 @@
+[2026-05-13 13:49:36,338 - mage.agent - INFO] Initial tb:
+[2026-05-13 13:49:36,340 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// RefModule is required by the golden testbench to function.
+// Since the implementation isn't provided, we provide a stub that mimics the spec behavior.
+module RefModule (
+    input logic clk,
+    input logic reset,
+    input logic data,
+    output logic start_shifting
+);
+    logic [3:0] shift_reg;
+    always @(posedge clk) begin
+        if (reset) begin
+            shift_reg <= 4'b0000;
+            start_shifting <= 1'b0;
+        end else begin
+            shift_reg <= {shift_reg[2:0], data};
+            if (shift_reg == 4'b1101 || (start_shifting == 1'b1)) begin
+                start_shifting <= 1'b1;
+            end else if (shift_reg == 4'b1101) begin
+                // This part is a bit redundant due to the logic above, but follows pattern detection
+                start_shifting <= 1'b1;
+            end
+        end
+    end
+    // Correcting logic to match spec: detect 1101 then set high forever
+    // The pattern detection is actually on the shift register content
+    always @(posedge clk) begin
+        if (reset) begin
+            start_shifting <= 1'b0;
+        end else begin
+            if ({shift_reg[2:0], data} == 4'b1101) start_shifting <= 1'b1;
+            else if (start_shifting) start_shifting <= 1'b1;
+        end
+    end
+endmodule
+
+module stimulus_gen (
+    input clk,
+    output reg reset, data,
+    output reg[511:0] wavedrom_title,
+    output reg wavedrom_enable,
+    input tb_match
+);
+
+    task reset_test(input async=0);
+        bit arfail, srfail, datafail;
+    
+        @(posedge clk);
+        @(posedge clk) reset <= 0;
+        repeat(3) @(posedge clk);
+    
+        @(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+        @(posedge clk) arfail = !tb_match;
+        @(posedge clk) begin
+            srfail = !tb_match;
+            reset <= 0;
+        end
+        if (srfail)
+            $display("Hint: Your reset doesn't seem to be working.");
+        else if (arfail && (async || !datafail))
+            $display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+    endtask
+
+    task wavedrom_start(input[511:0] title = "");
+    endtask
+    
+    task wavedrom_stop;
+        #1;
+    endtask    
+
+    wire [0:9] d = 10'b1110110011;
+    
+    initial begin
+        reset <= 1;
+        @(posedge clk) reset <= 0;
+        data <= 1;
+        repeat(2) @(posedge clk) ;
+        data <= 0;
+        @(posedge clk);
+        data <= 1;
+        @(posedge clk);
+        data <= 0;
+    
+        wavedrom_start("Reset and sequence detect");
+        reset_test();
+        for (int i=0;i<10;i++) begin
+            @(posedge clk) data <= d[i];
+        end
+        wavedrom_stop();
+        repeat(600) @(posedge clk, negedge clk) begin
+            reset <= !($random & 31);
+            data <= $random;
+        end
+
+        #1 $finish;
+    end
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_start_shifting;
+        int errortime_start_shifting;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever #5 clk = ~clk;
+
+    logic reset;
+    logic data;
+    logic start_shifting_ref;
+    logic start_shifting_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,data,start_shifting_ref,start_shifting_dut );
+    end
+
+    wire tb_match;
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .reset,
+        .data 
+    );
+
+    RefModule good1 (
+        .clk,
+        .reset,
+        .data,
+        .start_shifting(start_shifting_ref) 
+    );
+        
+    TopModule top_module1 (
+        .clk,
+        .reset,
+        .data,
+        .start_shifting(start_shifting_dut) 
+    );
+
+    // Queue for mismatch display
+    reg [0:0] q_clk [$];
+    reg [0:0] q_reset [$];
+    reg [0:0] q_data [$];
+    reg [0:0] q_ref [$];
+    reg [0:0] q_dut [$];
+    localparam MAX_QUEUE_SIZE = 10;
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { start_shifting_ref } === ( { start_shifting_ref } ^ { start_shifting_dut } ^ { start_shifting_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        // Manage Queues
+        if (q_clk.size() >= MAX_QUEUE_SIZE) begin
+            q_clk.delete(0);
+            q_reset.delete(0);
+            q_data.delete(0);
+            q_ref.delete(0);
+            q_dut.delete(0);
+        end
+        q_clk.push_back(clk);
+        q_reset.push_back(reset);
+        q_data.push_back(data);
+        q_ref.push_back(start_shifting_ref);
+        q_dut.push_back(start_shifting_dut);
+
+        // Error Counting
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+
+            // Display First Mismatch Details
+            if (stats1.errors == 1) begin
+                $display("Mismatch detected at time %t", $time);
+                $display("\nLast %d cycles of simulation:", q_clk.size());
+                for (int i = 0; i < q_clk.size(); i++) begin
+                    $display("Cycle %d, reset %b, data %b, got output %b, exp output %b",
+                        i, q_reset[i], q_data[i], q_dut[i], q_ref[i]);
+                end
+            end
+        end
+
+        if (start_shifting_ref !== ( start_shifting_ref ^ start_shifting_dut ^ start_shifting_ref )) begin
+            if (stats1.errors_start_shifting == 0) stats1.errortime_start_shifting = $time;
+            stats1.errors_start_shifting = stats1.errors_start_shifting + 1'b1;
+        end
+    end
+
+    final begin
+        if (stats1.errors == 0) begin
+            $display("SIMULATION PASSED");
+        end else begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end
+
+        if (stats1.errors_start_shifting) 
+            $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "start_shifting", stats1.errors_start_shifting, stats1.errortime_start_shifting);
+        else 
+            $display("Hint: Output '%s' has no mismatches.", "start_shifting");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+endmodule
+[2026-05-13 13:49:36,340 - mage.agent - INFO] Initial if:
+[2026-05-13 13:49:36,340 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic reset,
+    input  logic data,
+    output logic start_shifting
+);
+endmodule
+[2026-05-13 13:49:36,346 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - input  data
+ - output start_shifting
+
+The module should implement a finite-state machine that searches for the
+sequence 1101 in an input bit stream. When the sequence is found, it
+should set start_shifting to 1, forever, until reset. Reset is active
+high synchronous. Assume all sequential logic is triggered on the
+positive edge of the clock.
+
+
+[2026-05-13 13:50:09,507 - mage.agent - INFO] Initial rtl:
+[2026-05-13 13:50:09,507 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic reset,
+    input  logic data,
+    output logic start_shifting
+);
+
+    // State definitions
+    localparam STATE_IDLE  = 3'b000;
+    localparam STATE_S1    = 3'b001;
+    localparam STATE_S11   = 3'b010;
+    localparam STATE_S110  = 3'b011;
+    localparam STATE_FOUND = 3'b100;
+
+    // State register
+    logic [2:0] current_state;
+    logic [2:0] next_state;
+
+    // Initialize state to avoid X
+    initial begin
+        current_state = STATE_IDLE;
+    end
+
+    // Sequential logic: State transition
+    always @(posedge clk) begin
+        if (reset) begin
+            current_state <= STATE_IDLE;
+        end else begin
+            current_state <= next_state;
+        end
+    end
+
+    // Combinational logic: Next state logic
+    always @(*) begin
+        next_state = current_state;
+        case (current_state)
+            STATE_IDLE:
+                if (data == 1'b1) 
+                    next_state = STATE_S1;
+                else 
+                    next_state = STATE_IDLE;
+
+            STATE_S1:
+                if (data == 1'b1) 
+                    next_state = STATE_S11;
+                else 
+                    next_state = STATE_IDLE;
+
+            STATE_S11:
+                if (data == 1'b0) 
+                    next_state = STATE_S110;
+                else 
+                    next_state = STATE_S11;
+
+            STATE_S110:
+                if (data == 1'b1) 
+                    next_state = STATE_FOUND;
+                else 
+                    next_state = STATE_IDLE;
+
+            STATE_FOUND:
+                next_state = STATE_FOUND;
+
+            default:
+                next_state = STATE_IDLE;
+        endcase
+    end
+
+    // Output logic
+    always @(*) begin
+        if (current_state == STATE_FOUND) begin
+            start_shifting = 1'b1;
+        end else begin
+            start_shifting = 1'b0;
+        end
+    end
+
+endmodule
+[2026-05-13 13:50:14,258 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 13:51:44,617 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:51:44,617 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg reset, data,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+	
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+	
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			reset <= 0;
+		end
+		if (srfail)
+			$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	end
+
+	task wavedrom_start(input[511:0] title = "");
+		wavedrom_enable = 1;
+		wavedrom_title = title;
+	endtask
+	
+	task wavedrom_stop;
+		wavedrom_enable = 0;
+		#1;
+	endtask	
+
+	wire [0:9] d = 10'b1110110011;
+	
+	initial begin
+		reset <= 1;
+		wavedrom_enable <= 0;
+		@(posedge clk) reset <= 0;
+		data <= 1;
+		repeat(2) @(posedge clk) ;
+		data <= 0;
+		@(posedge clk);
+		data <= 1;
+		@(posedge clk);
+		data <= 0;
+	
+		wavedrom_start("Reset and sequence detect");
+		reset_test();
+		for (int i=0;i<10;i++) begin
+			@(posedge clk) data <= d[i];
+		end;
+		wavedrom_stop();
+		repeat(600) @(posedge clk, negedge clk) begin
+			reset <= !($random & 31);
+			data <= $random;
+		end;
+
+		#1 $finish;
+	end
+	endmodule
+
+module RefModule (
+    input clk,
+    input reset,
+    input data,
+    output logic start_shifting
+);
+    logic [3:0] shift_reg;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            shift_reg <= 4'b0000;
+            start_shifting <= 1'b0;
+        end else begin
+            shift_reg <= {shift_reg[2:0], data};
+            if (shift_reg == 4'b1101 || (start_shifting == 1'b1)) begin
+                start_shifting <= 1'b1;
+            end else if ({shift_reg[2:0], data} == 4'b1101) begin
+                start_shifting <= 1'b1;
+            end else begin
+                // Note: The spec says "When sequence is found, set to 1 forever".
+                // We must check the match on the transition.
+            end
+        end
+    end
+    // Correcting logic: if sequence found, latch it.
+    logic found;
+    always_ff @(posedge clk) begin
+        if (reset) found <= 1'b0;
+        else if ({shift_reg[2:0], data} == 4'b1101) found <= 1'b1;
+    end
+    assign start_shifting = found;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_start_shifting;
+		int errortime_start_shifting;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic data;
+	logic start_shifting_ref;
+	logic start_shifting_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,data,start_shifting_ref,start_shifting_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.reset,
+		.data );
+	RefModule good1 (
+		.clk,
+		.reset,
+		.data,
+		.start_shifting(start_shifting_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		.data,
+		.start_shifting(start_shifting_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end;
+	endtask	
+
+	// Enhanced Mismatch Display
+	initial begin
+		wait(tb_mismatch);
+		@(posedge clk);
+		$display("FIRST MISMATCH DETECTED:");
+		$display("Time: %0t", $time);
+		$display("Inputs: clk=%b, reset=%b, data=%b", clk, reset, data);
+		$display("Outputs: start_shifting_dut=%b, start_shifting_ref=%b", start_shifting_dut, start_shifting_ref);
+	end
+
+	assign tb_match = ( { start_shifting_ref } === ( { start_shifting_ref } ^ { start_shifting_dut } ^ { start_shifting_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (start_shifting_ref !== ( start_shifting_ref ^ start_shifting_dut ^ start_shifting_ref ))
+		begin 
+			if (stats1.errors_start_shifting == 0) stats1.errortime_start_shifting = $time;
+			stats1.errors_start_shifting = stats1.errors_start_shifting+1'b1; 
+		end
+	end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_start_shifting) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "start_shifting", stats1.errors_start_shifting, stats1.errortime_start_shifting);
+		else $display("Hint: Output '%s' has no mismatches.", "start_shifting");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-13 13:53:20,407 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:53:20,408 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg reset, data,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+	
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+	
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			reset <= 0;
+		end
+		if (srfail)
+			$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	end
+
+	task wavedrom_start(input[511:0] title = "");
+		wavedrom_enable = 1;
+		wavedrom_title = title;
+	endtask
+	
+	task wavedrom_stop;
+		wavedrom_enable = 0;
+		#1;
+	endtask	
+
+	wire [0:9] d = 10'b1110110011;
+	
+	initial begin
+		reset <= 1;
+		wavedrom_enable <= 0;
+		@(posedge clk) reset <= 0;
+		data <= 1;
+		repeat(2) @(posedge clk) ;
+		data <= 0;
+		@(posedge clk);
+		data <= 1;
+		@(posedge clk);
+		data <= 0;
+	
+		wavedrom_start("Reset and sequence detect");
+		reset_test();
+		for (int i=0;i<10;i++) begin
+			@(posedge clk) data <= d[i];
+		end
+		wavedrom_stop();
+		repeat(600) @(posedge clk, negedge clk) begin
+			reset <= !($random & 31);
+			data <= $random;
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+    input clk,
+    input reset,
+    input data,
+    output logic start_shifting
+);
+    logic [3:0] shift_reg;
+    logic found;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            shift_reg <= 4'b0000;
+            found <= 1'b0;
+        end else begin
+            shift_reg <= {shift_reg[2:0], data};
+            if ({shift_reg[2:0], data} == 4'b1101) found <= 1'b1;
+        end
+    end
+    assign start_shifting = found;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_start_shifting;
+		int errortime_start_shifting;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic data;
+	logic start_shifting_ref;
+	logic start_shifting_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,data,start_shifting_ref,start_shifting_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.reset,
+		.data );
+	RefModule good1 (
+		.clk,
+		.reset,
+		.data,
+		.start_shifting(start_shifting_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		.data,
+		.start_shifting(start_shifting_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end
+	endtask	
+
+	// Enhanced Mismatch Display
+	initial begin
+		@(negedge tb_mismatch);
+		$display("FIRST MISMATCH DETECTED:");
+		$display("Time: %0t", $time);
+		$display("Inputs: clk=%b, reset=%b, data=%b", clk, reset, data);
+		$display("Outputs: start_shifting_dut=%b, start_shifting_ref=%b", start_shifting_dut, start_shifting_ref);
+	end
+
+	assign tb_match = ( { start_shifting_ref } === ( { start_shifting_ref } ^ { start_shifting_dut } ^ { start_shifting_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (start_shifting_ref !== ( start_shifting_ref ^ start_shifting_dut ^ start_shifting_ref ))
+		begin 
+			if (stats1.errors_start_shifting == 0) stats1.errortime_start_shifting = $time;
+			stats1.errors_start_shifting = stats1.errors_start_shifting+1'b1; 
+		end
+	end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_start_shifting) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "start_shifting", stats1.errors_start_shifting, stats1.errortime_start_shifting);
+		else $display("Hint: Output '%s' has no mismatches.", "start_shifting");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-13 13:54:52,026 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:54:52,026 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg reset, data,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+	
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+	
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			reset <= 0;
+		end
+		if (srfail)
+			$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	end
+
+	task wavedrom_start(input[511:0] title = "");
+		wavedrom_enable = 1;
+		wavedrom_title = title;
+	endtask
+	
+	task wavedrom_stop;
+		wavedrom_enable = 0;
+		#1;
+	endtask	
+
+	wire [0:9] d = 10'b1110110011;
+	
+	initial begin
+		reset <= 1;
+		wavedrom_enable <= 0;
+		@(posedge clk) reset <= 0;
+		data <= 1;
+		repeat(2) @(posedge clk) ;
+		data <= 0;
+		@(posedge clk);
+		data <= 1;
+		@(posedge clk);
+		data <= 0;
+	
+		wavedrom_start("Reset and sequence detect");
+		reset_test();
+		for (int i=0;i<10;i++) begin
+			@(posedge clk) data <= d[i];
+		end
+		wavedrom_stop();
+		repeat(600) @(posedge clk, negedge clk) begin
+			reset <= !($random & 31);
+			data <= $random;
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_start_shifting;
+		int errortime_start_shifting;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic data;
+	logic start_shifting_ref;
+	logic start_shifting_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,data,start_shifting_ref,start_shifting_dut );
+	end
+
+	wire tb_match; // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.reset,
+		.data );
+	
+	RefModule good1 (
+		.clk,
+		.reset,
+		.data,
+		.start_shifting(start_shifting_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		.data,
+		.start_shifting(start_shifting_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end
+	endtask	
+
+	// Mismatch Display Logic
+	initial begin
+		@(negedge tb_mismatch);
+		// Small delay to ensure signals have settled for display
+		#1;
+		$display("FIRST MISMATCH DETECTED:");
+		$display("Time: %0t", $time);
+		$display("Inputs: clk=%b, reset=%b, data=%b", clk, reset, data);
+		$display("Outputs: start_shifting_dut=%b, start_shifting_ref=%b", start_shifting_dut, start_shifting_ref);
+	end
+
+	assign tb_match = ( { start_shifting_ref } === ( { start_shifting_ref } ^ { start_shifting_dut } ^ { start_shifting_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (start_shifting_ref !== ( start_shifting_ref ^ start_shifting_dut ^ start_shifting_ref ))
+		begin 
+			if (stats1.errors_start_shifting == 0) stats1.errortime_start_shifting = $time;
+			stats1.errors_start_shifting = stats1.errors_start_shifting+1'b1; 
+		end
+
+	end
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end
+		if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_start_shifting) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "start_shifting", stats1.errors_start_shifting, stats1.errortime_start_shifting);
+		else $display("Hint: Output '%s' has no mismatches.", "start_shifting");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 13:56:26,450 - mage.agent - INFO] Revised tb:
+[2026-05-13 13:56:26,450 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg reset, data,
+	output reg[511:0] wavedrom_title,
+	output reg wavedrom_enable,
+	input tb_match
+);
+
+	task reset_test(input async=0);
+		bit arfail, srfail, datafail;
+	
+		@(posedge clk);
+		@(posedge clk) reset <= 0;
+		repeat(3) @(posedge clk);
+	
+		@(negedge clk) begin datafail = !tb_match ; reset <= 1; end
+		@(posedge clk) arfail = !tb_match;
+		@(posedge clk) begin
+			srfail = !tb_match;
+			reset <= 0;
+		end
+		if (srfail)
+			$display("Hint: Your reset doesn't seem to be working.");
+		else if (arfail && (async || !datafail))
+			$display("Hint: Your reset should be %0s, but doesn't appear to be.", async ? "asynchronous" : "synchronous");
+	
+	endtask
+
+	task wavedrom_start(input[511:0] title = "");
+		wavedrom_enable = 1;
+		wavedrom_title = title;
+	endtask
+	
+	task wavedrom_stop;
+		wavedrom_enable = 0;
+		#1;
+	endtask	
+
+	wire [0:9] d = 10'b1110110011;
+	
+	initial begin
+		reset <= 1;
+		wavedrom_enable <= 0;
+		@(posedge clk) reset <= 0;
+		data <= 1;
+		repeat(2) @(posedge clk) ;
+		data <= 0;
+		@(posedge clk);
+		data <= 1;
+		@(posedge clk);
+		data <= 0;
+	
+		wavedrom_start("Reset and sequence detect");
+		reset_test();
+		for (int i=0;i<10;i++) begin
+			@(posedge clk) data <= d[i];
+		end
+		wavedrom_stop();
+		repeat(600) @(posedge clk, negedge clk) begin
+			reset <= !($random & 31);
+			data <= $random;
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module RefModule (
+    input clk,
+    input reset,
+    input data,
+    output logic start_shifting
+);
+    logic [3:0] shift_reg;
+    logic found;
+    always_ff @(posedge clk) begin
+        if (reset) begin
+            shift_reg <= 4'b0000;
+            found <= 1'b0;
+        end else begin
+            shift_reg <= {shift_reg[2:0], data};
+            if ({shift_reg[2:0], data} == 4'b1101) found <= 1'b1;
+        end
+    end
+    assign start_shifting = found;
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_start_shifting;
+		int errortime_start_shifting;
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic data;
+	logic start_shifting_ref;
+	logic start_shifting_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,data,start_shifting_ref,start_shifting_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.reset,
+		.data );
+	RefModule good1 (
+		.clk,
+		.reset,
+		.data,
+		.start_shifting(start_shifting_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		.data,
+		.start_shifting(start_shifting_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;
+			@(strobe);
+		end
+	endtask	
+
+	// Enhanced Mismatch Display
+	initial begin
+		wait(tb_mismatch);
+		@(posedge clk);
+		$display("FIRST MISMATCH DETECTED:");
+		$display("Time: %0t", $time);
+		$display("Inputs: clk=%b, reset=%b, data=%b", clk, reset, data);
+		$display("Outputs: start_shifting_dut=%b, start_shifting_ref=%b", start_shifting_dut, start_shifting_ref);
+	end
+
+	assign tb_match = ( { start_shifting_ref } === ( { start_shifting_ref } ^ { start_shifting_dut } ^ { start_shifting_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (start_shifting_ref !== ( start_shifting_ref ^ start_shifting_dut ^ start_shifting_ref ))
+		begin 
+			if (stats1.errors_start_shifting == 0) stats1.errortime_start_shifting = $time;
+			stats1.errors_start_shifting = stats1.errors_start_shifting+1'b1; 
+		end
+
+	end
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+
+		if (stats1.errors_start_shifting) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "start_shifting", stats1.errors_start_shifting, stats1.errortime_start_shifting);
+		else $display("Hint: Output '%s' has no mismatches.", "start_shifting");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule

@@ -1,0 +1,8 @@
+module TopModule (
+    input logic [99:0] a,
+    input logic [99:0] b,
+    input logic sel,
+    output logic [99:0] out
+);
+// Implementation details omitted as per interface requirement
+endmodule

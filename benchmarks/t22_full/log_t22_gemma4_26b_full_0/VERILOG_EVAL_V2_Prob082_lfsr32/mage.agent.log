@@ -1,0 +1,211 @@
+[2026-05-12 19:27:26,083 - mage.agent - INFO] TB Gen BYPASSED — loaded golden testbench from ./verilog-eval/dataset_spec-to-rtl/Prob082_lfsr32_test.sv
+[2026-05-12 19:27:26,085 - mage.agent - INFO] Initial tb:
+[2026-05-12 19:27:26,085 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+
+module stimulus_gen (
+	input clk,
+	output reg reset
+);
+
+	
+	initial begin
+		repeat(400) @(posedge clk, negedge clk) begin
+			reset <= !($random & 31);
+		end
+		@(posedge clk) reset <= 1'b0;
+		repeat(200000) @(posedge clk);
+		reset <= 1'b1;
+		repeat(5) @(posedge clk);
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_q;
+		int errortime_q;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic [31:0] q_ref;
+	logic [31:0] q_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,clk,reset,q_ref,q_dut );
+	end
+
+
+	wire tb_match;		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.reset );
+	RefModule good1 (
+		.clk,
+		.reset,
+		.q(q_ref) );
+		
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		.q(q_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	
+	final begin
+		if (stats1.errors_q) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "q", stats1.errors_q, stats1.errortime_q);
+		else $display("Hint: Output '%s' has no mismatches.", "q");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { q_ref } === ( { q_ref } ^ { q_dut } ^ { q_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (q_ref !== ( q_ref ^ q_dut ^ q_ref ))
+		begin if (stats1.errors_q == 0) stats1.errortime_q = $time;
+			stats1.errors_q = stats1.errors_q+1'b1; end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+
+
+[2026-05-12 19:27:26,085 - mage.agent - INFO] Initial if:
+[2026-05-12 19:27:26,086 - mage.agent - INFO] 
+[2026-05-12 19:27:26,089 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - output q (32 bits)
+
+A linear feedback shift register is a shift register usually with a few
+XOR gates to produce the next state of the shift register. A Galois LFSR
+is one particular arrangement that shifts right, where a bit position with
+a "tap" is XORed with the LSB output bit (q[0]) to produce its next value,
+while bit positions without a tap shift right unchanged. 
+
+The module should implement a 32-bit Galois LFSR with taps at bit
+positions 32, 22, 2, and 1. Reset should be active high synchronous, and
+should reset the output q to 32'h1. Assume all sequential logic is
+triggered on the positive edge of the clock.
+
+
+[2026-05-12 19:35:29,330 - mage.agent - INFO] Initial rtl:
+[2026-05-12 19:35:29,330 - mage.agent - INFO] module TopModule(
+    input  logic        clk,
+    input  logic        reset,
+    output logic [31:0] q
+);
+
+    // The module implements a 32-bit Galois LFSR.
+    // Taps are at bit positions 32, 22, 2, and 1.
+    // In 0-indexed logic (q[31:0]), these correspond to indices 31, 21, 1, and 0.
+    // Galois LFSR right shift: q_next[i] = q[i+1] ^ (is_tap(i+1) ? q[0] : 0).
+
+    always @(posedge clk) begin
+        if (reset) begin
+            q <= 32'h1;
+        end else begin
+            // Calculate next state
+            // We use a temporary variable to avoid using updated values during the shift
+            // though in a non-blocking assignment this is handled automatically.
+            
+            // q[31] is bit 32
+            // q[21] is bit 22
+            // q[1]  is bit 2
+            // q[0]  is bit 1
+            
+            // q_next[31] = 0 ^ q[0] (because bit 32 is a tap and there is no q[32])
+            // q_next[21] = q[22] ^ q[0]
+            // q_next[1]  = q[2] ^ q[0]
+            // q_next[0]  = q[1] ^ q[0]
+            // Other q_next[i] = q[i+1]
+
+            q[31] <= q[0];
+            q[30] <= q[31];
+            q[29] <= q[30];
+            q[28] <= q[29];
+            q[27] <= q[28];
+            q[26] <= q[27];
+            q[25] <= q[26];
+            q[24] <= q[25];
+            q[23] <= q[24];
+            q[22] <= q[23];
+            q[21] <= q[22] ^ q[0];
+            q[20] <= q[21];
+            q[19] <= q[20];
+            q[18] <= q[19];
+            q[17] <= q[18];
+            q[16] <= q[17];
+            q[15] <= q[16];
+            q[14] <= q[15];
+            q[13] <= q[14];
+            q[12] <= q[13];
+            q[11] <= q[12];
+            q[10] <= q[11];
+            q[9]  <= q[10];
+            q[8]  <= q[9];
+            q[7]  <= q[8];
+            q[6]  <= q[7];
+            q[5]  <= q[6];
+            q[4]  <= q[5];
+            q[3]  <= q[4];
+            q[2]  <= q[3];
+            q[1]  <= q[2] ^ q[0];
+            q[0]  <= q[1] ^ q[0];
+        end
+    end
+
+endmodule

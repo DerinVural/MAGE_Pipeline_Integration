@@ -1,0 +1,1 @@
+interface TopModule (input in, output out); endinterface

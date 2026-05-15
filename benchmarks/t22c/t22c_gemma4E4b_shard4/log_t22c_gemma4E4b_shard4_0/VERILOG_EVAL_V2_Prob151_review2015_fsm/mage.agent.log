@@ -1,0 +1,1428 @@
+[2026-05-14 16:56:10,067 - mage.agent - INFO] Initial tb:
+[2026-05-14 16:56:10,069 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+// Assuming stimulus_gen and RefModule are defined or available
+
+module stimulus_gen (
+	input clk,
+	output reg reset,
+	output reg data, done_counting, ack,
+	input tb_match
+);
+	bit failed = 0;
+	
+	always @(posedge clk, negedge clk)
+		if (!tb_match) 
+			failed <= 1;
+	
+	initial begin
+
+		@(posedge clk);
+		failed <= 0;
+		reset <= 1;
+		data <= 0;
+		done_counting <= 1'bx;
+		ack <= 1'bx;
+		@(posedge clk) 
+			data <= 1;
+			reset <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk);
+			data <= 1'bx;
+		repeat(4) @(posedge clk);
+			done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+			done_counting <= 1'b1;
+		@(posedge clk);
+			done_counting <= 1'bx;
+		ack <= 1'b0;
+		repeat(3) @(posedge clk);
+			ack <= 1'b1;
+		@(posedge clk);
+			ack <= 1'b0;
+			data <= 1'b1;
+		@(posedge clk);
+			ack <= 1'bx;
+			data <= 1'b1;
+		@(posedge clk);
+			data <= 1'b0;
+		@(posedge clk);
+			data <= 1'b1;
+		@(posedge clk);
+			data <= 1'bx;
+		repeat(4) @(posedge clk);
+			done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+			done_counting <= 1'b1;
+		@(posedge clk);
+
+		if (failed)
+			$display("Hint: Your FSM didn't pass the sample timing diagram posted with the problem statement. Perhaps try debugging that?");
+		
+		
+		repeat(5000) @(posedge clk, negedge clk) begin
+			reset <= !($random & 255);
+			data <= $random;
+			done_counting <= !($random & 31);
+			ack <= !($random & 31);
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	// --- Statistics Structure ---
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		int errors_counting;
+		int errortime_counting;
+		int errors_done;
+		int errortime_done;
+		int clocks;
+} stats;
+	
+	stats stats1;
+	
+	// --- Waveform Configuration ---
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	// --- Clock Generation ---
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	// --- DUT Signals ---
+	logic reset;
+	logic data;
+	logic done_counting;
+	logic ack;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic done_ref;
+	logic done_dut;
+
+	// --- Verification Signals ---
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// --- Queue Definitions (For sequential logic logging) ---
+	localparam MAX_QUEUE_SIZE = 10;
+	
+	reg [1:0] input_data_q [$]; // data (1 bit) + other small signals if needed, using 2 bits for simplicity if we only track data
+	reg [1:0] input_done_counting_q [$];
+	reg [1:0] input_ack_q [$];
+	reg input_reset_q [$]; // Reset is single bit
+	
+	reg [1:0] got_shift_ena_q [$];
+	reg [1:0] golden_shift_ena_q [$];
+	
+	reg [1:0] got_counting_q [$];
+	reg [1:0] golden_counting_q [$];
+	
+	reg [1:0] got_done_q [$];
+	reg [1:0] golden_done_q [$];
+
+	// Helper to represent 1-bit signals in the queue structure, padding to 2 bits for consistency
+
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen::clk, tb_mismatch, clk, reset, data, done_counting, ack, shift_ena_ref, shift_ena_dut, counting_ref, counting_dut, done_ref, done_dut );
+	end
+
+	// Instantiate Stimulus Generator (Input Driver)
+	stimulus_gen stim1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.tb_match
+	);
+
+	// Instantiate Reference Model (Golden) -- Requires RefModule definition
+	RefModule good1 (
+		.clk,
+		.reset,
+		.data,
+		done_counting,
+		.ack,
+		.shift_ena(shift_ena_ref),
+		.counting(counting_ref),
+		.done(done_ref) );
+	
+	// Instantiate DUT
+	TopModule top_module1 (
+		.clk,
+		.reset,
+		.data,
+		done_counting,
+		.ack,
+		.shift_ena(shift_ena_dut),
+		.counting(counting_dut),
+		.done(done_dut) );
+
+	// --- Task Definition (Kept from original, though its function is timing sensitive) ---
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+	task
+
+	// Initialize signals needed for the task		reg strobe = 0;
+
+	// --- Synchronization and Verification Logic ---
+	// This block replaces the simple XOR assignment and implements queue logging
+	always @(posedge clk, negedge clk) begin
+		// 1. Update Stats
+		stats1.clocks++;
+		
+		// 2. Push data to queues (Padded to 2 bits for uniform queue structure)
+		input_reset_q.push_back({reset});
+		input_data_q.push_back({data});
+		input_done_counting_q.push_back({done_counting});
+		input_ack_q.push_back({ack});
+
+		// Output queues
+		got_shift_ena_q.push_back({shift_ena_dut});
+		golden_shift_ena_q.push_back({shift_ena_ref});
+		
+		got_counting_q.push_back({counting_dut});
+		golden_counting_q.push_back({counting_ref});
+		
+		got_done_q.push_back({done_dut});
+		golden_done_q.push_back({done_ref});
+		
+		// 3. Manage Queue Size (FIFO)
+		if (input_data_q.size() >= MAX_QUEUE_SIZE) begin
+			input_data_q.delete(0);
+			input_done_counting_q.delete(0);
+			input_ack_q.delete(0);
+			input_reset_q.delete(0);
+			got_shift_ena_q.delete(0);
+			golden_shift_ena_q.delete(0);
+			got_counting_q.delete(0);
+			golden_counting_q.delete(0);
+			got_done_q.delete(0);
+			golden_done_q.delete(0);
+		end
+
+		// 4. Check for Mismatches and Update Errors
+		// Check shift_ena
+		if (shift_ena_dut !== shift_ena_ref) begin
+			if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+			sats1.errors_shift_ena = stats1.errors_shift_ena+1'b1;
+		end
+		// Check counting
+		if (counting_dut !== counting_ref) begin
+			if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+			sats1.errors_counting = stats1.errors_counting+1'b1;
+		end
+		// Check done
+		if (done_dut !== done_ref) begin
+			if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			sats1.errors_done = stats1.errors_done+1'b1;
+		end
+		
+		// Total Mismatch Check (If any single output mismatched, count it against total errors)
+		if (shift_ena_dut !== shift_ena_ref || counting_dut !== counting_ref || done_dut !== done_ref) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sats1.errors = stats1.errors+1'b1;
+		end
+		
+		// 5. Display detailed error information upon FIRST mismatch (if errors > 0 and previous error count was 0)
+		if (stats1.errors > 0 && stats1.errors == 1 && stats1.errortime == $time) begin
+			$display("\n=======================================================================");
+			$display("!! FIRST MISMATCH DETECTED AT TIME %0d ps !!", $time);
+			$display("=======================================================================");
+			$display("Queue-based simulation mismatch display (Last %0d cycles):", MAX_QUEUE_SIZE);
+
+			for (int i = 0; i < input_data_q.size(); i++) begin
+				// Note: We display all signals available in the queue structure
+				$display("Cycle %d, Reset: %b, Data: %b, DoneCnt: %b, Ack: %b | Ref: %b, Got: %b",
+				i,
+				input_reset_q[i], 
+				input_data_q[i], 
+				input_done_counting_q[i], 
+				input_ack_q[i], 
+				golden_shift_ena_q[i], 
+				got_shift_ena_q[i]);
+				
+				$display("\t-> Expected shift_ena: %b, Actual shift_ena: %b", golden_shift_ena_q[i], got_shift_ena_q[i]);
+				$display("\t-> Expected counting: %b, Actual counting: %b", golden_counting_q[i], got_counting_q[i]);
+				$display("\t-> Expected done: %b, Actual done: %b", golden_done_q[i], got_done_q[i]);
+			end
+			$display("=======================================================================\n");
+		end
+	end
+
+	// --- Finalization ---
+	initial begin
+		// Wait for simulation to run long enough to capture steady state or timeout
+		@(negedge clk);
+		#1000000 // Allow enough time for the randomized phase
+		$finish();
+	end
+
+	final begin
+		// Original Hint style output is replaced by required final summary
+		
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	end
+
+endmodule
+
+[2026-05-14 16:56:10,069 - mage.agent - INFO] Initial if:
+[2026-05-14 16:56:10,069 - mage.agent - INFO] module TopModule (
+    input clk,
+    input reset,
+    input data,
+    input done_counting,
+    input ack,
+    output shift_ena,
+    output counting,
+    output done
+);
+    // Module implementation goes here
+endmodule
+[2026-05-14 16:56:10,075 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  clk
+ - input  reset
+ - input  data
+ - input  done_counting
+ - input  ack
+ - output shift_ena
+ - output counting
+ - output done
+
+The module should implement a timer that:
+
+  (1) is started when a particular pattern (1101) is detected,
+  (2) shifts in 4 more bits to determine the duration to delay,
+  (3) waits for the counters to finish counting, and
+  (4) notifies the user and waits for the user to acknowledge the timer.
+
+In this problem, implement just the finite-state machine that controls
+the timer. The data path (counters and some comparators) are not included
+here.
+
+The serial data is available on the data input pin. When the pattern 1101
+is received, the state machine must then assert output shift_ena for
+exactly 4 clock cycles. After that, the state machine asserts its
+counting output to indicate it is waiting for the counters, and waits
+until input done_counting is high.At that point, the state machine must
+assert done to notify the user the timer has timed out, and waits until
+input ack is 1 before being reset to look for the next occurrence of the
+start sequence (1101). The state machine should have a active high
+synchronous reset, setting the state to where it begins searching for the
+input sequence 1101. Assume all sequential logic is triggered on the
+positive edge of the clock.
+
+
+[2026-05-14 16:56:51,303 - mage.agent - INFO] Initial rtl:
+[2026-05-14 16:56:51,303 - mage.agent - INFO] module TopModule (
+    input  logic clk,
+    input  logic reset,
+    input  logic data,
+    input  logic done_counting,
+    input  logic ack,
+    output logic shift_ena,
+    output logic counting,
+    output logic done
+);
+
+    // State Encoding (Need enough states for pattern matching + operational phases)
+    localparam STATE_IDLE       = 3'b000;
+    localparam STATE_DETECT_1   = 3'b001;
+    localparam STATE_DETECT_11  = 3'b010;
+    localparam STATE_DETECT_110 = 3'b011;
+    localparam STATE_SHIFT_IN   = 3'b100; // 4 cycles of shift_ena
+    localparam STATE_COUNTING   = 3'b101;
+    localparam STATE_DONE_WAIT  = 3'b110;
+    localparam STATE_RESET_WAIT = 3'b111; // Acknowledgment received
+
+    // State Registers
+    logic [2:0] state;
+    logic [2:0] state_next;
+
+    // Helper counter for the 4-cycle shift sequence
+    logic [1:0] shift_count;
+
+    // Outputs
+    assign shift_ena = (state == STATE_SHIFT_IN);
+    assign counting = (state == STATE_COUNTING);
+    assign done = (state == STATE_DONE_WAIT);
+
+    // State Register Logic (Sequential)
+    always @(posedge clk)
+    begin
+        if (reset)
+            state <= STATE_IDLE;
+        else
+            state <= state_next;
+    end
+
+    // Shift Counter Register Logic (Sequential, only relevant in STATE_SHIFT_IN)
+    always @(posedge clk)
+    begin
+        if (state == STATE_SHIFT_IN && shift_count < 2'b11) // Count 0, 1, 2, 3 (4 cycles)
+            shift_count <= shift_count + 1'b1;
+        else if (state != STATE_SHIFT_IN) 
+            shift_count <= 2'b00; // Reset counter when not in shift state
+    end
+
+    // Next State Logic (Combinational)
+    always @(*)
+    begin
+        state_next = state;
+
+        case (state)
+            STATE_IDLE:
+                // Start detection on '1'
+                if (data == 1'b1) 
+                    state_next = STATE_DETECT_1;
+                else
+                    state_next = STATE_IDLE;
+
+            STATE_DETECT_1:
+                // Need '1' next
+                if (data == 1'b1) 
+                    state_next = STATE_DETECT_11;
+                else
+                    state_next = STATE_IDLE; // Pattern broken
+
+            STATE_DETECT_11:
+                // Need '0' next
+                if (data == 1'b0) 
+                    state_next = STATE_DETECT_110;
+                else
+                    state_next = STATE_DETECT_1; // Stuck on '1'
+
+            STATE_DETECT_110:
+                // Need '1' to complete '1101'
+                if (data == 1'b1) 
+                    state_next = STATE_SHIFT_IN; // Pattern detected
+                else
+                    state_next = STATE_IDLE; // Pattern broken
+
+            STATE_SHIFT_IN:
+                // Must count for exactly 4 cycles
+                if (shift_count == 2'b11) 
+                    state_next = STATE_COUNTING;
+                else
+                    state_next = STATE_SHIFT_IN;
+
+            STATE_COUNTING:
+                // Wait for done_counting signal
+                if (done_counting == 1'b1) 
+                    state_next = STATE_DONE_WAIT;
+                else
+                    state_next = STATE_COUNTING;
+
+            STATE_DONE_WAIT:
+                // Wait for acknowledgement
+                if (ack == 1'b1) 
+                    state_next = STATE_RESET_WAIT;
+                else
+                    state_next = STATE_DONE_WAIT;
+
+            STATE_RESET_WAIT:
+                // Acknowledgment received, return to search state
+                state_next = STATE_IDLE;
+
+            default: 
+                state_next = STATE_IDLE;
+        endcase
+    end
+
+    // Initialization of state register (Requirement 3)
+    initial begin
+        state = STATE_IDLE;
+        shift_count = 2'b00;
+    end
+
+endmodule
+[2026-05-14 16:56:54,929 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 16:58:13,604 - mage.agent - INFO] Revised tb:
+[2026-05-14 16:58:13,605 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg reset,
+	output reg data, done_counting, ack,
+	input tb_match
+);
+	bit failed = 0;
+	
+	always @(posedge clk, negedge clk)
+		if (!tb_match) 
+			failed <= 1;
+	
+	initial begin
+
+		@(posedge clk);
+		failed <= 0;
+		reset <= 1;
+		data <= 0;
+		done_counting <= 1'bx;
+		ack <= 1'bx;
+		@(posedge clk) 
+			data <= 1;
+			reset <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk);
+			data <= 1'bx;
+		repeat(4) @(posedge clk);
+			done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+			done_counting <= 1'b1;
+		@(posedge clk);
+			done_counting <= 1'bx;
+		ack <= 1'b0;
+		repeat(3) @(posedge clk);
+			ack <= 1'b1;
+		@(posedge clk);
+			ack <= 1'b0;
+			data <= 1'b1;
+		@(posedge clk);
+			ack <= 1'bx;
+			data <= 1'b1;
+		@(posedge clk);
+			data <= 1'b0;
+		@(posedge clk);
+			data <= 1'b1;
+		@(posedge clk);
+			data <= 1'bx;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b1;
+		@(posedge clk);
+
+		if (failed)
+			s$display("Hint: Your FSM didn't pass the sample timing diagram posted with the problem statement. Perhaps try debugging that?");
+		
+		
+		repeat(5000) @(posedge clk, negedge clk) begin
+			reset <= !($random & 255);
+			data <= $random;
+			done_counting <= !($random & 31);
+			ack <= !($random & 31);
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		int errors_counting;
+		int errortime_counting;
+		int errors_done;
+		int errortime_done;
+
+		int clocks;
+		// Signals captured at the first mismatch
+		int mismatch_time;
+		logic [7:0] inputs_at_mismatch;
+		logic [7:0] dut_outputs_at_mismatch;
+		logic [7:0] ref_outputs_at_mismatch;
+	}
+	stats;
+	
+	stats stats1;
+	
+	// Signals captured at the first mismatch (Expanded for display)
+	logic [7:0] inputs_snap;
+	logic [7:0] dut_snap;
+	logic [7:0] ref_snap;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic data;
+	logic done_counting;
+	logic ack;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic done_ref;
+	logic done_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb_mismatch ,clk,reset,data,done_counting,ack,shift_ena_ref,shift_ena_dut,counting_ref,counting_dut,done_ref,done_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate stimulus_gen (Golden Testbench required this)
+	stimulus_gen stim1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.tb_match
+	);
+
+	// Reference Module	
+	RefModule good1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.shift_ena(shift_ena_ref), 
+		.counting(counting_ref), 
+		.done(done_ref) );
+	
+	// DUT Module	
+	TopModule top_module1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.shift_ena(shift_ena_dut), 
+		.counting(counting_dut), 
+		done(done_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end
+task
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		
+		
+		// Display detailed mismatch information
+		$display("===============================================================");
+		$display("--- FIRST MISMATCH DETAILS (Time: %0d ps) ---", stats1.errortime);
+		$display("Inputs:");
+		$display("  clk: %b (Hex: %h)", inputs_snap[0], inputs_snap[0]);
+		$display("  reset: %b (Hex: %h)", inputs_snap[1], inputs_snap[1]);
+		$display("  data: %b (Hex: %h)", inputs_snap[2], inputs_snap[2]);
+		$display("  done_counting: %b (Hex: %h)", inputs_snap[3], inputs_snap[3]);
+		$display("  ack: %b (Hex: %h)", inputs_snap[4], inputs_snap[4]);
+		$display("Outputs (DUT vs Expected):");
+		$display("  shift_ena: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[0], dut_snap[0], ref_snap[0], ref_snap[0]);
+		$display("  counting: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[1], dut_snap[1], ref_snap[1], ref_snap[1]);
+		$display("  done: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[2], dut_snap[2], ref_snap[2], ref_snap[2]);
+		$display("===============================================================");
+		end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { shift_ena_ref, counting_ref, done_ref } === ( { shift_ena_ref, counting_ref, done_ref } ^ { shift_ena_dut, counting_dut, done_dut } ^ { shift_ena_ref, counting_ref, done_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+
+		// Capture current state for potential error reporting
+		inputs_snap[0] <= clk;
+		inputs_snap[1] <= reset;
+		inputs_snap[2] <= data;
+		inputs_snap[3] <= done_counting;
+		inputs_snap[4] <= ack;
+		dut_snap[0] <= shift_ena_dut;
+		dut_snap[1] <= counting_dut;
+		dut_snap[2] <= done_dut;
+		ref_snap[0] <= shift_ena_ref;
+		ref_snap[1] <= counting_ref;
+		ref_snap[2] <= done_ref;
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time; // Capture time only once
+			stats1.mismatch_time = $time;
+			inputs_snap <= {clk, reset, data, done_counting, ack, 5'b0}; // Capture inputs
+			dut_snap <= {shift_ena_dut, counting_dut, done_dut, 5'b0}; // Capture DUT outputs
+			ref_snap <= {shift_ena_ref, counting_ref, done_ref, 5'b0}; // Capture Ref outputs
+			stats1.errors++;
+		end
+		
+		// Original error counting logic must be maintained
+		if (shift_ena_ref !== ( shift_ena_ref ^ shift_ena_dut ^ shift_ena_ref ))
+			begin if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+				stats1.errors_shift_ena = stats1.errors_shift_ena+1'b1; end
+		
+		if (counting_ref !== ( counting_ref ^ counting_dut ^ counting_ref ))
+			begin if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+				stats1.errors_counting = stats1.errors_counting+1'b1; end
+		
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+			begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+				stats1.errors_done = stats1.errors_done+1'b1; end
+		end
+
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+endmodule
+[2026-05-14 16:59:38,245 - mage.agent - INFO] Revised tb:
+[2026-05-14 16:59:38,245 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg reset,
+	output reg data, done_counting, ack,
+	input tb_match
+);
+	bit failed = 0;
+	
+	always @(posedge clk, negedge clk)
+		if (!tb_match) 
+			failed <= 1;
+	
+	initial begin
+
+		@(posedge clk);
+		failed <= 0;
+		reset <= 1;
+		data <= 0;
+		done_counting <= 1'bx;
+		ack <= 1'bx;
+		@(posedge clk) 
+			data <= 1;
+			reset <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk);
+			data <= 1'bx;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b1;
+		@(posedge clk);
+		done_counting <= 1'bx;
+		ack <= 1'b0;
+		repeat(3) @(posedge clk);
+		ack <= 1'b1;
+		@(posedge clk);
+		ack <= 1'b0;
+		data <= 1'b1;
+		@(posedge clk);
+		ack <= 1'bx;
+		data <= 1'b1;
+		@(posedge clk);
+		data <= 1'b0;
+		@(posedge clk);
+		data <= 1'b1;
+		@(posedge clk);
+		data <= 1'bx;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b1;
+		@(posedge clk);
+
+	if (failed)
+		s$display("Hint: Your FSM didn't pass the sample timing diagram posted with the problem statement. Perhaps try debugging that?");
+		
+		repeat(5000) @(posedge clk, negedge clk) begin
+			reset <= !($random & 255);
+			data <= $random;
+		done_counting <= !($random & 31);
+		ack <= !($random & 31);
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		int errors_counting;
+		int errortime_counting;
+		int errors_done;
+		int errortime_done;
+
+		int clocks;
+		int mismatch_time;
+		logic [7:0] inputs_at_mismatch;
+		logic [7:0] dut_outputs_at_mismatch;
+		logic [7:0] ref_outputs_at_mismatch;
+	} stats;
+	
+	stats stats1;
+	
+	// Signals captured at the first mismatch (Expanded for display)
+	logic [7:0] inputs_snap;
+	logic [7:0] dut_snap;
+	logic [7:0] ref_snap;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic data;
+	logic done_counting;
+	logic ack;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic done_ref;
+	logic done_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb_mismatch ,clk,reset,data,done_counting,ack,shift_ena_ref,shift_ena_dut,counting_ref,counting_dut,done_ref,done_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate stimulus_gen (Golden Testbench required this)
+	stimulus_gen stim1 (
+		.clk, 
+		.reset, 
+		.data, 
+	done_counting, 
+		.ack, 
+		.tb_match
+	);
+
+	// Reference Module 
+	RefModule good1 (
+		.clk, 
+		.reset, 
+		.data, 
+	done_counting, 
+		.ack, 
+		.shift_ena(shift_ena_ref), 
+		.counting(counting_ref), 
+		.done(done_ref) );
+	
+	// DUT Module 
+	TopModule top_module1 (
+		.clk, 
+		.reset, 
+		.data, 
+	done_counting, 
+		.ack, 
+		.shift_ena(shift_ena_dut), 
+		.counting(counting_dut), 
+	done(done_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+		end	task
+
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		
+			$display("===============================================================");
+			$display("--- FIRST MISMATCH DETAILS (Time: %0d ps) ---", stats1.errortime);
+			$display("Inputs:");
+			$display("  clk: %b (Hex: %h)", inputs_snap[0], inputs_snap[0]);
+			$display("  reset: %b (Hex: %h)", inputs_snap[1], inputs_snap[1]);
+			$display("  data: %b (Hex: %h)", inputs_snap[2], inputs_snap[2]);
+			$display("  done_counting: %b (Hex: %h)", inputs_snap[3], inputs_snap[3]);
+			$display("  ack: %b (Hex: %h)", inputs_snap[4], inputs_snap[4]);
+			$display("Outputs (DUT vs Expected): ");
+			$display("  shift_ena: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[0], dut_snap[0], ref_snap[0], ref_snap[0]);
+			$display("  counting: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[1], dut_snap[1], ref_snap[1], ref_snap[1]);
+			$display("  done: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[2], dut_snap[2], ref_snap[2], ref_snap[2]);
+			$display("===============================================================");
+		end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { shift_ena_ref, counting_ref, done_ref } === ( { shift_ena_ref, counting_ref, done_ref } ^ { shift_ena_dut, counting_dut, done_dut } ^ { shift_ena_ref, counting_ref, done_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+
+		// Capture current state for potential error reporting
+		inputs_snap[0] <= clk;
+		inputs_snap[1] <= reset;
+		inputs_snap[2] <= data;
+		inputs_snap[3] <= done_counting;
+		inputs_snap[4] <= ack;
+		dut_snap[0] <= shift_ena_dut;
+		dut_snap[1] <= counting_dut;
+		dut_snap[2] <= done_dut;
+		ref_snap[0] <= shift_ena_ref;
+		ref_snap[1] <= counting_ref;
+		ref_snap[2] <= done_ref;
+
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.mismatch_time = $time;
+			inputs_snap <= {clk, reset, data, done_counting, ack, 5'b0}; // Capture inputs
+		dut_snap <= {shift_ena_dut, counting_dut, done_dut, 5'b0}; // Capture DUT outputs
+		ref_snap <= {shift_ena_ref, counting_ref, done_ref, 5'b0}; // Capture Ref outputs
+		stats1.errors++;
+		end
+		
+		// Original error counting logic must be maintained
+		if (shift_ena_ref !== ( shift_ena_ref ^ shift_ena_dut ^ shift_ena_ref ))
+			begin if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+			sstats1.errors_shift_ena = stats1.errors_shift_ena+1'b1; end
+		
+		if (counting_ref !== ( counting_ref ^ counting_dut ^ counting_ref ))
+			begin if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+			sstats1.errors_counting = stats1.errors_counting+1'b1; end
+		
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+			begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			sstats1.errors_done = stats1.errors_done+1'b1; end
+		end
+	
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 17:00:51,072 - mage.agent - INFO] Revised tb:
+[2026-05-14 17:00:51,073 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg reset,
+	output reg data, done_counting, ack,
+	input tb_match
+);
+	bit failed = 0;
+	
+	always @(posedge clk, negedge clk)
+		if (!tb_match) 
+			failed <= 1;
+	
+	initial begin
+
+		@(posedge clk);
+		failed <= 0;
+		reset <= 1;
+		data <= 0;
+		done_counting <= 1'bx;
+		ack <= 1'bx;
+		@(posedge clk) 
+			data <= 1;
+			reset <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk);
+			data <= 1'bx;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b1;
+		@(posedge clk);
+		done_counting <= 1'bx;
+		ack <= 1'b0;
+		repeat(3) @(posedge clk);
+		ack <= 1'b1;
+		@(posedge clk);
+		ack <= 1'b0;
+		data <= 1'b1;
+		@(posedge clk);
+		ack <= 1'bx;
+		data <= 1'b1;
+		@(posedge clk);
+		data <= 1'b0;
+		@(posedge clk);
+		data <= 1'b1;
+		@(posedge clk);
+		data <= 1'bx;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b1;
+		@(posedge clk);
+
+	if (failed)
+		s$display("Hint: Your FSM didn't pass the sample timing diagram posted with the problem statement. Perhaps try debugging that?");
+		
+		repeat(5000) @(posedge clk, negedge clk) begin
+			reset <= !($random & 255);
+			data <= $random;
+		done_counting <= !($random & 31);
+		ack <= !($random & 31);
+		end
+
+		#1 $finish;
+	end
+	endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		int errors_counting;
+		int errortime_counting;
+		int errors_done;
+		int errortime_done;
+
+		int clocks;
+		int mismatch_time;
+		logic [7:0] inputs_at_mismatch;
+		logic [7:0] dut_outputs_at_mismatch;
+		logic [7:0] ref_outputs_at_mismatch;
+	}
+	stats;
+	
+	stats stats1;
+	
+	// Signals captured at the first mismatch (Expanded for display)
+	logic [7:0] inputs_snap;
+	logic [7:0] dut_snap;
+	logic [7:0] ref_snap;
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic data;
+	logic done_counting;
+	logic ack;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic done_ref;
+	logic done_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb_mismatch ,clk,reset,data,done_counting,ack,shift_ena_ref,shift_ena_dut,counting_ref,counting_dut,done_ref,done_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	// Instantiate stimulus_gen (Golden Testbench required this)
+	stimulus_gen stim1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.tb_match
+	);
+
+	// Reference Module
+	RefModule good1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.shift_ena(shift_ena_ref), 
+		.counting(counting_ref), 
+		done(done_ref) );
+	
+	// DUT Module
+	TopModule top_module1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.shift_ena(shift_ena_dut), 
+		.counting(counting_dut), 
+		done(done_dut) );
+
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { shift_ena_ref, counting_ref, done_ref } === ( { shift_ena_ref, counting_ref, done_ref } ^ { shift_ena_dut, counting_dut, done_dut } ^ { shift_ena_ref, counting_ref, done_ref } ) );
+
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		// Capture current state for potential error reporting
+		inputs_snap[0] <= clk;
+		inputs_snap[1] <= reset;
+		inputs_snap[2] <= data;
+		inputs_snap[3] <= done_counting;
+		inputs_snap[4] <= ack;
+		dut_snap[0] <= shift_ena_dut;
+		dut_snap[1] <= counting_dut;
+		dut_snap[2] <= done_dut;
+		ref_snap[0] <= shift_ena_ref;
+		ref_snap[1] <= counting_ref;
+		ref_snap[2] <= done_ref;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.mismatch_time = $time;
+			// Capture inputs and outputs at the mismatch time
+			inputs_snap <= {clk, reset, data, done_counting, ack, 5'b0};
+		dut_snap <= {shift_ena_dut, counting_dut, done_dut, 5'b0};
+		ref_snap <= {shift_ena_ref, counting_ref, done_ref, 5'b0};
+			stats1.errors++;
+			end
+		
+		// Original error counting logic must be maintained
+		if (shift_ena_ref !== ( shift_ena_ref ^ shift_ena_dut ^ shift_ena_ref ))
+			begin if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+				sstats1.errors_shift_ena = stats1.errors_shift_ena+1'b1; end
+		
+		if (counting_ref !== ( counting_ref ^ counting_dut ^ counting_ref ))
+			begin if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+				sstats1.errors_counting = stats1.errors_counting+1'b1; end
+		
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+			begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+				sstats1.errors_done = stats1.errors_done+1'b1; end
+		end
+		end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+	endmodule
+[2026-05-14 17:02:11,251 - mage.agent - INFO] Revised tb:
+[2026-05-14 17:02:11,251 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output reg reset,
+	output reg data, done_counting, ack,
+	input tb_match
+);
+	bit failed = 0;
+	
+always @(posedge clk, negedge clk)
+		if (!tb_match) 
+		if (failed) 
+			failed <= 1;
+		else 
+			failed <= 0;
+	
+	initial begin
+
+		@(posedge clk);
+		failed <= 0;
+		reset <= 1;
+		data <= 0;
+		done_counting <= 1'bx;
+		ack <= 1'bx;
+		@(posedge clk) 
+			data <= 1;
+			reset <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 1;
+		@(posedge clk) data <= 0;
+		@(posedge clk) data <= 1;
+		@(posedge clk);
+			data <= 1'bx;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b1;
+		@(posedge clk);
+		done_counting <= 1'bx;
+		ack <= 1'b0;
+		repeat(3) @(posedge clk);
+		ack <= 1'b1;
+		@(posedge clk);
+		ack <= 1'b0;
+		data <= 1'b1;
+		@(posedge clk);
+		ack <= 1'bx;
+		data <= 1'b1;
+		@(posedge clk);
+		data <= 1'b0;
+		@(posedge clk);
+		data <= 1'b1;
+		@(posedge clk);
+		data <= 1'bx;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b0;
+		repeat(4) @(posedge clk);
+		done_counting <= 1'b1;
+		@(posedge clk);
+
+	if (failed)
+		s$display("Hint: Your FSM didn't pass the sample timing diagram posted with the problem statement. Perhaps try debugging that?");
+		
+		repeat(5000) @(posedge clk, negedge clk) begin
+			reset <= !($random & 255);
+			data <= $random;
+		done_counting <= !($random & 31);
+		ack <= !($random & 31);
+		end
+		
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_shift_ena;
+		int errortime_shift_ena;
+		int errors_counting;
+		int errortime_counting;
+		int errors_done;
+		int errortime_done;
+		int clocks;
+		int mismatch_time;
+		logic [7:0] inputs_at_mismatch;
+		logic [7:0] dut_outputs_at_mismatch;
+		logic [7:0] ref_outputs_at_mismatch;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic reset;
+	logic data;
+	logic done_counting;
+	logic ack;
+	logic shift_ena_ref;
+	logic shift_ena_dut;
+	logic counting_ref;
+	logic counting_dut;
+	logic done_ref;
+	logic done_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stimulus_gen.clk, tb_mismatch ,clk,reset,data,done_counting,ack,shift_ena_ref,shift_ena_dut,counting_ref,counting_dut,done_ref,done_dut );
+	end
+
+	wire tb_match;
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		tb_match
+	);
+	RefModule good1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.shift_ena(shift_ena_ref), 
+		.counting(counting_ref), 
+		done(done_ref) );
+	TopModule top_module1 (
+		.clk, 
+		.reset, 
+		.data, 
+		done_counting, 
+		.ack, 
+		.shift_ena(shift_ena_dut), 
+		.counting(counting_dut), 
+		done(done_dut) );
+
+	
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask
+	
+	final begin
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		
+			// Display detailed mismatch information
+			$display("===============================================================");
+			$display("--- FIRST MISMATCH DETAILS (Time: %0d ps) ---", stats1.errortime);
+			$display("Inputs:");
+			$display("  clk: %b (Hex: %h)", inputs_snap[0], inputs_snap[0]);
+			$display("  reset: %b (Hex: %h)", inputs_snap[1], inputs_snap[1]);
+			$display("  data: %b (Hex: %h)", inputs_snap[2], inputs_snap[2]);
+			$display("  done_counting: %b (Hex: %h)", inputs_snap[3], inputs_snap[3]);
+			$display("  ack: %b (Hex: %h)", inputs_snap[4], inputs_snap[4]);
+			$display("Outputs (DUT vs Expected): ");
+			$display("  shift_ena: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[0], dut_snap[0], ref_snap[0], ref_snap[0]);
+			$display("  counting: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[1], dut_snap[1], ref_snap[1], ref_snap[1]);
+			$display("  done: DUT=%b (Hex: %h) | Expected=%b (Hex: %h)", dut_snap[2], dut_snap[2], ref_snap[2], ref_snap[2]);
+			$display("===============================================================");
+		end
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { shift_ena_ref, counting_ref, done_ref } === ( { shift_ena_ref, counting_ref, done_ref } ^ { shift_ena_dut, counting_dut, done_dut } ^ { shift_ena_ref, counting_ref, done_ref } ) );
+	
+	// Use explicit sensitivity list here.
+	always @(posedge clk, negedge clk) begin
+		
+		stats1.clocks++;
+		
+		// Capture current state for potential error reporting
+		inputs_snap[0] <= clk;
+		inputs_snap[1] <= reset;
+		inputs_snap[2] <= data;
+		inputs_snap[3] <= done_counting;
+		inputs_snap[4] <= ack;
+		dut_snap[0] <= shift_ena_dut;
+		dut_snap[1] <= counting_dut;
+		dut_snap[2] <= done_dut;
+		ref_snap[0] <= shift_ena_ref;
+		ref_snap[1] <= counting_ref;
+		ref_snap[2] <= done_ref;
+		
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			sstats1.mismatch_time = $time;
+			// Capture inputs and outputs at the mismatch time
+			inputs_snap <= {clk, reset, data, done_counting, ack, 5'b0};
+		dut_snap <= {shift_ena_dut, counting_dut, done_dut, 5'b0};
+		ref_snap <= {shift_ena_ref, counting_ref, done_ref, 5'b0};
+		stats1.errors++;
+		end
+		
+		// Original error counting logic must be maintained
+		if (shift_ena_ref !== ( shift_ena_ref ^ shift_ena_dut ^ shift_ena_ref ))
+			begin if (stats1.errors_shift_ena == 0) stats1.errortime_shift_ena = $time;
+			sstats1.errors_shift_ena = stats1.errors_shift_ena+1'b1; end
+		
+		if (counting_ref !== ( counting_ref ^ counting_dut ^ counting_ref ))
+			begin if (stats1.errors_counting == 0) stats1.errortime_counting = $time;
+			sstats1.errors_counting = stats1.errors_counting+1'b1; end
+		
+		if (done_ref !== ( done_ref ^ done_dut ^ done_ref ))
+			begin if (stats1.errors_done == 0) stats1.errortime_done = $time;
+			sstats1.errors_done = stats1.errors_done+1'b1; end
+		end
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule

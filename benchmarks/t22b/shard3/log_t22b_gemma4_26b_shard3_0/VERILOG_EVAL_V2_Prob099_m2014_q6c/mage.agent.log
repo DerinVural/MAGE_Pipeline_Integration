@@ -1,0 +1,821 @@
+[2026-05-13 14:15:00,842 - mage.agent - INFO] Initial tb:
+[2026-05-13 14:15:00,843 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic[6:1] y,
+	output logic w,
+	input tb_match
+);
+
+	initial begin
+		// Test the one-hot cases first.
+		repeat(200) @(posedge clk, negedge clk) begin
+			y <= 1 << ($unsigned($random) % 6);
+			w <= $random;
+		end	
+	
+		#1 $finish;
+	end	
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_Y2;
+		int errortime_Y2;
+		int errors_Y4;
+		int errortime_Y4;
+
+		int clocks;
+		bit mismatch_occurred;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [6:1] y;
+	logic w;
+	logic Y2_ref;
+	logic Y2_dut;
+	logic Y4_ref;
+	logic Y4_dut;
+
+	// Queues for mismatch display
+	logic [6:1] q_y [$];
+	logic q_w [$];
+	logic q_Y2_dut [$];
+	logic q_Y4_dut [$];
+	logic q_Y2_ref [$];
+	logic q_Y4_ref [$];
+	localparam MAX_QUEUE_SIZE = 10;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,y,w,Y2_ref,Y2_dut,Y4_ref,Y4_dut );
+	end
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.y,
+		w );
+	RefModule good1 (
+		.y,
+		.w,
+		.Y2(Y2_ref),
+		.Y4(Y4_ref) );
+		
+	TopModule top_module1 (
+		.y,
+		.w,
+		.Y2(Y2_dut),
+		.Y4(Y4_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { Y2_ref, Y4_ref } === ( { Y2_ref, Y4_ref } ^ { Y2_dut, Y4_dut } ^ { Y2_ref, Y4_ref } ) );
+
+	always @(posedge clk, negedge clk) begin
+		// Maintain Queues
+		if (q_y.size() >= MAX_QUEUE_SIZE) begin
+			q_y.delete(0);
+			q_w.delete(0);
+			q_Y2_dut.delete(0);
+			q_Y4_dut.delete(0);
+			q_Y2_ref.delete(0);
+			q_Y4_ref.delete(0);
+		end
+
+		q_y.push_back(y);
+		q_w.push_back(w);
+		q_Y2_dut.push_back(Y2_dut);
+		q_Y4_dut.push_back(Y4_dut);
+		q_Y2_ref.push_back(Y2_ref);
+		q_Y4_ref.push_back(Y4_ref);
+
+		stats1.clocks++;
+
+		if (!tb_match) begin
+			stats1.mismatch_occurred = 1;
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+
+			// Display history on first mismatch
+			if (stats1.errors == 1) begin
+				$display("Mismatch detected at time %t", $time);
+				$display("\nLast %0d cycles of simulation:", q_y.size());
+				for (int i = 0; i < q_y.size(); i++) begin
+					$display("Cycle %0d, reset=N/A, y=%h, w=%b, got_Y2=%b, got_Y4=%b, exp_Y2=%b, exp_Y4=%b",
+							i, q_y[i], q_w[i], q_Y2_dut[i], q_Y4_dut[i], q_Y2_ref[i], q_Y4_ref[i]);
+					end
+				end
+			end
+		end
+
+		if (Y2_ref !== ( Y2_ref ^ Y2_dut ^ Y2_ref ))
+		begin 
+			if (stats1.errors_Y2 == 0) stats1.errortime_Y2 = $time;
+			stats1.errors_Y2 = stats1.errors_Y2+1'b1; 
+		end
+
+		if (Y4_ref !== ( Y4_ref ^ Y4_dut ^ Y4_ref ))
+		begin 
+			if (stats1.errors_Y4 == 0) stats1.errortime_Y4 = $time;
+			stats1.errors_Y4 = stats1.errors_Y4+1'b1; 
+		end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.mismatch_occurred) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end else begin
+			$display("SIMULATION PASSED");
+		end
+
+		if (stats1.errors_Y2) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y2", stats1.errors_Y2, stats1.errortime_Y2);
+		else $display("Hint: Output '%s' has no mismatches.", "Y2");
+		if (stats1.errors_Y4) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y4", stats1.errors_Y4, stats1.errortime_Y4);
+		else $display("Hint: Output '%s' has no mismatches.", "Y4");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 14:15:00,844 - mage.agent - INFO] Initial if:
+[2026-05-13 14:15:00,844 - mage.agent - INFO] module TopModule (
+    input  logic [6:1] y,
+    input  logic w,
+    output logic Y2,
+    output logic Y4
+);
+
+[2026-05-13 14:15:00,849 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  y (6 bits)
+ - input  w
+ - output Y1
+ - output Y3
+
+Consider the state machine shown below:
+
+  A (0) --0--> B
+  A (0) --1--> A
+  B (0) --0--> C
+  B (0) --1--> D
+  C (0) --0--> E
+  C (0) --1--> D
+  D (0) --0--> F
+  D (0) --1--> A
+  E (1) --0--> E
+  E (1) --1--> D
+  F (1) --0--> C
+  F (1) --1--> D
+
+Resets into state A. For this part, assume that a one-hot code is used
+with the state assignment y[5:0] = 000001, 000010, 000100, 001000,
+010000, 100000 for states A, B,..., F, respectively.
+
+The module shou module ment the next-state signals Y2 and Y4
+corresponding to signal y[1] and y[3]. Derive the logic equations by
+inspection assuming the one-hot encoding.
+ implement the next-state signals  and corresponding to
+signal y[1] and y[3]Derive the logic equations byinspection assuming the one-hot encoding.
+
+
+[2026-05-13 14:15:41,219 - mage.agent - INFO] Initial rtl:
+[2026-05-13 14:15:41,219 - mage.agent - INFO] module TopModule (
+    input  logic [6:1] y,
+    input  logic w,
+    output logic Y2,
+    output logic Y4
+);
+
+    // Combinational logic for next-state bits Y2 and Y4
+    // Y2 is the signal representing the next state being B (y[2])
+    // Y4 is the signal representing the next state being D (y[4])
+
+    always @(*) begin
+        // Y2: Next state is B (y[2])
+        // From the transitions: A --0--> B
+        // Since A is y[1], Y2 = y[1] & ~w
+        Y2 = y[1] & (~w);
+
+        // Y4: Next state is D (y[4])
+        // From the transitions:
+        // B --1--> D (y[2] & w)
+        // C --1--> D (y[3] & w)
+        // E --1--> D (y[5] & w)
+        // F --1--> D (y[6] & w)
+        Y4 = (y[2] | y[3] | y[5] | y[6]) & w;
+    end
+
+endmodule
+[2026-05-13 14:15:46,779 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-13 14:16:52,283 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:16:52,284 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic [6:1] y,
+    output logic w,
+    input tb_match
+);
+
+    initial begin
+        y <= 6'b0;
+        w <= 0;
+        // Test the one-hot cases first.
+        repeat(200) @(posedge clk, negedge clk) begin
+            y <= 1 << ($unsigned($random) % 6);
+            w <= $random;
+        end    
+    
+        #1 $finish;
+    end
+    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_Y2;
+        int errortime_Y2;
+        int errors_Y4;
+        int errortime_Y4;
+
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    wire[511:0] wavedrom_title;
+    wire wavedrom_enable;
+    int wavedrom_hide_after_time;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [6:1] y;
+    logic w;
+    logic Y2_ref;
+    logic Y2_dut;
+    logic Y4_ref;
+    logic Y4_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, y, w, Y2_ref, Y2_dut, Y4_ref, Y4_dut);
+    end
+
+    wire tb_match;        // Verification
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .* ,
+        .y,
+        .w );
+
+    // RefModule is assumed to be provided for golden comparison
+    RefModule good1 (
+        .y,
+        .w,
+        .Y2(Y2_ref),
+        .Y4(Y4_ref) );
+        
+    TopModule top_module1 (
+        .y,
+        .w,
+        .Y2(Y2_dut),
+        .Y4(Y4_dut) );
+
+    bit strobe = 0;
+    task wait_for_end_of_timestep;
+        repeat(5) begin
+            strobe <= !strobe;  // Try to delay until the very end of the time step.
+            @(strobe);
+        end
+    endtask    
+
+    assign tb_match = ( { Y2_ref, Y4_ref } === ( { Y2_ref, Y4_ref } ^ { Y2_dut, Y4_dut } ^ { Y2_ref, Y4_ref } ) );
+
+    // Track first mismatch for detailed display
+    bit first_mismatch_done = 0;
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) begin
+                stats1.errortime = $time;
+                // Detailed display for first mismatch
+                $display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+                $display("Inputs: y=%h (%b), w=%b", y, y, w);
+                $display("Expected: Y2=%b, Y4=%b", Y2_ref, Y4_ref);
+                $display("Actual:   Y2=%b, Y4=%b", Y2_dut, Y4_dut);
+            end else begin
+                // Already displayed first mismatch
+            end
+            stats1.errors++;
+        end
+
+        if (Y2_ref !== ( Y2_ref ^ Y2_dut ^ Y2_ref )) begin 
+            if (stats1.errors_Y2 == 0) stats1.errortime_Y2 = $time;
+            stats1.errors_Y2 = stats1.errors_Y2 + 1'b1; 
+        end
+
+        if (Y4_ref !== ( Y4_ref ^ Y4_dut ^ Y4_ref )) begin 
+            if (stats1.errors_Y4 == 0) stats1.errortime_Y4 = $time;
+            stats1.errors_Y4 = stats1.errors_Y4 + 1'b1; 
+        end
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+    final begin
+        if (stats1.errors > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+
+        if (stats1.errors_Y2) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y2", stats1.errors_Y2, stats1.errortime_Y2);
+        else $display("Hint: Output '%s' has no mismatches.", "Y2");
+        
+        if (stats1.errors_Y4) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y4", stats1.errors_Y4, stats1.errortime_Y4);
+        else $display("Hint: Output '%s' has no mismatches.", "Y4");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+endmodule
+[2026-05-13 14:18:22,408 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:18:22,408 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic[6:1] y,
+	output logic w,
+	input tb_match
+);
+
+	initial begin
+		y <= 6'b0;
+		w <= 0;
+		// Test the one-hot cases first.
+		repeat(200) @(posedge clk, negedge clk) begin
+			y <= 1 << ($unsigned($random) % 6);
+			w <= $random;
+		end	
+
+		#1 $finish;
+	end	
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_Y2;
+		int errortime_Y2;
+		int errors_Y4;
+		int errortime_Y4;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [6:1] y;
+	logic w;
+	logic Y2_ref;
+	logic Y2_dut;
+	logic Y4_ref;
+	logic Y4_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,y,w,Y2_ref,Y2_dut,Y4_ref,Y4_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.y,
+		w );
+	RefModule good1 (
+		.y,
+		.w,
+		.Y2(Y2_ref),
+		.Y4(Y4_ref) );
+		
+	TopModule top_module1 (
+		.y,
+		.w,
+		.Y2(Y2_dut),
+		.Y4(Y4_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	assign tb_match = ( { Y2_ref, Y4_ref } === ( { Y2_ref, Y4_ref } ^ { Y2_dut, Y4_dut } ^ { Y2_ref, Y4_ref } ) );
+	
+	// Track first mismatch
+	bit first_mismatch_reported = 0;
+
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			
+			// Requirement: Display first mismatch details
+			if (!first_mismatch_reported) begin
+				$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+				$display("Inputs: y=%h (%b), w=%b", y, y, w);
+				$display("Expected: Y2=%b, Y4=%b", Y2_ref, Y4_ref);
+				$display("Actual:   Y2=%b, Y4=%b", Y2_dut, Y4_dut);
+				first_mismatch_reported = 1;
+			end
+		endif
+
+		if (Y2_ref !== ( Y2_ref ^ Y2_dut ^ Y2_ref ))
+		begin if (stats1.errors_Y2 == 0) stats1.errortime_Y2 = $time;
+			stats1.errors_Y2 = stats1.errors_Y2+1'b1; end
+		if (Y4_ref !== ( Y4_ref ^ Y4_dut ^ Y4_ref ))
+		begin if (stats1.errors_Y4 == 0) stats1.errortime_Y4 = $time;
+			stats1.errors_Y4 = stats1.errors_Y4+1'b1; end
+	end
+
+   // add timeout after 100K cycles
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end else begin
+			$display("SIMULATION PASSED");
+		end
+
+		if (stats1.errors_Y2) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y2", stats1.errors_Y2, stats1.errortime_Y2);
+		else $display("Hint: Output '%s' has no mismatches.", "Y2");
+		if (stats1.errors_Y4) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y4", stats1.errors_Y4, stats1.errortime_Y4);
+		else $display("Hint: Output '%s' has no mismatches.", "Y4");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule
+[2026-05-13 14:19:30,527 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:19:30,528 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+    input clk,
+    output logic [6:1] y,
+    output logic w,
+    input tb_match
+);
+
+    initial begin
+        y <= 6'b0;
+        w <= 0;
+        // Test the one-hot cases first.
+        repeat(200) @(posedge clk, negedge clk) begin
+            y <= 1 << ($unsigned($random) % 6);
+            w <= $random;
+        end    
+    
+        #1 $finish;
+    end    
+endmodule
+
+module tb();
+
+    typedef struct packed {
+        int errors;
+        int errortime;
+        int errors_Y2;
+        int errortime_Y2;
+        int errors_Y4;
+        int errortime_Y4;
+        int clocks;
+    } stats;
+    
+    stats stats1;
+    
+    reg clk=0;
+    initial forever
+        #5 clk = ~clk;
+
+    logic [6:1] y;
+    logic w;
+    logic Y2_ref;
+    logic Y2_dut;
+    logic Y4_ref;
+    logic Y4_dut;
+
+    initial begin 
+        $dumpfile("wave.vcd");
+        $dumpvars(1, stim1.clk, tb_mismatch, y, w, Y2_ref, Y2_dut, Y4_ref, Y4_dut);
+    end
+
+    wire tb_match;        // Verification
+    wire tb_mismatch = ~tb_match;
+    
+    stimulus_gen stim1 (
+        .clk,
+        .*,
+        .y,
+        .w
+    );
+
+    RefModule good1 (
+        .y,
+        .w,
+        .Y2(Y2_ref),
+        .Y4(Y4_ref)
+    );
+        
+    TopModule top_module1 (
+        .y,
+        .w,
+        .Y2(Y2_dut),
+        .Y4(Y4_dut)
+    );
+
+    bit first_mismatch_reported = 0;
+
+    assign tb_match = ( { Y2_ref, Y4_ref } === ( { Y2_ref, Y4_ref } ^ { Y2_dut, Y4_dut } ^ { Y2_ref, Y4_ref } ) );
+
+    always @(posedge clk, negedge clk) begin
+        stats1.clocks++;
+        if (!tb_match) begin
+            if (stats1.errors == 0) stats1.errortime = $time;
+            stats1.errors++;
+            
+            if (!first_mismatch_reported) begin
+                $display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+                $display("Inputs: y=%h (%b), w=%b", y, y, w);
+                $display("Expected: Y2=%b, Y4=%b", Y2_ref, Y4_ref);
+                $display("Actual:   Y2=%b, Y4=%b", Y2_dut, Y4_dut);
+                first_mismatch_reported = 1;
+            end
+        end
+
+        if (Y2_ref !== ( Y2_ref ^ Y2_dut ^ Y2_ref )) begin 
+            if (stats1.errors_Y2 == 0) stats1.errortime_Y2 = $time;
+            stats1.errors_Y2 = stats1.errors_Y2 + 1'b1;
+        end
+
+        if (Y4_ref !== ( Y4_ref ^ Y4_dut ^ Y4_ref )) begin 
+            if (stats1.errors_Y4 == 0) stats1.errortime_Y4 = $time;
+            stats1.errors_Y4 = stats1.errors_Y4 + 1'b1;
+        end
+    end
+
+    initial begin
+      #1000000
+      $display("TIMEOUT");
+      $finish();
+    end
+
+    final begin
+        if (stats1.errors > 0) begin
+            $display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+        end else begin
+            $display("SIMULATION PASSED");
+        end
+
+        if (stats1.errors_Y2) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y2", stats1.errors_Y2, stats1.errortime_Y2);
+        else $display("Hint: Output '%s' has no mismatches.", "Y2");
+
+        if (stats1.errors_Y4) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y4", stats1.errors_Y4, stats1.errortime_Y4);
+        else $display("Hint: Output '%s' has no mismatches.", "Y4");
+
+        $display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+        $display("Simulation finished at %0d ps", $time);
+        $display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+    end
+
+endmodule
+[2026-05-13 14:20:50,884 - mage.agent - INFO] Revised tb:
+[2026-05-13 14:20:50,884 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic[6:1] y,
+	output logic w,
+	input tb_match
+);
+
+	initial begin
+		y <= 6'b0;
+		w <= 0;
+		repeat(200) @(posedge clk, negedge clk) begin
+			y <= 1 << ($unsigned($random) % 6);
+			w <= $random;
+		end	
+
+		#1 $finish;
+	end	
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_Y2;
+		int errortime_Y2;
+		int errors_Y4;
+		int errortime_Y4;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic [6:1] y;
+	logic w;
+	logic Y2_ref;
+	logic Y2_dut;
+	logic Y4_ref;
+	logic Y4_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,y,w,Y2_ref,Y2_dut,Y4_ref,Y4_dut );
+	end
+
+
+	wire tb_match;        // Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.y,
+		w );
+	RefModule good1 (
+		.y,
+		.w,
+		.Y2(Y2_ref),
+		.Y4(Y4_ref) );
+		
+	TopModule top_module1 (
+		.y,
+		.w,
+		.Y2(Y2_dut),
+		.Y4(Y4_dut) );
+
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+	assign tb_match = ( { Y2_ref, Y4_ref } === ( { Y2_ref, Y4_ref } ^ { Y2_dut, Y4_dut } ^ { Y2_ref, Y4_ref } ) );
+	
+	bit first_mismatch_reported = 0;
+
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+			
+			if (!first_mismatch_reported) begin
+				$display("FIRST MISMATCH DETECTED AT TIME %0t", $time);
+				$display("Inputs: y=%h (%b), w=%b", y, y, w);
+				$display("Expected: Y2=%b, Y4=%b", Y2_ref, Y4_ref);
+				$display("Actual:   Y2=%b, Y4=%b", Y2_dut, Y4_dut);
+				first_mismatch_reported = 1;
+			end
+		end
+
+		if (Y2_ref !== ( Y2_ref ^ Y2_dut ^ Y2_ref ))
+		begin if (stats1.errors_Y2 == 0) stats1.errortime_Y2 = $time;
+			stats1.errors_Y2 = stats1.errors_Y2+1'b1; end
+		if (Y4_ref !== ( Y4_ref ^ Y4_dut ^ Y4_ref ))
+		begin if (stats1.errors_Y4 == 0) stats1.errortime_Y4 = $time;
+			stats1.errors_Y4 = stats1.errors_Y4+1'b1; end
+	end
+
+   initial begin
+     #1000000
+     $display("TIMEOUT");
+     $finish();
+   end
+
+	final begin
+		if (stats1.errors > 0) begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end else begin
+			$display("SIMULATION PASSED");
+		end
+
+		if (stats1.errors_Y2) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y2", stats1.errors_Y2, stats1.errortime_Y2);
+		else $display("Hint: Output '%s' has no mismatches.", "Y2");
+		if (stats1.errors_Y4) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "Y4", stats1.errors_Y4, stats1.errortime_Y4);
+		else $display("Hint: Output '%s' has no mismatches.", "Y4");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+	end
+
+endmodule

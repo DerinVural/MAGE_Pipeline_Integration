@@ -1,0 +1,411 @@
+[2026-05-14 14:29:25,130 - mage.agent - INFO] Initial tb:
+[2026-05-14 14:29:25,131 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	override output logic in,
+	override output logic [1:0] state
+);
+
+	initial begin
+		repeat(100) @(posedge clk, negedge clk) begin
+			in <= $random;
+			state <= $random;
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+	typedef struct packed {
+		int errors;
+		int errortime;
+		int errors_next_state;
+		int errortime_next_state;
+		int errors_out;
+		int errortime_out;
+
+		int clocks;
+	} stats;
+	
+	stats stats1;
+	
+	
+	wire[511:0] wavedrom_title;
+	wire wavedrom_enable;
+	int wavedrom_hide_after_time;
+	
+	reg clk=0;
+	initial forever
+		#5 clk = ~clk;
+
+	logic in;
+	logic [1:0] state;
+	logic [1:0] next_state_ref;
+	logic [1:0] next_state_dut;
+	logic out_ref;
+	logic out_dut;
+
+	initial begin 
+		$dumpfile("wave.vcd");
+		$dumpvars(1, stim1.clk, tb_mismatch ,in,state,next_state_ref,next_state_dut,out_ref,out_dut );
+	end
+
+
+	wire tb_match; 		// Verification
+	wire tb_mismatch = ~tb_match;
+	
+	stimulus_gen stim1 (
+		.clk,
+		.* ,
+		.in,
+		.state );
+	RefModule good1 (
+		.in,
+		.state,
+		.next_state(next_state_ref),
+		.out(out_ref) );
+		
+	TopModule top_module1 (
+		.in,
+		.state,
+		.next_state(next_state_dut),
+		.out(out_dut) );
+
+	bit strobe = 0;
+	task wait_for_end_of_timestep;
+		repeat(5) begin
+			strobe <= !strobe;  // Try to delay until the very end of the time step.
+			@(strobe);
+		end
+	endtask	
+
+
+	// Queue-based simulation mismatch display
+	reg [1:0] input_queue [$];
+	reg [1:0] got_next_state_queue [$];
+	reg [1:0] golden_next_state_queue [$];
+	reg got_out_queue [$];
+	reg golden_out_queue [$];
+	
+	localparam MAX_QUEUE_SIZE = 8;
+
+	always @(posedge clk, negedge clk) begin
+		if (input_queue.size() >= MAX_QUEUE_SIZE - 1) begin
+			input_queue.delete(0);
+			got_next_state_queue.delete(0);
+			golden_next_state_queue.delete(0);
+			got_out_queue.delete(0);
+			golden_out_queue.delete(0);
+		end
+
+		input_queue.push_back(in);
+		got_next_state_queue.push_back(next_state_dut);
+		golden_next_state_queue.push_back(next_state_ref);
+		got_out_queue.push_back(out_dut);
+		golden_out_queue.push_back(out_ref);
+
+		// Check for first mismatch
+		if (next_state_dut !== next_state_ref || out_dut !== out_ref) begin
+			$display("Mismatch detected at time %t", $time);
+			$display("\nLast %d cycles of simulation:", input_queue.size());
+
+
+			for (int i = 0; i < input_queue.size(); i++) begin
+				$display("Cycle %d, input %b, got next_state %b, exp next_state %b, got out %b, exp out %b",
+					i,
+					input_queue[i],
+					got_next_state_queue[i],
+					golden_next_state_queue[i],
+					got_out_queue[i],
+					golden_out_queue[i]
+				);
+			end
+			$finish;
+		end
+	end
+
+	final begin
+		if (stats1.errors_next_state) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "next_state", stats1.errors_next_state, stats1.errortime_next_state);
+		else $display("Hint: Output '%s' has no mismatches.", "next_state");
+		if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+		else $display("Hint: Output '%s' has no mismatches.", "out");
+
+		$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+		$display("Simulation finished at %0d ps", $time);
+		$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+		
+		if (stats1.errors == 0) begin
+			$display("SIMULATION PASSED");
+		end else begin
+			$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+		end
+	end
+	
+	// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+	assign tb_match = ( { next_state_ref, out_ref } === ( { next_state_ref, out_ref } ^ { next_state_dut, out_dut } ^ { next_state_ref, out_ref } ) );
+	// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+	// the sensitivity list of the @(strobe) process, which isn't implemented.
+	always @(posedge clk, negedge clk) begin
+
+		stats1.clocks++;
+		if (!tb_match) begin
+			if (stats1.errors == 0) stats1.errortime = $time;
+			stats1.errors++;
+		end
+		if (next_state_ref !== ( next_state_ref ^ next_state_dut ^ next_state_ref ))
+		begin 
+			if (stats1.errors_next_state == 0) stats1.errortime_next_state = $time;
+			stats1.errors_next_state = stats1.errors_next_state+1'b1; 
+		end
+		if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+		begin 
+			if (stats1.errors_out == 0) stats1.errortime_out = $time;
+			stats1.errors_out = stats1.errors_out+1'b1; 
+		end
+
+	end
+
+	// add timeout after 100K cycles
+	initial begin
+		#1000000
+		$display("TIMEOUT");
+		$finish();
+	end
+
+endmodule
+[2026-05-14 14:29:25,131 - mage.agent - INFO] Initial if:
+[2026-05-14 14:29:25,132 - mage.agent - INFO] module TopModule (
+    input  in,
+    input  [1:0] state,
+    output [1:0] next_state,
+    output out
+);
+[2026-05-14 14:29:25,138 - mage.agent - INFO] 
+I would like you to implement a module named TopModule with the following
+interface. All input and output ports are one bit unless otherwise
+specified.
+
+ - input  in
+ - input  state (2 bits)
+ - output next_state (2 bits)
+ - output out
+
+The module should implement the following is the state transition table
+for a Moore state machine with one input, one output, and four states.
+Use the following state encoding: A=2'b00, B=2'b01, C=2'b10,
+D=2'b11.Implement only the state transition logic and output logic (the
+combinational logic portion) for this state machine. Given the current
+state (state), compute the next_state and output (out) based on the state
+transition table.
+
+  State | Next state in=0, Next state in=1 | Output
+  A     | A, B                             | 0
+  B     | C, B                             | 0
+  C     | A, D                             | 0
+  D     | C, B                             | 1
+
+
+[2026-05-14 14:29:51,612 - mage.agent - INFO] Initial rtl:
+[2026-05-14 14:29:51,612 - mage.agent - INFO] module TopModule (
+    input  logic in,
+    input  logic [1:0] state,
+    output logic [1:0] next_state,
+    output logic out
+);
+
+    always @(*) begin
+        case (state)
+            2'b00: begin // State A
+                if (in)
+                    next_state = 2'b01;
+                else
+                    next_state = 2'b00;
+                out = 1'b0;
+            end
+            
+            2'b01: begin // State B
+                if (in)
+                    next_state = 2'b01;
+                else
+                    next_state = 2'b10;
+                out = 1'b0;
+            end
+            
+            2'b10: begin // State C
+                if (in)
+                    next_state = 2'b11;
+                else
+                    next_state = 2'b00;
+                out = 1'b0;
+            end
+            
+            2'b11: begin // State D
+                if (in)
+                    next_state = 2'b01;
+                else
+                    next_state = 2'b10;
+                out = 1'b1;
+            end
+            
+            default: begin
+                next_state = 2'b00;
+                out = 1'b0;
+            end
+        endcase
+    end
+
+endmodule
+[2026-05-14 14:29:57,908 - mage.agent - INFO] Fallback from display queue to display moment
+[2026-05-14 14:30:51,392 - mage.agent - INFO] Revised tb:
+[2026-05-14 14:30:51,392 - mage.agent - INFO] `timescale 1 ps/1 ps
+`define OK 12
+`define INCORRECT 13
+
+module stimulus_gen (
+	input clk,
+	output logic in,
+	output logic [1:0] state
+);
+
+	initial begin
+		repeat(100) @(posedge clk, negedge clk) begin
+			in <= $random;
+			state <= $random;
+		end
+
+		#1 $finish;
+	end
+	
+endmodule
+
+module tb();
+
+typedef struct packed {
+	int errors;
+	int errortime;
+	int errors_next_state;
+	int errortime_next_state;
+	int errors_out;
+	int errortime_out;
+
+	int clocks;
+} stats;
+
+stats stats1;
+
+
+wire[511:0] wavedrom_title;
+wire wavedrom_enable;
+int wavedrom_hide_after_time;
+
+reg clk=0;
+initial forever
+	#5 clk = ~clk;
+
+logic in;
+logic [1:0] state;
+logic [1:0] next_state_ref;
+logic [1:0] next_state_dut;
+logic out_ref;
+logic out_dut;
+
+initial begin 
+	$dumpfile("wave.vcd");
+	$dumpvars(1, stim1.clk, tb_mismatch ,in,state,next_state_ref,next_state_dut,out_ref,out_dut );
+end
+
+
+wire tb_match;      // Verification
+wire tb_mismatch = ~tb_match;
+
+stimulus_gen stim1 (
+	.clk,
+	.* ,
+	.in,
+	.state );
+RefModule good1 (
+	.in,
+	.state,
+	.next_state(next_state_ref),
+	.out(out_ref) );
+	
+TopModule top_module1 (
+	.in,
+	.state,
+	.next_state(next_state_dut),
+	.out(out_dut) );
+
+
+bit strobe = 0;
+task wait_for_end_of_timestep;
+	repeat(5) begin
+		strobe <= !strobe;  // Try to delay until the very end of the time step.
+		@(strobe);
+	end
+endtask	
+
+
+final begin
+	if (stats1.errors_next_state) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "next_state", stats1.errors_next_state, stats1.errortime_next_state);
+	else $display("Hint: Output '%s' has no mismatches.", "next_state");
+	if (stats1.errors_out) $display("Hint: Output '%s' has %0d mismatches. First mismatch occurred at time %0d.", "out", stats1.errors_out, stats1.errortime_out);
+	else $display("Hint: Output '%s' has no mismatches.", "out");
+
+	$display("Hint: Total mismatched samples is %1d out of %1d samples\n", stats1.errors, stats1.clocks);
+	$display("Simulation finished at %0d ps", $time);
+	$display("Mismatches: %1d in %1d samples", stats1.errors, stats1.clocks);
+
+	if (stats1.errors == 0) begin
+		$display("SIMULATION PASSED");
+	end else begin
+		$display("SIMULATION FAILED - %0d MISMATCHES DETECTED, FIRST AT TIME %0d", stats1.errors, stats1.errortime);
+	end
+end
+
+// Verification: XORs on the right makes any X in good_vector match anything, but X in dut_vector will only match X.
+assign tb_match = ( { next_state_ref, out_ref } === ( { next_state_ref, out_ref } ^ { next_state_dut, out_dut } ^ { next_state_ref, out_ref } ) );
+// Use explicit sensitivity list here. @(*) causes NetProc::nex_input() to be called when trying to compute
+// the sensitivity list of the @(strobe) process, which isn't implemented.
+always @(posedge clk, negedge clk) begin
+
+	stats1.clocks++;
+	if (!tb_match) begin
+		if (stats1.errors == 0) stats1.errortime = $time;
+		stats1.errors++;
+
+		// Display first mismatch details
+		if (stats1.errors == 1) begin
+			$display("FIRST MISMATCH AT TIME %0d:", $time);
+			$display("  Input in = %b, State = %b (hex: 0x%0h, bin: %b)", in, state, state, state);
+			$display("  Expected next_state = %b (hex: 0x%0h, bin: %b), Actual next_state = %b (hex: 0x%0h, bin: %b)", 
+			         next_state_ref, next_state_ref, next_state_ref, next_state_dut, next_state_dut, next_state_dut);
+			$display("  Expected out = %b, Actual out = %b", out_ref, out_dut);
+		end
+	end
+	if (next_state_ref !== ( next_state_ref ^ next_state_dut ^ next_state_ref ))
+	begin 
+		if (stats1.errors_next_state == 0) stats1.errortime_next_state = $time;
+		stats1.errors_next_state = stats1.errors_next_state+1'b1; 
+	end
+	if (out_ref !== ( out_ref ^ out_dut ^ out_ref ))
+	begin 
+		if (stats1.errors_out == 0) stats1.errortime_out = $time;
+		stats1.errors_out = stats1.errors_out+1'b1; 
+	end
+
+end
+
+// add timeout after 100K cycles
+initial begin
+	#1000000
+	$display("TIMEOUT");
+	$finish();
+end
+
+endmodule

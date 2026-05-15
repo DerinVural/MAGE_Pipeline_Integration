@@ -1,0 +1,1 @@
+module TopModule (mode, too_cold, too_hot, fan_on, heater, aircon, fan); input mode, too_cold, too_hot, fan_on; output heater, aircon, fan; endmodule

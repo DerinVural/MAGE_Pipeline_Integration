@@ -1,0 +1,5 @@
+module TopModule (
+    input  a,
+    input  b,
+    output out
+);

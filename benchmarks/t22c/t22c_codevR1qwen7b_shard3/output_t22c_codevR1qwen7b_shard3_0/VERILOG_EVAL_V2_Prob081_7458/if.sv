@@ -1,0 +1,1 @@
+module stimulus_gen (input clk, output logic p1a, p1b, p1c, p1d, p1e, p1f, output logic p2a, p2b, p2c, p2d, output [511:0] wavedrom_title, output logic wavedrom_enable); task wavedrom_start(); task wavedrom_stop(); endmodule module tb(); // ... logic for p1a-p1f, p2a-p2d, p1y_ref, p2y_ref, etc. TopModule instantiation with .p1a, etc. and outputs p1y_dut, p2y_dut. // ... end

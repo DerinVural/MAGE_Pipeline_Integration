@@ -1,0 +1,5 @@
+module TopModule (
+    input clk,
+    input a,
+    output [2:0] q
+);
